@@ -22,6 +22,7 @@ import (
 	"github.com/beyond5959/go-acp-server/internal/httpapi"
 	"github.com/beyond5959/go-acp-server/internal/runtime"
 	"github.com/beyond5959/go-acp-server/internal/storage"
+	"github.com/beyond5959/go-acp-server/internal/webui"
 )
 
 func main() {
@@ -125,6 +126,7 @@ func main() {
 		CompactMaxChars:    *compactMaxChars,
 		AgentIdleTTL:       *agentIdleTTL,
 		Logger:             logger,
+		FrontendHandler:    webui.Handler(),
 	})
 	defer func() {
 		if closeErr := handler.Close(); closeErr != nil {
@@ -308,16 +310,19 @@ func printStartupSummary(out io.Writer, startedAt time.Time, listenAddr, dbPath,
 	if strings.TrimSpace(agents) == "" {
 		agents = "none"
 	}
+	addr := strings.TrimSpace(listenAddr)
 	_, _ = fmt.Fprintf(
 		out,
 		"Agent Hub Server started\n"+
 			"  Time:   %s\n"+
 			"  HTTP:   http://%s\n"+
+			"  Web:    http://%s/\n"+
 			"  DB:     %s\n"+
 			"  Agents: %s\n"+
 			"  Help:   agent-hub-server --help\n",
 		timestamp,
-		strings.TrimSpace(listenAddr),
+		addr,
+		addr,
 		strings.TrimSpace(dbPath),
 		strings.TrimSpace(agents),
 	)

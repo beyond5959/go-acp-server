@@ -97,6 +97,14 @@ This checklist defines executable acceptance checks for requirements 1-11.
   - `go test ./internal/httpapi -run TestAgentIdleTTLReclaimsThreadAgent -count=1`
   - `go test ./cmd/agent-hub-server -run TestGracefulShutdownForceCancelsTurns -count=1`
 
+## Requirement 13: Embedded Web UI
+
+- Operation: start server; open browser at `http://127.0.0.1:8686/`.
+- Expected: UI loads, threads can be created, turns stream in real time, permissions can be resolved, history is browsable.
+- Verification command:
+  - `go test ./internal/webui -count=1` (checks `GET /` returns 200 with `text/html` content-type and SPA fallback)
+  - manual: `make run` → open `http://127.0.0.1:8686/` in browser
+
 ## Global Gate
 
 - Operation: run repository checks.

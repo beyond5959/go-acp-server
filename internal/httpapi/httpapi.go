@@ -66,6 +66,9 @@ type Config struct {
 	ContextMaxChars    int
 	CompactMaxChars    int
 	PermissionTimeout  time.Duration
+	// FrontendHandler, if non-nil, is served for any request that does not
+	// match /healthz or /v1/*. Intended for the embedded web UI.
+	FrontendHandler http.Handler
 }
 
 // Server serves the HTTP API.
@@ -83,6 +86,7 @@ type Server struct {
 	contextMaxChars    int
 	compactMaxChars    int
 	permissionTimeout  time.Duration
+	frontendHandler    http.Handler
 
 	permissionsMu sync.Mutex
 	permissions   map[string]*pendingPermission
@@ -196,6 +200,7 @@ func New(cfg Config) *Server {
 		contextMaxChars:    contextMaxChars,
 		compactMaxChars:    compactMaxChars,
 		permissionTimeout:  permissionTimeout,
+		frontendHandler:    cfg.FrontendHandler,
 		permissions:        make(map[string]*pendingPermission),
 		agentsByThread:     make(map[string]*managedAgent),
 		janitorStop:        make(chan struct{}),
@@ -248,6 +253,11 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		s.routeV1(w, r, clientID)
+		return
+	}
+
+	if s.frontendHandler != nil {
+		s.frontendHandler.ServeHTTP(w, r)
 		return
 	}
 

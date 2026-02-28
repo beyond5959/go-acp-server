@@ -20,6 +20,22 @@
 - ADR-016: Remove `--allowed-root` runtime parameter and default to absolute-cwd policy. (Accepted)
 - ADR-017: Human-readable startup summary and request completion access logs. (Accepted)
 
+## ADR-018: Embedded Web UI via Go embed
+
+- Status: Accepted
+- Date: 2026-02-28
+- Context: users need a visual client to interact with the Agent Hub without writing curl commands or building a separate frontend project.
+- Decision:
+  - add a Vite + TypeScript (no framework) frontend under `web/src/`.
+  - build output lands in `web/dist/`, embedded via `//go:embed web/dist` in `internal/webui/webui.go`.
+  - register `GET /` and `GET /assets/*` in `httpapi` (lower priority than all `/v1/*` and `/healthz` routes).
+  - SPA fallback: any non-API path returns `index.html`.
+  - `make build-web` produces the dist; `web/dist` is committed so users without Node.js can still `go build`.
+  - startup summary gains a `Web:` line pointing to the UI URL.
+- Consequences: single-binary distribution with no external file dependencies; Go binary size increases by the size of the minified JS/CSS bundle (~200–400 KB estimated). Build pipeline requires Node.js for frontend changes.
+- Alternatives considered: separate static file directory (requires deployment of two artifacts); WebSocket-only SPA (rejected: SSE already implemented); React/Vue framework (rejected: adds runtime bundle weight and build complexity).
+- Follow-up actions: add `npm run build` to CI pipeline; version-pin Node.js in project tooling docs.
+
 ## ADR Template
 
 Use this template for new decisions.
