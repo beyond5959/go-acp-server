@@ -4,7 +4,7 @@ test:
 	go test ./...
 
 build-web:
-	cd internal/webui/web && npm ci && npm run build
+	cd internal/webui/web && npm install && npm run build
 
 build: build-web
 	go build -o bin/agent-hub-server ./cmd/agent-hub-server
