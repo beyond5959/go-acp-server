@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -168,5 +170,26 @@ func TestGracefulShutdownForceCancelsTurns(t *testing.T) {
 	case <-cancelled:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("turn cancel function was not called")
+	}
+}
+
+func TestPrintStartupSummary(t *testing.T) {
+	var out bytes.Buffer
+	startedAt := time.Date(2026, time.February, 28, 18, 1, 2, 0, time.FixedZone("UTC+8", 8*3600))
+	printStartupSummary(&out, startedAt, "127.0.0.1:8686", "/tmp/agent-hub.db", "Codex (available), Claude Code (unavailable)")
+
+	text := out.String()
+	checks := []string{
+		"Agent Hub Server started",
+		"Time:",
+		"HTTP:   http://127.0.0.1:8686",
+		"DB:     /tmp/agent-hub.db",
+		"Agents: Codex (available), Claude Code (unavailable)",
+		"Help:   agent-hub-server --help",
+	}
+	for _, want := range checks {
+		if !strings.Contains(text, want) {
+			t.Fatalf("startup summary missing %q; got:\n%s", want, text)
+		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -73,7 +74,7 @@ func main() {
 	}
 	agents := supportedAgents(codexAvailable)
 
-	listenAddr, port, err := validateListenAddr(*listenAddrFlag, *allowPublic)
+	listenAddr, _, err := validateListenAddr(*listenAddrFlag, *allowPublic)
 	if err != nil {
 		logger.Error("startup.invalid_listen", "error", err.Error(), "listenAddr", *listenAddrFlag, "allowPublic", *allowPublic)
 		os.Exit(1)
@@ -137,21 +138,8 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	logger.Info(
-		"startup.complete",
-		"startedAt", time.Now().UTC().Format(time.RFC3339Nano),
-		"listenAddr", listenAddr,
-		"port", port,
-		"dbPath", *dbPath,
-		"agents", agents,
-		"allowedRoots", allowedRoots,
-		"codexEmbeddedAvailable", codexAvailable,
-		"codexEmbeddedPreflightError", errorString(codexPreflightErr),
-		"contextRecentTurns", *contextRecentTurns,
-		"contextMaxChars", *contextMaxChars,
-		"compactMaxChars", *compactMaxChars,
-		"agentIdleTTL", agentIdleTTL.String(),
-	)
+	startedAt := time.Now()
+	printStartupSummary(os.Stderr, startedAt, listenAddr, *dbPath, startupAgentSummary(agents))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -179,12 +167,12 @@ func supportedAgents(codexAvailable bool) []httpapi.AgentInfo {
 	return []httpapi.AgentInfo{
 		{
 			ID:     "codex",
-			Name:   "Codex (embedded codex-acp)",
+			Name:   "Codex",
 			Status: codexStatus,
 		},
 		{
 			ID:     "claude",
-			Name:   "Claude (placeholder)",
+			Name:   "Claude Code",
 			Status: "unavailable",
 		},
 	}
@@ -312,9 +300,47 @@ func ensureDBPathParent(dbPath string) error {
 	return nil
 }
 
-func errorString(err error) string {
-	if err == nil {
-		return ""
+func printStartupSummary(out io.Writer, startedAt time.Time, listenAddr, dbPath, agents string) {
+	if out == nil {
+		return
 	}
-	return err.Error()
+	timestamp := startedAt.Local().Format("2006-01-02 15:04:05 MST")
+	if strings.TrimSpace(agents) == "" {
+		agents = "none"
+	}
+	_, _ = fmt.Fprintf(
+		out,
+		"Agent Hub Server started\n"+
+			"  Time:   %s\n"+
+			"  HTTP:   http://%s\n"+
+			"  DB:     %s\n"+
+			"  Agents: %s\n"+
+			"  Help:   agent-hub-server --help\n",
+		timestamp,
+		strings.TrimSpace(listenAddr),
+		strings.TrimSpace(dbPath),
+		strings.TrimSpace(agents),
+	)
+}
+
+func startupAgentSummary(agents []httpapi.AgentInfo) string {
+	if len(agents) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(agents))
+	for _, agent := range agents {
+		name := strings.TrimSpace(agent.Name)
+		if name == "" {
+			name = strings.TrimSpace(agent.ID)
+		}
+		if name == "" {
+			name = "unknown"
+		}
+		status := strings.TrimSpace(agent.Status)
+		if status == "" {
+			status = "unknown"
+		}
+		parts = append(parts, fmt.Sprintf("%s (%s)", name, status))
+	}
+	return strings.Join(parts, ", ")
 }

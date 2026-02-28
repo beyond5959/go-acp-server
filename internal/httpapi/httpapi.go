@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -205,6 +207,13 @@ func New(cfg Config) *Server {
 
 // ServeHTTP handles all HTTP requests.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	startedAt := time.Now()
+	loggingWriter := newLoggingResponseWriter(w)
+	s.serveHTTP(loggingWriter, r)
+	s.logRequestCompletion(r, loggingWriter, startedAt)
+}
+
+func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/healthz" {
 		s.handleHealthz(w, r)
 		return
@@ -243,6 +252,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeError(w, http.StatusNotFound, codeNotFound, "endpoint not found", map[string]any{"path": r.URL.Path})
+}
+
+func (s *Server) logRequestCompletion(r *http.Request, w *loggingResponseWriter, startedAt time.Time) {
+	if s.logger == nil {
+		return
+	}
+
+	s.logger.Info(
+		"http.request.completed",
+		"requestTime", startedAt.UTC().Format(time.RFC3339Nano),
+		"method", r.Method,
+		"path", r.URL.Path,
+		"ip", requestClientIP(r),
+		"statusCode", w.StatusCode(),
+		"durationMs", time.Since(startedAt).Milliseconds(),
+		"responseBytes", w.BytesWritten(),
+	)
 }
 
 func (s *Server) routeV1(w http.ResponseWriter, r *http.Request, clientID string) {
@@ -1567,6 +1593,105 @@ func decodeJSONBody(r *http.Request, dst any) error {
 		return errors.New("extra JSON values are not allowed")
 	}
 	return nil
+}
+
+type loggingResponseWriter struct {
+	http.ResponseWriter
+	statusCode   int
+	bytesWritten int
+}
+
+func newLoggingResponseWriter(w http.ResponseWriter) *loggingResponseWriter {
+	return &loggingResponseWriter{
+		ResponseWriter: w,
+		statusCode:     0,
+		bytesWritten:   0,
+	}
+}
+
+func (w *loggingResponseWriter) WriteHeader(statusCode int) {
+	if w.statusCode == 0 {
+		w.statusCode = statusCode
+	}
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *loggingResponseWriter) Write(body []byte) (int, error) {
+	if w.statusCode == 0 {
+		w.statusCode = http.StatusOK
+	}
+	n, err := w.ResponseWriter.Write(body)
+	w.bytesWritten += n
+	return n, err
+}
+
+func (w *loggingResponseWriter) StatusCode() int {
+	if w.statusCode == 0 {
+		return http.StatusOK
+	}
+	return w.statusCode
+}
+
+func (w *loggingResponseWriter) BytesWritten() int {
+	return w.bytesWritten
+}
+
+func (w *loggingResponseWriter) Flush() {
+	flusher, ok := w.ResponseWriter.(http.Flusher)
+	if !ok {
+		return
+	}
+	flusher.Flush()
+}
+
+func (w *loggingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("response writer does not support hijacking")
+	}
+	return hijacker.Hijack()
+}
+
+func (w *loggingResponseWriter) Push(target string, opts *http.PushOptions) error {
+	pusher, ok := w.ResponseWriter.(http.Pusher)
+	if !ok {
+		return http.ErrNotSupported
+	}
+	return pusher.Push(target, opts)
+}
+
+func (w *loggingResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func requestClientIP(r *http.Request) string {
+	if r == nil {
+		return "unknown"
+	}
+
+	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+		parts := strings.Split(xff, ",")
+		if len(parts) > 0 {
+			if ip := strings.TrimSpace(parts[0]); ip != "" {
+				return ip
+			}
+		}
+	}
+
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+		return realIP
+	}
+
+	remoteAddr := strings.TrimSpace(r.RemoteAddr)
+	if remoteAddr == "" {
+		return "unknown"
+	}
+
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+	return remoteAddr
 }
 
 func (s *Server) isAuthorized(r *http.Request) bool {

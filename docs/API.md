@@ -10,6 +10,18 @@ This document defines the current HTTP API contract.
 - Optional auth switch:
   - if server starts with `--auth-token=<token>`, `/v1/*` also requires `Authorization: Bearer <token>`.
 
+## Runtime Logging Conventions
+
+- Startup prints a human-readable multi-line summary on `stderr` with `Time`, `HTTP`, `DB`, `Agents`, and `Help`.
+- Every HTTP request emits one structured completion log entry (`http.request.completed`) with:
+  - `requestTime`
+  - `method`
+  - `path`
+  - `ip`
+  - `statusCode`
+  - `durationMs`
+  - `responseBytes`
+
 ## Unified Error Envelope
 
 All errors use:
@@ -49,12 +61,12 @@ All errors use:
   "agents": [
     {
       "id": "codex",
-      "name": "Codex (current built-in ACP provider)",
+      "name": "Codex",
       "status": "available"
     },
     {
       "id": "claude",
-      "name": "Claude (placeholder)",
+      "name": "Claude Code",
       "status": "unavailable"
     }
   ]

@@ -66,19 +66,20 @@ This checklist defines executable acceptance checks for requirements 1-11.
 
 ## Requirement 9: Startup logging contract
 
-- Operation: start server and inspect startup JSON logs.
-- Expected: log includes `startedAt`, `listenAddr`, `port`, `dbPath`, `allowedRoots`, `agents`.
+- Operation: start server and inspect startup output on stderr.
+- Expected: startup summary is multi-line, human-readable, and includes `Time`, `HTTP`, `DB`, `Agents`, and `Help`.
 - Verification command:
   - `go test ./cmd/agent-hub-server -count=1`
   - manual run: `go run ./cmd/agent-hub-server --listen 127.0.0.1:8686`
 
 ## Requirement 10: Unified errors and structured logs
 
-- Operation: trigger auth failure and path policy failure.
-- Expected: `UNAUTHORIZED` and `FORBIDDEN` error envelopes are stable.
+- Operation: trigger auth failure/path policy failure and inspect request completion logs.
+- Expected: `UNAUTHORIZED` and `FORBIDDEN` error envelopes are stable; request logs include `requestTime`, `path`, `ip`, and `statusCode`.
 - Verification command:
   - `go test ./internal/httpapi -run TestV1AuthToggle -count=1`
   - `go test ./internal/httpapi -run TestCreateThreadValidationCWDAllowedRoots -count=1`
+  - `go test ./internal/httpapi -run TestRequestCompletionLogIncludesPathIPAndStatus -count=1`
 
 ## Requirement 11: Context window and compact
 
