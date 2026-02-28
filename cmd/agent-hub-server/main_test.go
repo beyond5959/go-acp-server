@@ -5,11 +5,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/example/code-agent-hub-server/internal/runtime"
+	"github.com/beyond5959/go-acp-server/internal/runtime"
 )
 
 func TestValidateListenAddr(t *testing.T) {
@@ -76,78 +77,74 @@ func TestValidateListenAddr(t *testing.T) {
 }
 
 func TestResolveAllowedRoots(t *testing.T) {
-	t.Run("default to cwd when empty", func(t *testing.T) {
-		roots, err := resolveAllowedRoots(nil)
-		if err != nil {
-			t.Fatalf("resolveAllowedRoots(nil) unexpected error: %v", err)
-		}
-		if got, want := len(roots), 1; got != want {
-			t.Fatalf("len(roots) = %d, want %d", got, want)
-		}
-		if !filepath.IsAbs(roots[0]) {
-			t.Fatalf("root %q is not absolute", roots[0])
-		}
-	})
-
-	t.Run("reject non-absolute root", func(t *testing.T) {
-		_, err := resolveAllowedRoots([]string{"relative/root"})
-		if err == nil {
-			t.Fatalf("resolveAllowedRoots should fail for non-absolute root")
-		}
-	})
-}
-
-func TestResolveCodexACPConfig(t *testing.T) {
-	t.Run("empty bin means unconfigured", func(t *testing.T) {
-		cfg, err := resolveCodexACPConfig("", "")
-		if err != nil {
-			t.Fatalf("resolveCodexACPConfig() unexpected error: %v", err)
-		}
-		if cfg.Bin != "" {
-			t.Fatalf("cfg.Bin = %q, want empty", cfg.Bin)
-		}
-		if len(cfg.Args) != 0 {
-			t.Fatalf("len(cfg.Args) = %d, want 0", len(cfg.Args))
-		}
-	})
-
-	t.Run("reject non absolute bin", func(t *testing.T) {
-		_, err := resolveCodexACPConfig("relative/codex-acp-go", "")
-		if err == nil {
-			t.Fatalf("resolveCodexACPConfig should fail for non-absolute bin path")
-		}
-	})
-
-	t.Run("parse absolute bin and args", func(t *testing.T) {
-		cfg, err := resolveCodexACPConfig("/tmp/codex-acp-go", "--foo bar --enable")
-		if err != nil {
-			t.Fatalf("resolveCodexACPConfig() unexpected error: %v", err)
-		}
-		if cfg.Bin != "/tmp/codex-acp-go" {
-			t.Fatalf("cfg.Bin = %q, want %q", cfg.Bin, "/tmp/codex-acp-go")
-		}
-		if got, want := len(cfg.Args), 3; got != want {
-			t.Fatalf("len(cfg.Args) = %d, want %d", got, want)
-		}
-	})
+	roots, err := resolveAllowedRoots()
+	if err != nil {
+		t.Fatalf("resolveAllowedRoots() unexpected error: %v", err)
+	}
+	if got, want := len(roots), 1; got != want {
+		t.Fatalf("len(roots) = %d, want %d", got, want)
+	}
+	if !filepath.IsAbs(roots[0]) {
+		t.Fatalf("root %q is not absolute", roots[0])
+	}
 }
 
 func TestSupportedAgentsCodexStatus(t *testing.T) {
-	agentsWithoutBin := supportedAgents("")
-	if len(agentsWithoutBin) == 0 {
+	agentsUnavailable := supportedAgents(false)
+	if len(agentsUnavailable) == 0 {
 		t.Fatalf("supportedAgents returned empty list")
 	}
-	if agentsWithoutBin[0].ID != "codex" {
-		t.Fatalf("agents[0].ID = %q, want %q", agentsWithoutBin[0].ID, "codex")
+	if agentsUnavailable[0].ID != "codex" {
+		t.Fatalf("agents[0].ID = %q, want %q", agentsUnavailable[0].ID, "codex")
 	}
-	if agentsWithoutBin[0].Status != "unconfigured" {
-		t.Fatalf("codex status without bin = %q, want %q", agentsWithoutBin[0].Status, "unconfigured")
+	if agentsUnavailable[0].Status != "unavailable" {
+		t.Fatalf("codex unavailable status = %q, want %q", agentsUnavailable[0].Status, "unavailable")
 	}
 
-	agentsWithBin := supportedAgents("/tmp/codex-acp-go")
-	if agentsWithBin[0].Status != "available" {
-		t.Fatalf("codex status with bin = %q, want %q", agentsWithBin[0].Status, "available")
+	agentsAvailable := supportedAgents(true)
+	if agentsAvailable[0].Status != "available" {
+		t.Fatalf("codex available status = %q, want %q", agentsAvailable[0].Status, "available")
 	}
+}
+
+func TestResolveDefaultDBPath(t *testing.T) {
+	const home = "/tmp/test-home-db-default"
+	t.Setenv("HOME", home)
+
+	got, err := resolveDefaultDBPath()
+	if err != nil {
+		t.Fatalf("resolveDefaultDBPath() unexpected error: %v", err)
+	}
+
+	want := filepath.Join(home, ".go-agent-server", "agent-hub.db")
+	if got != want {
+		t.Fatalf("resolveDefaultDBPath() = %q, want %q", got, want)
+	}
+}
+
+func TestEnsureDBPathParent(t *testing.T) {
+	t.Run("create nested parent dir", func(t *testing.T) {
+		tmp := t.TempDir()
+		dbPath := filepath.Join(tmp, "nested", "dir", "agent-hub.db")
+		if err := ensureDBPathParent(dbPath); err != nil {
+			t.Fatalf("ensureDBPathParent(%q) unexpected error: %v", dbPath, err)
+		}
+
+		parent := filepath.Dir(dbPath)
+		info, err := os.Stat(parent)
+		if err != nil {
+			t.Fatalf("os.Stat(%q): %v", parent, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("parent %q is not a directory", parent)
+		}
+	})
+
+	t.Run("reject empty path", func(t *testing.T) {
+		if err := ensureDBPathParent("   "); err == nil {
+			t.Fatalf("ensureDBPathParent should fail for empty path")
+		}
+	})
 }
 
 func TestGracefulShutdownForceCancelsTurns(t *testing.T) {

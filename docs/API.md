@@ -39,9 +39,9 @@ All errors use:
 
 2. `GET /v1/agents`
 - Headers: `X-Client-ID` (required), optional bearer auth if enabled.
-- `codex` status contract:
-  - when `--codex-acp-go-bin` is not configured: `unconfigured`
-  - when `--codex-acp-go-bin` is configured: `available`
+- agent status contract:
+  - each agent entry reports readiness as `available|unavailable`.
+  - current built-in runtime implementation is `codex`; additional ACP-compatible agent ids may appear as unavailable placeholders until integrated.
 - Response `200`:
 
 ```json
@@ -49,8 +49,8 @@ All errors use:
   "agents": [
     {
       "id": "codex",
-      "name": "Codex (via codex-acp-go)",
-      "status": "unconfigured"
+      "name": "Codex (current built-in ACP provider)",
+      "status": "available"
     },
     {
       "id": "claude",
@@ -67,7 +67,7 @@ All errors use:
 
 ```json
 {
-  "agent": "codex",
+  "agent": "<agent-id>",
   "cwd": "/abs/path",
   "title": "optional",
   "agentOptions": {
@@ -77,9 +77,9 @@ All errors use:
 ```
 
 - Validation:
-  - `agent` must be in allowlist (M4: `codex`).
+  - `agent` must be in allowlist (currently `codex`; more ACP-compatible agents planned).
   - `cwd` must be absolute.
-  - `cwd` must be under configured allowed roots.
+  - server default policy accepts any absolute `cwd`.
   - create thread only persists row; no agent process is started.
 
 - Response `200`:
@@ -99,7 +99,7 @@ All errors use:
   "threads": [
     {
       "threadId": "th_...",
-      "agent": "codex",
+      "agent": "<agent-id>",
       "cwd": "/abs/path",
       "title": "optional",
       "agentOptions": {},
@@ -121,7 +121,7 @@ All errors use:
 {
   "thread": {
     "threadId": "th_...",
-    "agent": "codex",
+    "agent": "<agent-id>",
     "cwd": "/abs/path",
     "title": "optional",
     "agentOptions": {},

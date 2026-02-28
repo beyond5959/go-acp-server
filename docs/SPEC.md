@@ -7,6 +7,7 @@ Build a local-first Code Agent Hub Server that:
 - serves HTTP/JSON APIs.
 - streams turn events via SSE (`text/event-stream`).
 - supports multi-client and multi-thread execution.
+- is designed to support ACP-compatible agents (for example Claude Code, Gemini, OpenCode, Codex).
 - persists interaction state/events in SQLite.
 - forwards runtime permissions to the owning client with fail-closed behavior.
 
@@ -16,7 +17,7 @@ Modules:
 
 - `internal/httpapi`: routing, request validation, response/error encoding.
 - `internal/runtime`: thread controller, turn state machine, cancellation coordination.
-- `internal/agents`: agent providers (fake, ACP stdio, codex), plus context-bound permission callback bridge.
+- `internal/agents`: agent providers (fake + ACP-compatible implementations), plus context-bound permission callback bridge.
   - per-turn provider resolution selects implementation by thread metadata (agent id + cwd).
 - `internal/context`: prompt injection strategy assembled in HTTP/runtime path from summary + recent turns + current input.
 - `internal/sse`: event formatting, stream fanout, resume helpers.
@@ -35,8 +36,8 @@ Modules:
 
 - On server boot: no agent process is started.
 - On first thread usage: runtime requests provider instance for that thread.
-- On first turn execution for codex thread: server creates ACP stdio client and starts `codex-acp-go` process.
-- ACP process working directory is `thread.cwd` (already validated against allowed roots at thread creation).
+- On first turn execution for embedded-provider thread (currently `codex`): server creates the in-process runtime and initializes ACP session lazily.
+- Embedded runtime `session/new` is created with `cwd=thread.cwd` (validated as absolute path at thread creation).
 - Provider instances are cached per thread and reclaimed by idle TTL (`--agent-idle-ttl`) when thread has no active turn.
 
 ## 5. Permission Bridge
@@ -100,7 +101,7 @@ See `docs/API.md` for endpoint and schema contracts.
 - public bind only when `--allow-public=true`.
 - strict input validation:
   - agent must be allowlisted.
-  - cwd absolute and inside allowed roots.
+  - cwd must be absolute.
 - logs are JSON on stderr and redact sensitive data.
 - HTTP payloads contain protocol data only.
 

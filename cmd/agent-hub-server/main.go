@@ -16,36 +16,35 @@ import (
 	"syscall"
 	"time"
 
-	agentimpl "github.com/example/code-agent-hub-server/internal/agents"
-	acpagent "github.com/example/code-agent-hub-server/internal/agents/acp"
-	"github.com/example/code-agent-hub-server/internal/httpapi"
-	"github.com/example/code-agent-hub-server/internal/runtime"
-	"github.com/example/code-agent-hub-server/internal/storage"
+	agentimpl "github.com/beyond5959/go-acp-server/internal/agents"
+	codexagent "github.com/beyond5959/go-acp-server/internal/agents/codex"
+	"github.com/beyond5959/go-acp-server/internal/httpapi"
+	"github.com/beyond5959/go-acp-server/internal/runtime"
+	"github.com/beyond5959/go-acp-server/internal/storage"
 )
 
 func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+
+	defaultDBPath, err := resolveDefaultDBPath()
+	if err != nil {
+		logger.Error("startup.default_db_path_resolve_failed", "error", err.Error())
+		os.Exit(1)
+	}
+
 	listenAddrFlag := flag.String("listen", "127.0.0.1:8686", "server listen address")
 	allowPublic := flag.Bool("allow-public", false, "allow listening on public interfaces")
 	authToken := flag.String("auth-token", "", "optional bearer token for /v1/* endpoints")
-	dbPath := flag.String("db-path", "./agent-hub.db", "sqlite database path")
-	codexACPGoBin := flag.String("codex-acp-go-bin", "", "absolute path to codex-acp-go binary")
-	codexACPGoArgs := flag.String("codex-acp-go-args", "", "optional codex-acp-go args, split by whitespace")
+	dbPath := flag.String("db-path", defaultDBPath, "sqlite database path")
 	contextRecentTurns := flag.Int("context-recent-turns", 10, "number of recent user+assistant turns injected into each prompt")
 	contextMaxChars := flag.Int("context-max-chars", 20000, "maximum character budget for injected context prompt")
 	compactMaxChars := flag.Int("compact-max-chars", 4000, "maximum summary characters produced by compact endpoint")
 	agentIdleTTL := flag.Duration("agent-idle-ttl", 5*time.Minute, "idle TTL before closing cached thread agent provider")
 	shutdownGraceTimeout := flag.Duration("shutdown-grace-timeout", 8*time.Second, "graceful shutdown timeout for active turns")
-
-	var allowedRootsFlag stringListFlag
-	flag.Var(&allowedRootsFlag, "allowed-root", "allowed workspace root (repeatable)")
 	flag.Parse()
 
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	codexCfg, err := resolveCodexACPConfig(*codexACPGoBin, *codexACPGoArgs)
-	if err != nil {
-		logger.Error("startup.invalid_codex_acp_config", "error", err.Error())
-		os.Exit(1)
-	}
+	codexRuntimeConfig := codexagent.DefaultRuntimeConfig()
+	codexPreflightErr := codexagent.Preflight(codexRuntimeConfig)
 
 	if *contextRecentTurns <= 0 {
 		logger.Error("startup.invalid_context_recent_turns", "value", *contextRecentTurns)
@@ -68,7 +67,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	agents := supportedAgents(codexCfg.Bin)
+	codexAvailable := codexPreflightErr == nil
+	if codexPreflightErr != nil {
+		logger.Warn("startup.codex_embedded_unavailable", "error", codexPreflightErr.Error())
+	}
+	agents := supportedAgents(codexAvailable)
 
 	listenAddr, port, err := validateListenAddr(*listenAddrFlag, *allowPublic)
 	if err != nil {
@@ -76,9 +79,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	allowedRoots, err := resolveAllowedRoots(allowedRootsFlag)
+	allowedRoots, err := resolveAllowedRoots()
 	if err != nil {
 		logger.Error("startup.invalid_allowed_roots", "error", err.Error())
+		os.Exit(1)
+	}
+	if err := ensureDBPathParent(*dbPath); err != nil {
+		logger.Error("startup.invalid_db_path", "error", err.Error(), "dbPath", *dbPath)
 		os.Exit(1)
 	}
 
@@ -106,15 +113,10 @@ func main() {
 				return nil, fmt.Errorf("unsupported thread agent %q", thread.AgentID)
 			}
 
-			if codexCfg.Bin == "" {
-				return nil, errors.New("codex provider is unconfigured: set --codex-acp-go-bin")
-			}
-
-			return acpagent.New(acpagent.Config{
-				Command: codexCfg.Bin,
-				Args:    codexCfg.Args,
-				Dir:     thread.CWD,
-				Name:    "codex-acp-go",
+			return codexagent.New(codexagent.Config{
+				Dir:           thread.CWD,
+				Name:          "codex-embedded",
+				RuntimeConfig: codexRuntimeConfig,
 			})
 		},
 		ContextRecentTurns: *contextRecentTurns,
@@ -143,7 +145,8 @@ func main() {
 		"dbPath", *dbPath,
 		"agents", agents,
 		"allowedRoots", allowedRoots,
-		"codexACPGoBinConfigured", codexCfg.Bin != "",
+		"codexEmbeddedAvailable", codexAvailable,
+		"codexEmbeddedPreflightError", errorString(codexPreflightErr),
 		"contextRecentTurns", *contextRecentTurns,
 		"contextMaxChars", *contextMaxChars,
 		"compactMaxChars", *compactMaxChars,
@@ -167,16 +170,16 @@ func main() {
 	logger.Info("shutdown.complete", "stoppedAt", time.Now().UTC().Format(time.RFC3339Nano))
 }
 
-func supportedAgents(codexBin string) []httpapi.AgentInfo {
-	codexStatus := "unconfigured"
-	if strings.TrimSpace(codexBin) != "" {
+func supportedAgents(codexAvailable bool) []httpapi.AgentInfo {
+	codexStatus := "unavailable"
+	if codexAvailable {
 		codexStatus = "available"
 	}
 
 	return []httpapi.AgentInfo{
 		{
 			ID:     "codex",
-			Name:   "Codex (via codex-acp-go)",
+			Name:   "Codex (embedded codex-acp)",
 			Status: codexStatus,
 		},
 		{
@@ -216,37 +219,6 @@ func validateListenAddr(listenAddr string, allowPublic bool) (string, int, error
 	}
 
 	return listenAddr, port, nil
-}
-
-type codexACPConfig struct {
-	Bin  string
-	Args []string
-}
-
-func resolveCodexACPConfig(binPath, argsText string) (codexACPConfig, error) {
-	binPath = strings.TrimSpace(binPath)
-	if binPath == "" {
-		return codexACPConfig{}, nil
-	}
-	if !filepath.IsAbs(binPath) {
-		return codexACPConfig{}, fmt.Errorf("--codex-acp-go-bin must be absolute: %q", binPath)
-	}
-
-	cleanBin := filepath.Clean(binPath)
-	args := parseCommandArgs(argsText)
-
-	return codexACPConfig{
-		Bin:  cleanBin,
-		Args: args,
-	}, nil
-}
-
-func parseCommandArgs(raw string) []string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-	return strings.Fields(raw)
 }
 
 func gracefulShutdown(
@@ -305,49 +277,44 @@ func gracefulShutdown(
 	logger.Info("shutdown.turns_drained_after_force_cancel")
 }
 
-func resolveAllowedRoots(configured []string) ([]string, error) {
-	if len(configured) == 0 {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("resolve default allowed root from cwd: %w", err)
-		}
-		return []string{filepath.Clean(cwd)}, nil
+func resolveAllowedRoots() ([]string, error) {
+	root := filepath.Clean(string(filepath.Separator))
+	if !filepath.IsAbs(root) {
+		return nil, fmt.Errorf("resolved root is not absolute: %q", root)
 	}
-
-	roots := make([]string, 0, len(configured))
-	seen := make(map[string]struct{}, len(configured))
-	for _, root := range configured {
-		root = strings.TrimSpace(root)
-		if root == "" {
-			continue
-		}
-		if !filepath.IsAbs(root) {
-			return nil, fmt.Errorf("allowed root must be absolute: %q", root)
-		}
-		cleaned := filepath.Clean(root)
-		if _, ok := seen[cleaned]; ok {
-			continue
-		}
-		seen[cleaned] = struct{}{}
-		roots = append(roots, cleaned)
-	}
-
-	if len(roots) == 0 {
-		return nil, errors.New("allowed roots resolved to empty set")
-	}
-	return roots, nil
+	return []string{root}, nil
 }
 
-type stringListFlag []string
+func resolveDefaultDBPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user home dir: %w", err)
+	}
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return "", errors.New("user home dir is empty")
+	}
+	return filepath.Join(home, ".go-agent-server", "agent-hub.db"), nil
+}
 
-func (s *stringListFlag) String() string {
-	if s == nil {
+func ensureDBPathParent(dbPath string) error {
+	path := strings.TrimSpace(dbPath)
+	if path == "" {
+		return errors.New("db path is empty")
+	}
+	parent := filepath.Dir(filepath.Clean(path))
+	if parent == "." {
+		return nil
+	}
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("create db parent dir %q: %w", parent, err)
+	}
+	return nil
+}
+
+func errorString(err error) string {
+	if err == nil {
 		return ""
 	}
-	return strings.Join(*s, ",")
-}
-
-func (s *stringListFlag) Set(value string) error {
-	*s = append(*s, value)
-	return nil
+	return err.Error()
 }

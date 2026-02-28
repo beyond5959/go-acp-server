@@ -44,12 +44,12 @@
 
 - ID: KI-004
 - Title: `cwd` validation false positives
-- Status: Open
+- Status: Closed
 - Severity: Low
-- Affects: symlink-heavy workspace layouts
-- Symptom: valid paths rejected as outside allowed roots
-- Workaround: resolve and compare canonical paths using evaluated symlinks
-- Follow-up plan: add canonicalization tests in M3
+- Affects: legacy deployments that used restrictive allow-root policies
+- Symptom: historical issue where valid paths could be rejected as outside allowed roots
+- Workaround: N/A after ADR-016 default absolute-cwd policy
+- Follow-up plan: none
 
 - ID: KI-005
 - Title: External agent process crash
@@ -70,13 +70,13 @@
 - Follow-up plan: add explicit `permission_resolved` event with reason (`timeout|disconnect|client_decision`)
 
 - ID: KI-007
-- Title: Codex binary path misconfiguration
+- Title: Embedded codex runtime prerequisite mismatch
 - Status: Open
 - Severity: Medium
-- Affects: deployments enabling codex runtime provider
-- Symptom: codex turn creation fails at runtime with provider resolution/start errors
-- Workaround: set absolute `--codex-acp-go-bin` path and verify executable permissions before startup
-- Follow-up plan: add proactive startup preflight check for configured codex binary
+- Affects: deployments enabling embedded codex provider
+- Symptom: codex turns fail when `codex app-server` prerequisites/auth/environment are not ready even though server binary is correctly configured
+- Workaround: verify codex CLI/app-server availability and auth state before issuing codex turns; inspect startup preflight and turn error logs
+- Follow-up plan: add richer preflight diagnostics and compatibility matrix checks for codex CLI vs linked `codex-acp` module versions
 
 - ID: KI-008
 - Title: Character-based context budgeting can diverge from token budgets
@@ -86,3 +86,12 @@
 - Symptom: prompt fits `context-max-chars` but may still be too large for model token limits
 - Workaround: reduce `--context-max-chars` conservatively and run compact more frequently
 - Follow-up plan: replace char-based policy with model-aware token estimation in M8
+
+- ID: KI-009
+- Title: Embedded codex local state/schema drift warnings
+- Status: Open
+- Severity: Medium
+- Affects: real local embedded codex runs that depend on user `~/.codex` state and app-server version capabilities
+- Symptom: stderr may show warnings like `state_5.sqlite migration ... missing` and endpoint compatibility errors such as `mcpServer/call unknown variant`; turn usually still completes but tool output can be empty
+- Workaround: align local codex CLI/app-server version with linked `codex-acp` schema expectations, and repair/reset local codex state DB when migration drift appears
+- Follow-up plan: add explicit diagnostics/preflight endpoint to surface local state/schema compatibility before turn execution

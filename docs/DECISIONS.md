@@ -11,9 +11,13 @@
 - ADR-007: M3 thread API tenancy and path policy. (Accepted)
 - ADR-008: M4 turn streaming over SSE with persisted event log. (Accepted)
 - ADR-009: M5 ACP stdio provider and permission bridge. (Accepted)
-- ADR-010: M6 codex-acp-go runtime wiring. (Accepted)
+- ADR-010: M6 codex-acp-go runtime wiring. (Superseded)
 - ADR-011: M7 context window injection and compact policy. (Accepted)
 - ADR-012: M8 reliability alignment (TTL, shutdown, error codes). (Accepted)
+- ADR-013: Canonical Go module path finalization. (Accepted)
+- ADR-014: Codex provider migration from sidecar binary to embedded library. (Accepted)
+- ADR-015: First-turn prompt passthrough for slash-command compatibility in embedded codex mode. (Accepted)
+- ADR-016: Remove `--allowed-root` runtime parameter and default to absolute-cwd policy. (Accepted)
 
 ## ADR Template
 
@@ -96,7 +100,7 @@ Use this template for new decisions.
 
 ## ADR-007: M3 Thread API Tenancy and Path Policy
 
-- Status: Accepted
+- Status: Superseded by ADR-016
 - Date: 2026-02-28
 - Context: thread APIs introduce per-client resource ownership and filesystem-scoped execution context.
 - Decision:
@@ -140,7 +144,7 @@ Use this template for new decisions.
 
 ## ADR-010: M6 Codex-ACP-Go Runtime Wiring
 
-- Status: Accepted
+- Status: Superseded by ADR-014
 - Date: 2026-02-28
 - Context: M6 needs real codex provider enablement while keeping default tests stable in environments without codex binaries.
 - Decision:
@@ -184,3 +188,65 @@ Use this template for new decisions.
 - Consequences: operational behavior is predictable under contention, disconnects, and process lifecycle transitions.
 - Alternatives considered: no idle janitor (manual cleanup only), immediate hard shutdown without grace period, preserving non-unified legacy error codes.
 - Follow-up actions: optional enhancements after M8 include WebSocket transport, paginated history, RBAC, and audit expansion.
+
+## ADR-013: Canonical Go Module Path Finalization
+
+- Status: Accepted
+- Date: 2026-02-28
+- Context: repository ownership and canonical GitHub path are now stable (`github.com/beyond5959/go-acp-server`), while source imports still used a placeholder module path.
+- Decision:
+  - set `go.mod` module path to `github.com/beyond5959/go-acp-server`.
+  - update all in-repo imports from `github.com/example/code-agent-hub-server/...` to canonical module path.
+- Consequences: local builds/tests and downstream module consumers resolve a single stable import path; placeholder path drift is removed.
+- Alternatives considered: keep placeholder path longer and defer until post-release.
+- Follow-up actions: ensure any external examples/scripts use canonical import path only.
+
+## ADR-014: Codex Provider Migration to Embedded Library
+
+- Status: Accepted
+- Date: 2026-02-28
+- Context: sidecar mode required user-facing binary path configuration (`--codex-acp-go-bin`) and made deployment ergonomics/error modes depend on path wiring.
+- Decision:
+  - replace codex turn execution from external `codex-acp-go` process spawning to in-process `github.com/beyond5959/codex-acp/pkg/codexacp` embedded runtime.
+  - remove user-facing codex binary path flags; server now links codex-acp library directly.
+  - keep lazy startup and per-thread isolation by creating one embedded runtime per thread provider on first turn.
+  - keep existing HTTP/SSE/permission/history contracts unchanged; permission round-trip remains fail-closed.
+  - set `/v1/agents` codex status by embedded runtime preflight (`available`/`unavailable`) instead of path-config presence.
+- Consequences: simpler operator UX and fewer path misconfiguration failures; server binary is now more tightly coupled to codex-acp module/runtime behavior.
+- Alternatives considered: keep sidecar-only mode; dual mode (embedded + sidecar fallback).
+- Follow-up actions: define codex-acp version pin/upgrade policy and add compatibility smoke checks across codex CLI/app-server versions.
+
+## ADR-015: First-Turn Prompt Passthrough for Embedded Slash Commands
+
+- Status: Accepted
+- Date: 2026-02-28
+- Context: context-window injection always wrapped prompts with `[Conversation Summary]` / `[Recent Turns]` / `[Current User Input]`, which masked first-turn slash commands (for example `/mcp call`) in embedded codex-acp flows.
+- Decision:
+  - keep context wrapper for normal multi-turn continuity.
+  - when `summary == ""` and there are no visible recent turns, pass through raw `currentInput` (still bounded by `context-max-chars`) instead of wrapping.
+- Consequences:
+  - first-turn slash commands remain functional in embedded mode, enabling deterministic permission round-trip validation (`approved` / `declined`).
+  - first-turn request text persisted in history no longer includes synthetic wrapper headings.
+- Alternatives considered:
+  - parse wrapped `[Current User Input]` inside codex-acp slash-command parser.
+  - keep always-wrapped behavior and accept slash-command incompatibility.
+- Follow-up actions:
+  - evaluate an explicit API-level raw-input toggle if future providers need slash-command compatibility beyond first turn.
+
+## ADR-016: Remove `--allowed-root` Runtime Parameter
+
+- Status: Accepted
+- Date: 2026-02-28
+- Context: operators requested simpler startup without path allowlist configuration and required that `cwd` can be any user-specified absolute directory.
+- Decision:
+  - remove CLI flag `--allowed-root`.
+  - server startup now configures allowed-roots internally as filesystem root.
+  - keep `cwd` validation for absolute path only and retain tenancy/ownership rules.
+- Consequences:
+  - simpler startup and fewer configuration errors.
+  - path-boundary restriction is effectively disabled in default runtime behavior.
+- Alternatives considered:
+  - keep `--allowed-root` and add a separate opt-out flag.
+  - preserve strict allowlist-only behavior.
+- Follow-up actions:
+  - evaluate policy controls (for example opt-in restrictive mode) if deployments need stronger path boundaries.

@@ -12,6 +12,7 @@ This repository implements the Code Agent Hub Server.
   - `agent` must be in server allowlist.
   - `cwd` must be an absolute path.
   - `cwd` must be inside configured allowed roots, otherwise reject.
+- MUST run codex provider in embedded mode (`github.com/beyond5959/codex-acp/pkg/codexacp`), not via user-supplied external binary path flags.
 - MUST enforce concurrency model:
   - one active turn per thread at a time.
   - cancel must take effect quickly.

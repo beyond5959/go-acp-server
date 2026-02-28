@@ -18,10 +18,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/example/code-agent-hub-server/internal/agents"
-	"github.com/example/code-agent-hub-server/internal/agents/acp"
-	runtimectl "github.com/example/code-agent-hub-server/internal/runtime"
-	"github.com/example/code-agent-hub-server/internal/storage"
+	"github.com/beyond5959/go-acp-server/internal/agents"
+	"github.com/beyond5959/go-acp-server/internal/agents/acp"
+	runtimectl "github.com/beyond5959/go-acp-server/internal/runtime"
+	"github.com/beyond5959/go-acp-server/internal/storage"
 )
 
 func TestHealthz(t *testing.T) {
@@ -70,6 +70,12 @@ func TestV1Agents(t *testing.T) {
 	}
 	if body.Agents[0].ID != "codex" {
 		t.Fatalf("agents[0].id = %q, want %q", body.Agents[0].ID, "codex")
+	}
+	if got := body.Agents[0].Status; got != "available" && got != "unavailable" {
+		t.Fatalf("agents[0].status = %q, want available|unavailable", got)
+	}
+	if body.Agents[0].Status == "unconfigured" {
+		t.Fatalf("agents[0].status must not be unconfigured")
 	}
 }
 
@@ -306,6 +312,37 @@ func TestTurnsSSEAndHistory(t *testing.T) {
 	}
 	if len(history.Turns[0].Events) < 3 {
 		t.Fatalf("history events count = %d, want >=3", len(history.Turns[0].Events))
+	}
+}
+
+func TestCodexTurnWorksWithoutBinaryPathConfig(t *testing.T) {
+	root := t.TempDir()
+	h := newTestServer(t, testServerOptions{allowedRoots: []string{root}})
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	threadID := createThreadHTTP(t, ts.URL, "client-a", root)
+	result := runTurnStreamRequest(t, ts.URL, "client-a", threadID, "hello without codex binary path config")
+	if result.StatusCode != http.StatusOK {
+		t.Fatalf("turn stream status = %d, want %d", result.StatusCode, http.StatusOK)
+	}
+
+	events := parseSSEEvents(t, result.Body)
+	seenDelta := false
+	seenCompleted := false
+	for _, ev := range events {
+		if ev.Event == "message_delta" && stringField(ev.Data, "delta") != "" {
+			seenDelta = true
+		}
+		if ev.Event == "turn_completed" {
+			seenCompleted = true
+		}
+	}
+	if !seenDelta {
+		t.Fatalf("expected at least one message_delta event")
+	}
+	if !seenCompleted {
+		t.Fatalf("expected turn_completed event")
 	}
 }
 
@@ -749,6 +786,20 @@ func TestInjectedPromptIncludesSummaryAndRecent(t *testing.T) {
 	}
 }
 
+func TestComposeContextPromptFirstTurnPassThrough(t *testing.T) {
+	input := "/mcp call demo_server demo_tool {}"
+
+	got := composeContextPrompt("", nil, input, 1024)
+	if got != input {
+		t.Fatalf("first-turn prompt = %q, want %q", got, input)
+	}
+
+	truncated := composeContextPrompt("", nil, input, 12)
+	if truncated != input[:12] {
+		t.Fatalf("first-turn truncation = %q, want %q", truncated, input[:12])
+	}
+}
+
 func TestCompactUpdatesSummaryAndAffectsNextTurn(t *testing.T) {
 	root := t.TempDir()
 	h := newTestServer(t, testServerOptions{allowedRoots: []string{root}})
@@ -907,7 +958,7 @@ func newTestServer(t *testing.T, opt testServerOptions) *Server {
 	server := New(Config{
 		AuthToken: opt.authToken,
 		Agents: []AgentInfo{
-			{ID: "codex", Name: "Codex (via codex-acp-go)", Status: "unconfigured"},
+			{ID: "codex", Name: "Codex (embedded codex-acp)", Status: "available"},
 			{ID: "claude", Name: "Claude (placeholder)", Status: "unavailable"},
 		},
 		AllowedAgentIDs:   []string{"codex"},
@@ -954,7 +1005,7 @@ func newTestServerWithDBPath(t *testing.T, dbPath string, opt testServerOptions)
 	server := New(Config{
 		AuthToken: opt.authToken,
 		Agents: []AgentInfo{
-			{ID: "codex", Name: "Codex (via codex-acp-go)", Status: "unconfigured"},
+			{ID: "codex", Name: "Codex (embedded codex-acp)", Status: "available"},
 			{ID: "claude", Name: "Claude (placeholder)", Status: "unavailable"},
 		},
 		AllowedAgentIDs:   []string{"codex"},
