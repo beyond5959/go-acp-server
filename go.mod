@@ -7,7 +7,7 @@ toolchain go1.24.6
 require modernc.org/sqlite v1.18.2
 
 require (
-	github.com/beyond5959/codex-acp v0.0.0-20260228065531-b096214d1d06
+	github.com/beyond5959/codex-acp v0.0.0-20260228090155-c970dbe97f4a
 	github.com/google/uuid v1.3.0 // indirect
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect
 	github.com/mattn/go-isatty v0.0.16 // indirect

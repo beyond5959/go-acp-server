@@ -786,6 +786,20 @@ func TestInjectedPromptIncludesSummaryAndRecent(t *testing.T) {
 	}
 }
 
+func TestComposeContextPromptFirstTurnPassThrough(t *testing.T) {
+	input := "/mcp call demo_server demo_tool {}"
+
+	got := composeContextPrompt("", nil, input, 1024)
+	if got != input {
+		t.Fatalf("first-turn prompt = %q, want %q", got, input)
+	}
+
+	truncated := composeContextPrompt("", nil, input, 12)
+	if truncated != input[:12] {
+		t.Fatalf("first-turn truncation = %q, want %q", truncated, input[:12])
+	}
+}
+
 func TestCompactUpdatesSummaryAndAffectsNextTurn(t *testing.T) {
 	root := t.TempDir()
 	h := newTestServer(t, testServerOptions{allowedRoots: []string{root}})

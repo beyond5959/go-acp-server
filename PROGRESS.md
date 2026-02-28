@@ -3,12 +3,13 @@
 ## Project Overview
 
 Code Agent Hub Server is a Go service that exposes HTTP/JSON APIs and SSE streaming for multi-client, multi-thread agent turns.
-The system lazily starts per-thread agents, persists interaction history in SQLite, and bridges runtime permission requests back to clients.
+The system targets ACP-compatible agent providers, lazily starts per-thread agents, persists interaction history in SQLite, and bridges runtime permission requests back to clients.
+Current built-in provider is `codex`; additional ACP-compatible providers are planned.
 This file is the source of milestone progress, validation commands, and next actions.
 
 ## Current Milestone
 
-- `Post-M8` Embedded codex mode migration and maintenance.
+- `Post-M8` ACP multi-agent readiness and maintenance.
 
 ## Status
 
@@ -26,7 +27,7 @@ This file is the source of milestone progress, validation commands, and next act
   - created tables/indexes for clients/threads/turns/events.
 - `M3` completed:
   - implemented thread create/list/get APIs.
-  - enforced `X-Client-ID`, client upsert, allowlisted agents, and allowed-roots cwd validation.
+  - enforced `X-Client-ID`, client upsert, allowlisted agents, and absolute `cwd` validation.
   - enforced cross-client thread access as `404`.
 - `M4` completed:
   - implemented turn streaming endpoint: `POST /v1/threads/{threadId}/turns` returning SSE.
@@ -73,6 +74,25 @@ This file is the source of milestone progress, validation commands, and next act
   - kept HTTP API semantics unchanged (`threads/turns/sse/permissions/history`) and preserved permission fail-closed round-trip.
   - updated `/v1/agents` codex status contract to runtime preflight-based `available|unavailable`.
   - updated codex smoke test gate to `E2E_CODEX=1` without `CODEX_ACP_GO_BIN` path dependency.
+- `Post-M8` real local codex regression completed:
+  - fixed embedded runtime lifecycle bug in `internal/agents/codex/embedded.go` (`runtime.Start(context.Background())` instead of timeout-bound context) and kept retry-on-turn-start-failure guard.
+  - updated context composer so first turn with empty summary/history passes raw input, preserving slash-command semantics for embedded codex-acp flows.
+  - executed real HTTP/SSE regression with required prompts plus same-thread conflict (`409`), cancel convergence, and permission round-trip (`approved` + `declined`) using `/mcp call` on fresh threads.
+- `Post-M8` docs refresh completed:
+  - added root `README.md` in English with project goal, `go install` instructions, and startup examples (local/public/auth) using default DB home `$HOME/.go-agent-server`.
+  - removed manual `mkdir` steps from README startup examples and documented that server auto-creates `$HOME/.go-agent-server` for default db path.
+- `Post-M8` db-path default improvement completed:
+  - changed default `--db-path` from relative `./agent-hub.db` to `$HOME/.go-agent-server/agent-hub.db`.
+  - added startup auto-create for db parent directory so users can run without explicitly passing `--db-path`.
+  - added unit tests for default path resolution and db parent directory creation.
+- `Post-M8` cwd policy simplification completed:
+  - removed runtime CLI parameter `--allowed-root`.
+  - server now allows user-specified absolute `cwd` paths by default.
+  - updated docs and tests to reflect absolute-cwd policy.
+- `Post-M8` docs framing update completed:
+  - adjusted README/SPEC/API/ARCHITECTURE wording to emphasize ACP-compatible multi-agent goal.
+  - kept current-state note explicit: today only `codex` is built-in.
+  - simplified README startup path to `agent-hub-server` with explicit `agent-hub-server --help` guidance.
 
 ### In Progress
 
@@ -85,6 +105,7 @@ This file is the source of milestone progress, validation commands, and next act
 - Optional enhancement 3: History/event pagination and cursor-based replay.
 - Optional enhancement 4: RBAC and finer-grained authorization policies.
 - Optional enhancement 5: Expanded audit logs and retention tooling.
+- Optional enhancement 6: expose environment diagnostics for codex local state DB/schema mismatches (for example `~/.codex/state_5.sqlite` migration drift) and app-server method compatibility.
 
 ## Verification Commands
 
@@ -100,9 +121,11 @@ This file is the source of milestone progress, validation commands, and next act
 - Commands executed:
   - `gofmt -w $(find . -name '*.go' -type f)`
   - `go test ./...`
+  - `/tmp/server_real_regression.sh`
 - Result:
   - formatting: pass
   - tests: pass
+  - real local regression: pass (required prompts/SSE/context/conflict/cancel/permission round-trip)
 
 ## Dependency Fetch Notes
 
@@ -154,7 +177,7 @@ This file is the source of milestone progress, validation commands, and next act
 
 - Scope: create/list/get thread APIs and validation.
 - DoD:
-  - strict request validation (agent allowlist, cwd absolute path, allowed roots).
+  - strict request validation (agent allowlist, cwd absolute path).
   - API tests cover valid/invalid requests and multi-client isolation.
 
 ### M4: Turns SSE with Fake Agent

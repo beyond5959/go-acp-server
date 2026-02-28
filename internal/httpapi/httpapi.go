@@ -1118,6 +1118,15 @@ func composeContextPrompt(summary string, recentTurns []storage.Turn, currentInp
 	recentCopy := make([]storage.Turn, len(recentTurns))
 	copy(recentCopy, recentTurns)
 
+	// Preserve raw user input on the very first turn so slash-command style inputs
+	// (for example "/mcp ...") are not masked by context wrapper headings.
+	if summary == "" && len(recentCopy) == 0 {
+		if maxChars <= 0 || runeLen(currentInput) <= maxChars {
+			return currentInput
+		}
+		return clampToChars(currentInput, maxChars)
+	}
+
 	for i := 0; i < 256; i++ {
 		prompt := renderContextPrompt(summary, recentCopy, currentInput)
 		if maxChars <= 0 || runeLen(prompt) <= maxChars {

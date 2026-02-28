@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -66,7 +67,38 @@ var _ io.Closer = (*Client)(nil)
 
 // DefaultRuntimeConfig returns the default embedded runtime configuration.
 func DefaultRuntimeConfig() codexacp.RuntimeConfig {
-	return codexacp.DefaultRuntimeConfig()
+	cfg := codexacp.DefaultRuntimeConfig()
+	cfg.InitialAuthMode = detectInitialAuthModeFromEnv()
+	return cfg
+}
+
+func detectInitialAuthModeFromEnv() string {
+	if strings.TrimSpace(os.Getenv("CODEX_API_KEY")) != "" {
+		return "codex_api_key"
+	}
+	if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != "" {
+		return "openai_api_key"
+	}
+	if subscriptionEnabled(os.Getenv("CHATGPT_SUBSCRIPTION_ACTIVE")) {
+		return "chatgpt_subscription"
+	}
+	return ""
+}
+
+func subscriptionEnabled(raw string) bool {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	if value == "" {
+		return true
+	}
+
+	switch value {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
 }
 
 // Preflight checks whether runtime prerequisites are available on the host.
@@ -169,14 +201,37 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 		ctx = context.Background()
 	}
 
-	runtime, sessionID, err := c.ensureInitialized(ctx)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return agents.StopReasonCancelled, nil
+	const maxAttempts = 2
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		runtime, sessionID, err := c.ensureInitialized(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return agents.StopReasonCancelled, nil
+			}
+			return agents.StopReasonEndTurn, fmt.Errorf("codex: initialize runtime: %w", err)
 		}
-		return agents.StopReasonEndTurn, fmt.Errorf("codex: initialize runtime: %w", err)
+
+		stopReason, streamErr := c.streamOnce(ctx, runtime, sessionID, input, onDelta)
+		if streamErr == nil {
+			return stopReason, nil
+		}
+		if !isRetryableTurnStartError(streamErr) || attempt == maxAttempts {
+			return stopReason, streamErr
+		}
+
+		c.resetRuntime()
 	}
 
+	return agents.StopReasonEndTurn, errors.New("codex: retry loop exited unexpectedly")
+}
+
+func (c *Client) streamOnce(
+	ctx context.Context,
+	runtime *codexacp.EmbeddedRuntime,
+	sessionID string,
+	input string,
+	onDelta func(delta string) error,
+) (agents.StopReason, error) {
 	updates, unsubscribe := runtime.SubscribeUpdates(256)
 	defer unsubscribe()
 
@@ -249,6 +304,26 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 				return agents.StopReasonEndTurn, err
 			}
 		}
+	}
+}
+
+func isRetryableTurnStartError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "session/prompt rpc error code=-32000 message=turn/start failed")
+}
+
+func (c *Client) resetRuntime() {
+	c.mu.Lock()
+	runtime := c.runtime
+	c.runtime = nil
+	c.sessionID = ""
+	c.mu.Unlock()
+
+	if runtime != nil {
+		_ = runtime.Close()
 	}
 }
 
@@ -368,7 +443,8 @@ func (c *Client) ensureInitialized(ctx context.Context) (*codexacp.EmbeddedRunti
 	defer cancel()
 
 	runtime := codexacp.NewEmbeddedRuntime(c.runtimeConfig)
-	if err := runtime.Start(startCtx); err != nil {
+	// Runtime lifecycle is controlled by client Close/reset, not startup timeout context.
+	if err := runtime.Start(context.Background()); err != nil {
 		_ = runtime.Close()
 		return nil, "", err
 	}

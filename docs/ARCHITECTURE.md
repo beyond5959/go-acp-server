@@ -26,7 +26,7 @@ flowchart LR
 ### Agent Lifecycle
 
 - Lazy creation on first thread activity.
-- Provider abstraction hides fake/acp/codex implementations.
+- Provider abstraction hides fake and ACP-compatible provider implementations.
 - Turn execution consumes input and emits structured events.
 - Crash/exit maps to terminal failure event.
 

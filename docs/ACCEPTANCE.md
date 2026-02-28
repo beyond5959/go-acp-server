@@ -70,7 +70,7 @@ This checklist defines executable acceptance checks for requirements 1-11.
 - Expected: log includes `startedAt`, `listenAddr`, `port`, `dbPath`, `allowedRoots`, `agents`.
 - Verification command:
   - `go test ./cmd/agent-hub-server -count=1`
-  - manual run: `go run ./cmd/agent-hub-server --listen 127.0.0.1:8686 --allowed-root /tmp`
+  - manual run: `go run ./cmd/agent-hub-server --listen 127.0.0.1:8686`
 
 ## Requirement 10: Unified errors and structured logs
 

@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -76,25 +77,16 @@ func TestValidateListenAddr(t *testing.T) {
 }
 
 func TestResolveAllowedRoots(t *testing.T) {
-	t.Run("default to cwd when empty", func(t *testing.T) {
-		roots, err := resolveAllowedRoots(nil)
-		if err != nil {
-			t.Fatalf("resolveAllowedRoots(nil) unexpected error: %v", err)
-		}
-		if got, want := len(roots), 1; got != want {
-			t.Fatalf("len(roots) = %d, want %d", got, want)
-		}
-		if !filepath.IsAbs(roots[0]) {
-			t.Fatalf("root %q is not absolute", roots[0])
-		}
-	})
-
-	t.Run("reject non-absolute root", func(t *testing.T) {
-		_, err := resolveAllowedRoots([]string{"relative/root"})
-		if err == nil {
-			t.Fatalf("resolveAllowedRoots should fail for non-absolute root")
-		}
-	})
+	roots, err := resolveAllowedRoots()
+	if err != nil {
+		t.Fatalf("resolveAllowedRoots() unexpected error: %v", err)
+	}
+	if got, want := len(roots), 1; got != want {
+		t.Fatalf("len(roots) = %d, want %d", got, want)
+	}
+	if !filepath.IsAbs(roots[0]) {
+		t.Fatalf("root %q is not absolute", roots[0])
+	}
 }
 
 func TestSupportedAgentsCodexStatus(t *testing.T) {
@@ -113,6 +105,46 @@ func TestSupportedAgentsCodexStatus(t *testing.T) {
 	if agentsAvailable[0].Status != "available" {
 		t.Fatalf("codex available status = %q, want %q", agentsAvailable[0].Status, "available")
 	}
+}
+
+func TestResolveDefaultDBPath(t *testing.T) {
+	const home = "/tmp/test-home-db-default"
+	t.Setenv("HOME", home)
+
+	got, err := resolveDefaultDBPath()
+	if err != nil {
+		t.Fatalf("resolveDefaultDBPath() unexpected error: %v", err)
+	}
+
+	want := filepath.Join(home, ".go-agent-server", "agent-hub.db")
+	if got != want {
+		t.Fatalf("resolveDefaultDBPath() = %q, want %q", got, want)
+	}
+}
+
+func TestEnsureDBPathParent(t *testing.T) {
+	t.Run("create nested parent dir", func(t *testing.T) {
+		tmp := t.TempDir()
+		dbPath := filepath.Join(tmp, "nested", "dir", "agent-hub.db")
+		if err := ensureDBPathParent(dbPath); err != nil {
+			t.Fatalf("ensureDBPathParent(%q) unexpected error: %v", dbPath, err)
+		}
+
+		parent := filepath.Dir(dbPath)
+		info, err := os.Stat(parent)
+		if err != nil {
+			t.Fatalf("os.Stat(%q): %v", parent, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("parent %q is not a directory", parent)
+		}
+	})
+
+	t.Run("reject empty path", func(t *testing.T) {
+		if err := ensureDBPathParent("   "); err == nil {
+			t.Fatalf("ensureDBPathParent should fail for empty path")
+		}
+	})
 }
 
 func TestGracefulShutdownForceCancelsTurns(t *testing.T) {

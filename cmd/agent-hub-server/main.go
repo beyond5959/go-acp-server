@@ -24,21 +24,25 @@ import (
 )
 
 func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+
+	defaultDBPath, err := resolveDefaultDBPath()
+	if err != nil {
+		logger.Error("startup.default_db_path_resolve_failed", "error", err.Error())
+		os.Exit(1)
+	}
+
 	listenAddrFlag := flag.String("listen", "127.0.0.1:8686", "server listen address")
 	allowPublic := flag.Bool("allow-public", false, "allow listening on public interfaces")
 	authToken := flag.String("auth-token", "", "optional bearer token for /v1/* endpoints")
-	dbPath := flag.String("db-path", "./agent-hub.db", "sqlite database path")
+	dbPath := flag.String("db-path", defaultDBPath, "sqlite database path")
 	contextRecentTurns := flag.Int("context-recent-turns", 10, "number of recent user+assistant turns injected into each prompt")
 	contextMaxChars := flag.Int("context-max-chars", 20000, "maximum character budget for injected context prompt")
 	compactMaxChars := flag.Int("compact-max-chars", 4000, "maximum summary characters produced by compact endpoint")
 	agentIdleTTL := flag.Duration("agent-idle-ttl", 5*time.Minute, "idle TTL before closing cached thread agent provider")
 	shutdownGraceTimeout := flag.Duration("shutdown-grace-timeout", 8*time.Second, "graceful shutdown timeout for active turns")
-
-	var allowedRootsFlag stringListFlag
-	flag.Var(&allowedRootsFlag, "allowed-root", "allowed workspace root (repeatable)")
 	flag.Parse()
 
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	codexRuntimeConfig := codexagent.DefaultRuntimeConfig()
 	codexPreflightErr := codexagent.Preflight(codexRuntimeConfig)
 
@@ -75,9 +79,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	allowedRoots, err := resolveAllowedRoots(allowedRootsFlag)
+	allowedRoots, err := resolveAllowedRoots()
 	if err != nil {
 		logger.Error("startup.invalid_allowed_roots", "error", err.Error())
+		os.Exit(1)
+	}
+	if err := ensureDBPathParent(*dbPath); err != nil {
+		logger.Error("startup.invalid_db_path", "error", err.Error(), "dbPath", *dbPath)
 		os.Exit(1)
 	}
 
@@ -269,37 +277,39 @@ func gracefulShutdown(
 	logger.Info("shutdown.turns_drained_after_force_cancel")
 }
 
-func resolveAllowedRoots(configured []string) ([]string, error) {
-	if len(configured) == 0 {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("resolve default allowed root from cwd: %w", err)
-		}
-		return []string{filepath.Clean(cwd)}, nil
+func resolveAllowedRoots() ([]string, error) {
+	root := filepath.Clean(string(filepath.Separator))
+	if !filepath.IsAbs(root) {
+		return nil, fmt.Errorf("resolved root is not absolute: %q", root)
 	}
+	return []string{root}, nil
+}
 
-	roots := make([]string, 0, len(configured))
-	seen := make(map[string]struct{}, len(configured))
-	for _, root := range configured {
-		root = strings.TrimSpace(root)
-		if root == "" {
-			continue
-		}
-		if !filepath.IsAbs(root) {
-			return nil, fmt.Errorf("allowed root must be absolute: %q", root)
-		}
-		cleaned := filepath.Clean(root)
-		if _, ok := seen[cleaned]; ok {
-			continue
-		}
-		seen[cleaned] = struct{}{}
-		roots = append(roots, cleaned)
+func resolveDefaultDBPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user home dir: %w", err)
 	}
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return "", errors.New("user home dir is empty")
+	}
+	return filepath.Join(home, ".go-agent-server", "agent-hub.db"), nil
+}
 
-	if len(roots) == 0 {
-		return nil, errors.New("allowed roots resolved to empty set")
+func ensureDBPathParent(dbPath string) error {
+	path := strings.TrimSpace(dbPath)
+	if path == "" {
+		return errors.New("db path is empty")
 	}
-	return roots, nil
+	parent := filepath.Dir(filepath.Clean(path))
+	if parent == "." {
+		return nil
+	}
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("create db parent dir %q: %w", parent, err)
+	}
+	return nil
 }
 
 func errorString(err error) string {
@@ -307,18 +317,4 @@ func errorString(err error) string {
 		return ""
 	}
 	return err.Error()
-}
-
-type stringListFlag []string
-
-func (s *stringListFlag) String() string {
-	if s == nil {
-		return ""
-	}
-	return strings.Join(*s, ",")
-}
-
-func (s *stringListFlag) Set(value string) error {
-	*s = append(*s, value)
-	return nil
 }

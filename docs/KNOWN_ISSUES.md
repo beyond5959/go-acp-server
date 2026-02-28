@@ -44,12 +44,12 @@
 
 - ID: KI-004
 - Title: `cwd` validation false positives
-- Status: Open
+- Status: Closed
 - Severity: Low
-- Affects: symlink-heavy workspace layouts
-- Symptom: valid paths rejected as outside allowed roots
-- Workaround: resolve and compare canonical paths using evaluated symlinks
-- Follow-up plan: add canonicalization tests in M3
+- Affects: legacy deployments that used restrictive allow-root policies
+- Symptom: historical issue where valid paths could be rejected as outside allowed roots
+- Workaround: N/A after ADR-016 default absolute-cwd policy
+- Follow-up plan: none
 
 - ID: KI-005
 - Title: External agent process crash
@@ -86,3 +86,12 @@
 - Symptom: prompt fits `context-max-chars` but may still be too large for model token limits
 - Workaround: reduce `--context-max-chars` conservatively and run compact more frequently
 - Follow-up plan: replace char-based policy with model-aware token estimation in M8
+
+- ID: KI-009
+- Title: Embedded codex local state/schema drift warnings
+- Status: Open
+- Severity: Medium
+- Affects: real local embedded codex runs that depend on user `~/.codex` state and app-server version capabilities
+- Symptom: stderr may show warnings like `state_5.sqlite migration ... missing` and endpoint compatibility errors such as `mcpServer/call unknown variant`; turn usually still completes but tool output can be empty
+- Workaround: align local codex CLI/app-server version with linked `codex-acp` schema expectations, and repair/reset local codex state DB when migration drift appears
+- Follow-up plan: add explicit diagnostics/preflight endpoint to surface local state/schema compatibility before turn execution

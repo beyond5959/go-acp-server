@@ -16,6 +16,8 @@
 - ADR-012: M8 reliability alignment (TTL, shutdown, error codes). (Accepted)
 - ADR-013: Canonical Go module path finalization. (Accepted)
 - ADR-014: Codex provider migration from sidecar binary to embedded library. (Accepted)
+- ADR-015: First-turn prompt passthrough for slash-command compatibility in embedded codex mode. (Accepted)
+- ADR-016: Remove `--allowed-root` runtime parameter and default to absolute-cwd policy. (Accepted)
 
 ## ADR Template
 
@@ -98,7 +100,7 @@ Use this template for new decisions.
 
 ## ADR-007: M3 Thread API Tenancy and Path Policy
 
-- Status: Accepted
+- Status: Superseded by ADR-016
 - Date: 2026-02-28
 - Context: thread APIs introduce per-client resource ownership and filesystem-scoped execution context.
 - Decision:
@@ -213,3 +215,38 @@ Use this template for new decisions.
 - Consequences: simpler operator UX and fewer path misconfiguration failures; server binary is now more tightly coupled to codex-acp module/runtime behavior.
 - Alternatives considered: keep sidecar-only mode; dual mode (embedded + sidecar fallback).
 - Follow-up actions: define codex-acp version pin/upgrade policy and add compatibility smoke checks across codex CLI/app-server versions.
+
+## ADR-015: First-Turn Prompt Passthrough for Embedded Slash Commands
+
+- Status: Accepted
+- Date: 2026-02-28
+- Context: context-window injection always wrapped prompts with `[Conversation Summary]` / `[Recent Turns]` / `[Current User Input]`, which masked first-turn slash commands (for example `/mcp call`) in embedded codex-acp flows.
+- Decision:
+  - keep context wrapper for normal multi-turn continuity.
+  - when `summary == ""` and there are no visible recent turns, pass through raw `currentInput` (still bounded by `context-max-chars`) instead of wrapping.
+- Consequences:
+  - first-turn slash commands remain functional in embedded mode, enabling deterministic permission round-trip validation (`approved` / `declined`).
+  - first-turn request text persisted in history no longer includes synthetic wrapper headings.
+- Alternatives considered:
+  - parse wrapped `[Current User Input]` inside codex-acp slash-command parser.
+  - keep always-wrapped behavior and accept slash-command incompatibility.
+- Follow-up actions:
+  - evaluate an explicit API-level raw-input toggle if future providers need slash-command compatibility beyond first turn.
+
+## ADR-016: Remove `--allowed-root` Runtime Parameter
+
+- Status: Accepted
+- Date: 2026-02-28
+- Context: operators requested simpler startup without path allowlist configuration and required that `cwd` can be any user-specified absolute directory.
+- Decision:
+  - remove CLI flag `--allowed-root`.
+  - server startup now configures allowed-roots internally as filesystem root.
+  - keep `cwd` validation for absolute path only and retain tenancy/ownership rules.
+- Consequences:
+  - simpler startup and fewer configuration errors.
+  - path-boundary restriction is effectively disabled in default runtime behavior.
+- Alternatives considered:
+  - keep `--allowed-root` and add a separate opt-out flag.
+  - preserve strict allowlist-only behavior.
+- Follow-up actions:
+  - evaluate policy controls (for example opt-in restrictive mode) if deployments need stronger path boundaries.
