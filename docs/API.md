@@ -12,7 +12,7 @@ This document defines the current HTTP API contract.
 
 ## Runtime Logging Conventions
 
-- Startup prints a human-readable multi-line summary on `stderr` with `Time`, `HTTP`, `DB`, `Agents`, and `Help`.
+- Startup prints a human-readable multi-line summary on `stderr` with `Time`, `HTTP`, `Web`, `DB`, `Agents`, and `Help`.
 - Every HTTP request emits one structured completion log entry (`http.request.completed`) with:
   - `requestTime`
   - `method`
@@ -39,6 +39,20 @@ All errors use:
 ```
 
 ## Implemented Endpoints
+
+### Frontend (Web UI)
+
+11. `GET /`
+- No authentication required.
+- Returns the embedded web UI (`index.html`).
+- Response `200`: `text/html; charset=utf-8`.
+
+12. `GET /assets/*`
+- No authentication required.
+- Returns embedded static assets (JS, CSS, fonts) produced by the frontend build.
+- SPA fallback: any non-API, non-asset path also returns `index.html` so the client-side router can handle it.
+
+### Health
 
 1. `GET /healthz`
 - Response `200`:

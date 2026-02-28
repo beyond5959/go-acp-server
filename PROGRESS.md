@@ -97,17 +97,96 @@ This file is the source of milestone progress, validation commands, and next act
   - replaced startup JSON line with multi-line human-readable stderr summary (`Time`, `HTTP`, `DB`, `Agents`, `Help`).
   - added per-request completion logs containing `requestTime`, `method`, `path`, `ip`, `statusCode`, `durationMs`, and `responseBytes`.
   - added unit test coverage for startup summary rendering and request completion log fields.
-- `Post-M8` agent display naming normalization completed:
+- `F2` completed:
+  - created `src/types.ts`: full TypeScript interface set (Thread, Turn, Message, PermissionRequest, StreamState, AppState, etc.).
+  - created `src/utils.ts`: generateUUID (crypto.randomUUID + fallback), formatTimestamp, formatRelativeTime, isAbsolutePath, escHtml, debounce.
+  - created `src/store.ts`: singleton AppStore with pub/sub (subscribe → unsubscribe fn), localStorage persistence for clientId/authToken/serverUrl/theme, resetClientId() helper.
+  - created `src/components/settings-panel.ts`: slide-in drawer with Client ID display+copy+reset, Bearer Token input, 3-way theme toggle (Light/System/Dark), Server URL input; all changes persist via store immediately.
+  - updated `src/main.ts`: imports store for theme init, wires settings button → settingsPanel.open(), system-theme change listener.
+  - added settings drawer CSS to style.css (overlay, slide-in animation, theme button group).
+  - implemented complete CSS design system with CSS custom properties for light/dark themes (`[data-theme]`).
+  - built two-column IM layout: 260px sidebar (brand, search, thread list, settings footer) + flex main chat area.
+  - thread list items with avatar, title, preview, agent badge, relative time, and unread dot.
+  - chat header with thread title, agent badge, cwd, compact/cancel action buttons.
+  - scrollable message list with user bubbles (right, blue) and agent bubbles (left, neutral), typing indicator, permission card, day divider.
+  - input area with auto-resize textarea, send button, and keyboard hint.
+  - empty state for no-thread-selected view.
+  - basic responsive: ≤768px sidebar hides, mobile menu toggle shows.
+  - system-theme detection on boot + `prefers-color-scheme` listener for live updates.
+  - initialized Vite + TypeScript frontend under `internal/webui/web/`.
+  - created `internal/webui/webui.go` with `//go:embed web/dist` and SPA fallback handler.
+  - registered `FrontendHandler` in `httpapi.Config`; non-API paths served by frontend, API routes unaffected.
+  - updated `cmd/agent-hub-server/main.go` to pass `webui.Handler()` and added `Web:` line to startup summary.
+  - updated `Makefile` with `build-web`, `build` targets; updated `.gitignore` for `node_modules`.
+  - `go test ./...` all green; end-to-end: `GET /` → 200 HTML, `/threads` SPA fallback → 200, `/v1/agents` → JSON, `/healthz` → JSON.
   - standardized `/v1/agents` display names to `Codex` and `Claude Code`.
   - synchronized test fixtures and API documentation examples with the same canonical names.
   - startup summary now renders agent display names (not lowercase ids): `Codex (available), Claude Code (unavailable)`.
+- `F3` completed:
+  - created `src/api.ts`: ApiClient with ApiError class; getAgents(), getThreads(), createThread(); reads serverUrl/clientId/authToken from store on every request.
+  - created `src/components/new-thread-modal.ts`: centered modal with agent card grid (radio, disabled for unavailable), CWD absolute-path validation, optional title, collapsible JSON agent-options textarea, submit with spinner, error banner; targeted DOM updates avoid full re-render during typing.
+  - appended modal/form/agent-grid/skeleton/spinner CSS to style.css.
+  - rewrote `src/main.ts`: init() loads agents+threads in parallel, store.subscribe drives updateThreadList()+updateChatArea(); skeleton loading state; search filter; thread click sets activeThreadId; new-thread button opens modal; error banner on API failure.
+  - `tsc -b && vite build` passes; `go test ./...` all green.
+- `F4` completed:
+  - created `src/sse.ts`: `TurnStream` class using `fetch` + `ReadableStream` (not `EventSource`, which lacks POST/header support); parses `event:/data:` SSE lines delimited by `\n\n`; dispatches `onTurnStarted`, `onDelta`, `onCompleted`, `onError`, `onPermissionRequired`, `onDisconnect` callbacks; supports `abort()` for clean cancellation.
+  - added `startTurn(threadId, input, callbacks)` and `cancelTurn(turnId)` to `ApiClient` in `src/api.ts`.
+  - rewrote `src/main.ts` with full message rendering and smart subscribe handler:
+    - `handleSend()`: adds user message → sets `activeStreamMsgId` sentinel → sets store streamState → appends streaming bubble to DOM → starts SSE stream.
+    - `onDelta`: targeted DOM update on `#bubble-<id>` (no re-render, no flicker); removes typing indicator on first delta.
+    - `onCompleted`/`onError`/`onDisconnect`: clears stream tracking → adds finalized message to store → clears streamState; subscribe re-renders list with final message.
+    - subscribe handler: full `updateChatArea()` only on thread switch; skips `updateMessageList()` while `activeStreamMsgId` is set (streaming bubble live in DOM); `updateInputState()` always.
+    - `handleCancel()`: sets store streamState to `cancelling`, calls `api.cancelTurn()`.
+    - Cancel button in chat header: hidden by default, shown during streaming via `updateInputState()`.
+  - added `.chat-header-meta` style to `style.css`.
+  - `tsc -b && vite build` passes; `go test ./...` all green.
 
-### In Progress
+- `F5` completed:
+  - added `api.getHistory(threadId)` calling `GET /v1/threads/{threadId}/history`, returns `Turn[]`.
+  - added `turnsToMessages(turns)`: converts server `Turn[]` to client `Message[]`; skips `isInternal` turns; uses stable IDs `${turnId}-u` / `${turnId}-a`; maps `cancelled`/`error`/`completed` turn statuses to `MessageStatus`; falls back `completedAt → createdAt` for timestamp.
+  - added `loadHistory(threadId)`: async, loads history on thread switch; guards against stale response (navigated away / streaming in progress); updates `store.messages[threadId]`.
+  - updated `updateChatArea()`: shows cached messages immediately on revisit (no spinner flash); shows centered loading spinner for first visit; always fires `loadHistory()` in background to keep view fresh.
+  - added `.message-list-loading` + `.loading-spinner` CSS (centered spinner, reuses `@keyframes spin`).
+  - `tsc -b && vite build` passes; `go test ./...` all green.
 
-- None.
+- `F6` completed:
+  - created `src/components/permission-card.ts`: `mountPermissionCard(listEl, event)` appends an inline permission card to the message list; 15s countdown timer with `setInterval` at 100ms ticks; Allow/Deny buttons call `api.resolvePermission()`; 409 (already resolved) treated as silent success; `showResolved()` snaps progress bar width, recolors card header/border, replaces buttons with resolved label; timeout auto-transitions to `permission-card--timeout` state.
+  - added `api.resolvePermission(permissionId, outcome)` — `POST /v1/permissions/{permissionId}`.
+  - wired `onPermissionRequired` callback in `handleSend()`: calls `mountPermissionCard(listEl, event)`.
+  - added CSS: `.permission-progress` + `.permission-progress-bar` (width-animated, `transition: width .1s linear`); `.permission-card--approved|declined|timeout` outcome states (border + header recolor); `.permission-resolved--approved|declined|timeout` label colors; `.perm-avatar` warning-color avatar.
+  - `tsc -b && vite build` passes; `go test ./...` all green.
 
-### Next
+- `F7` completed:
+  - created `src/markdown.ts`: configured `marked@^9` with custom renderer; `html()` override returns `escHtml(text)` (XSS protection); `code()` renderer emits `.code-block` HTML with hljs syntax highlighting, header (lang label + Copy button), `<pre>` with `<code class="hljs">`, and optional "Show all N lines" expand button for blocks >20 lines; registered go/typescript/javascript/python/bash/json/yaml language subset.
+  - exported `renderMarkdown(text)` — calls `marked.parse` synchronously.
+  - exported `bindMarkdownControls(container)` — binds `.code-copy-btn` (clipboard + 2s "Copied ✓" feedback), `.code-expand-btn` (toggle `code-pre--collapsed`), `.msg-copy-btn` (full bubble text copy); idempotent via `data-bound` guard.
+  - updated `src/main.ts`: imported `renderMarkdown` + `bindMarkdownControls`; `renderMessage()` uses `renderMarkdown(bodyText)` + `message-bubble--md` class for agent `done` messages; adds `<button class="msg-copy-btn">⎘</button>` in message-meta for done messages; `updateMessageList()` calls `bindMarkdownControls(listEl)` after HTML injection.
+  - added CSS to `style.css`: `.message-bubble--md` (white-space: normal; nested p/h1-h3/ul/ol/blockquote/inline-code/a styles); `.message--agent .message-group { max-width: min(660px, 90%) }` for code block width; `.code-block`, `.code-block-header`, `.code-lang`, `.code-copy-btn` (hover-visible, 2s "Copied ✓" variant); `.code-pre`, `.code-pre--collapsed` (340px max-height + gradient fade `::after`); `.code-expand-btn` (full-width, text-secondary); `.msg-copy-btn` (hover-visible on agent message hover); hljs CSS-variable token colour system with light/dark variants.
+  - `tsc -b && vite build` passes; `go test ./...` all green.
 
+- `F8` completed:
+  - added `isNearBottom(el)` helper (100px threshold).
+  - smart auto-scroll in `onDelta`: only scrolls when user is already at/near bottom; lets user read history uninterrupted during streaming.
+  - added scroll-to-bottom button (`.scroll-bottom-btn`) positioned absolute in new `.message-list-wrap` container: shown when user scrolls away from bottom, hidden on `updateMessageList` and smooth-scroll on click.
+  - added `bindScrollBottom()`: scroll-event listener syncs button visibility; button `click` calls `listEl.scrollTo({ behavior: 'smooth' })`.
+  - added `bindGlobalShortcuts()` (called once from `init()`):
+    - `/` key: focuses `#search-input` when not already in an input (preventDefault).
+    - `Cmd+N` / `Ctrl+N`: opens new thread modal.
+    - `Escape` (contextual, most-specific first): (1) closes mobile sidebar if open, (2) clears + blurs search if search is focused, (3) cancels active stream via `handleCancel()`.
+  - mobile UX: thread click in `updateThreadList()` now removes `sidebar--open` class so sidebar closes automatically on thread select.
+  - input hint updated to reflect shortcuts: `⌘ Enter to send · Esc to cancel · / to search`.
+  - CSS: `.message-list` wrapped in `.message-list-wrap` (`flex:1; position:relative; min-height:0; overflow:hidden`); `.message-list` changed from `flex:1` to `height:100%`; `.scroll-bottom-btn` circular, shadow, hover translate.
+  - `tsc -b && vite build` passes; `go test ./...` all green.
+
+- `F9` completed:
+  - verified `printStartupSummary` already emits `Web:   http://<addr>/` line and `TestPrintStartupSummary` already asserts it.
+  - updated `docs/API.md`: added `Web` to the startup logging conventions line; added Frontend Web UI endpoint section (`GET /` returns `text/html`, `GET /assets/*` serves static assets, SPA fallback for non-API paths).
+  - updated `docs/ACCEPTANCE.md`: added Requirement 13 (Embedded Web UI) with `go test ./internal/webui` verification command.
+  - updated `README.md`: added "Web UI" section with startup summary example, feature list (threads/streaming/permissions/history/themes), no-Node-at-runtime note, and `make build-web && go build ./...` rebuild instructions.
+  - verified ADR-018 (Embedded Web UI via Go embed) already present in `docs/DECISIONS.md`.
+  - final verification: `go test ./...` all green; `tsc -b && vite build` passes; `go build ./...` succeeds.
+
+### Done (all frontend milestones)
 - Optional enhancement 1: add embedded-runtime preflight diagnostics endpoint (auth, app-server reachability, version compatibility).
 - Optional enhancement 2: WebSocket streaming transport in addition to SSE.
 - Optional enhancement 3: History/event pagination and cursor-based replay.
@@ -115,7 +194,16 @@ This file is the source of milestone progress, validation commands, and next act
 - Optional enhancement 5: Expanded audit logs and retention tooling.
 - Optional enhancement 6: expose environment diagnostics for codex local state DB/schema mismatches (for example `~/.codex/state_5.sqlite` migration drift) and app-server method compatibility.
 
-## Verification Commands
+- `Post-F9` CI and release pipeline completed:
+  - removed `internal/webui/web/dist/` and `tsconfig.tsbuildinfo` from git tracking (`git rm --cached`); added both to `.gitignore`.
+  - created `.github/workflows/ci.yml`: triggers on every push/PR (non-tag); steps: Go + Node.js 20 setup, `make build-web`, gofmt check, `go test ./...`.
+  - created `.github/workflows/release.yml`: triggers on `v*.*.*` tags; runs `goreleaser release --clean` with `GITHUB_TOKEN`.
+  - created `.goreleaser.yml` (version 2): `before.hooks: make build-web`; cross-compiles linux/darwin/windows × amd64/arm64 (windows arm64 excluded) with `CGO_ENABLED=0`; produces `agent-hub-server_VERSION_OS_ARCH.tar.gz` archives + `checksums.txt`.
+  - updated `Makefile`: `make build` now outputs to `bin/agent-hub-server` (was `go build ./...`).
+  - updated `README.md`: replaced `go install` with "Download pre-built binary" table + "Build from source" (`make build`) instructions.
+  - updated `AGENTS.md`: replaced "MUST keep web/dist committed" rule with "MUST NOT commit web/dist"; added CI/Release pipeline section.
+
+
 
 - `gofmt -w .`
 - `go test ./...`
@@ -129,11 +217,13 @@ This file is the source of milestone progress, validation commands, and next act
 - Commands executed:
   - `gofmt -w $(find . -name '*.go' -type f)`
   - `go test ./...`
-  - `/tmp/server_real_regression.sh`
+  - `tsc -b && vite build` (frontend)
+  - `go build ./...`
 - Result:
   - formatting: pass
-  - tests: pass
-  - real local regression: pass (required prompts/SSE/context/conflict/cancel/permission round-trip)
+  - tests: pass (all packages green)
+  - frontend build: pass (121 kB JS, 27 kB CSS)
+  - full binary build: pass
 
 ## Dependency Fetch Notes
 

@@ -183,6 +183,7 @@ func TestPrintStartupSummary(t *testing.T) {
 		"Agent Hub Server started",
 		"Time:",
 		"HTTP:   http://127.0.0.1:8686",
+		"Web:    http://127.0.0.1:8686/",
 		"DB:     /tmp/agent-hub.db",
 		"Agents: Codex (available), Claude Code (unavailable)",
 		"Help:   agent-hub-server --help",
