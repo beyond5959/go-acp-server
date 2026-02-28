@@ -17,10 +17,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/example/code-agent-hub-server/internal/agents"
-	"github.com/example/code-agent-hub-server/internal/runtime"
-	"github.com/example/code-agent-hub-server/internal/sse"
-	"github.com/example/code-agent-hub-server/internal/storage"
+	"github.com/beyond5959/go-acp-server/internal/agents"
+	"github.com/beyond5959/go-acp-server/internal/runtime"
+	"github.com/beyond5959/go-acp-server/internal/sse"
+	"github.com/beyond5959/go-acp-server/internal/storage"
 )
 
 // AgentInfo describes one supported agent entry returned by /v1/agents.

@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/example/code-agent-hub-server/internal/agents"
+	"github.com/beyond5959/go-acp-server/internal/agents"
 )
 
 const (

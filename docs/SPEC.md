@@ -35,8 +35,8 @@ Modules:
 
 - On server boot: no agent process is started.
 - On first thread usage: runtime requests provider instance for that thread.
-- On first turn execution for codex thread: server creates ACP stdio client and starts `codex-acp-go` process.
-- ACP process working directory is `thread.cwd` (already validated against allowed roots at thread creation).
+- On first turn execution for codex thread: server creates an embedded `codex-acp` runtime in-process and initializes ACP session lazily.
+- Embedded runtime `session/new` is created with `cwd=thread.cwd` (already validated against allowed roots at thread creation).
 - Provider instances are cached per thread and reclaimed by idle TTL (`--agent-idle-ttl`) when thread has no active turn.
 
 ## 5. Permission Bridge

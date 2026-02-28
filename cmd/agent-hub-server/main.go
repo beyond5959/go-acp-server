@@ -16,11 +16,11 @@ import (
 	"syscall"
 	"time"
 
-	agentimpl "github.com/example/code-agent-hub-server/internal/agents"
-	acpagent "github.com/example/code-agent-hub-server/internal/agents/acp"
-	"github.com/example/code-agent-hub-server/internal/httpapi"
-	"github.com/example/code-agent-hub-server/internal/runtime"
-	"github.com/example/code-agent-hub-server/internal/storage"
+	agentimpl "github.com/beyond5959/go-acp-server/internal/agents"
+	codexagent "github.com/beyond5959/go-acp-server/internal/agents/codex"
+	"github.com/beyond5959/go-acp-server/internal/httpapi"
+	"github.com/beyond5959/go-acp-server/internal/runtime"
+	"github.com/beyond5959/go-acp-server/internal/storage"
 )
 
 func main() {
@@ -28,8 +28,6 @@ func main() {
 	allowPublic := flag.Bool("allow-public", false, "allow listening on public interfaces")
 	authToken := flag.String("auth-token", "", "optional bearer token for /v1/* endpoints")
 	dbPath := flag.String("db-path", "./agent-hub.db", "sqlite database path")
-	codexACPGoBin := flag.String("codex-acp-go-bin", "", "absolute path to codex-acp-go binary")
-	codexACPGoArgs := flag.String("codex-acp-go-args", "", "optional codex-acp-go args, split by whitespace")
 	contextRecentTurns := flag.Int("context-recent-turns", 10, "number of recent user+assistant turns injected into each prompt")
 	contextMaxChars := flag.Int("context-max-chars", 20000, "maximum character budget for injected context prompt")
 	compactMaxChars := flag.Int("compact-max-chars", 4000, "maximum summary characters produced by compact endpoint")
@@ -41,11 +39,8 @@ func main() {
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	codexCfg, err := resolveCodexACPConfig(*codexACPGoBin, *codexACPGoArgs)
-	if err != nil {
-		logger.Error("startup.invalid_codex_acp_config", "error", err.Error())
-		os.Exit(1)
-	}
+	codexRuntimeConfig := codexagent.DefaultRuntimeConfig()
+	codexPreflightErr := codexagent.Preflight(codexRuntimeConfig)
 
 	if *contextRecentTurns <= 0 {
 		logger.Error("startup.invalid_context_recent_turns", "value", *contextRecentTurns)
@@ -68,7 +63,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	agents := supportedAgents(codexCfg.Bin)
+	codexAvailable := codexPreflightErr == nil
+	if codexPreflightErr != nil {
+		logger.Warn("startup.codex_embedded_unavailable", "error", codexPreflightErr.Error())
+	}
+	agents := supportedAgents(codexAvailable)
 
 	listenAddr, port, err := validateListenAddr(*listenAddrFlag, *allowPublic)
 	if err != nil {
@@ -106,15 +105,10 @@ func main() {
 				return nil, fmt.Errorf("unsupported thread agent %q", thread.AgentID)
 			}
 
-			if codexCfg.Bin == "" {
-				return nil, errors.New("codex provider is unconfigured: set --codex-acp-go-bin")
-			}
-
-			return acpagent.New(acpagent.Config{
-				Command: codexCfg.Bin,
-				Args:    codexCfg.Args,
-				Dir:     thread.CWD,
-				Name:    "codex-acp-go",
+			return codexagent.New(codexagent.Config{
+				Dir:           thread.CWD,
+				Name:          "codex-embedded",
+				RuntimeConfig: codexRuntimeConfig,
 			})
 		},
 		ContextRecentTurns: *contextRecentTurns,
@@ -143,7 +137,8 @@ func main() {
 		"dbPath", *dbPath,
 		"agents", agents,
 		"allowedRoots", allowedRoots,
-		"codexACPGoBinConfigured", codexCfg.Bin != "",
+		"codexEmbeddedAvailable", codexAvailable,
+		"codexEmbeddedPreflightError", errorString(codexPreflightErr),
 		"contextRecentTurns", *contextRecentTurns,
 		"contextMaxChars", *contextMaxChars,
 		"compactMaxChars", *compactMaxChars,
@@ -167,16 +162,16 @@ func main() {
 	logger.Info("shutdown.complete", "stoppedAt", time.Now().UTC().Format(time.RFC3339Nano))
 }
 
-func supportedAgents(codexBin string) []httpapi.AgentInfo {
-	codexStatus := "unconfigured"
-	if strings.TrimSpace(codexBin) != "" {
+func supportedAgents(codexAvailable bool) []httpapi.AgentInfo {
+	codexStatus := "unavailable"
+	if codexAvailable {
 		codexStatus = "available"
 	}
 
 	return []httpapi.AgentInfo{
 		{
 			ID:     "codex",
-			Name:   "Codex (via codex-acp-go)",
+			Name:   "Codex (embedded codex-acp)",
 			Status: codexStatus,
 		},
 		{
@@ -216,37 +211,6 @@ func validateListenAddr(listenAddr string, allowPublic bool) (string, int, error
 	}
 
 	return listenAddr, port, nil
-}
-
-type codexACPConfig struct {
-	Bin  string
-	Args []string
-}
-
-func resolveCodexACPConfig(binPath, argsText string) (codexACPConfig, error) {
-	binPath = strings.TrimSpace(binPath)
-	if binPath == "" {
-		return codexACPConfig{}, nil
-	}
-	if !filepath.IsAbs(binPath) {
-		return codexACPConfig{}, fmt.Errorf("--codex-acp-go-bin must be absolute: %q", binPath)
-	}
-
-	cleanBin := filepath.Clean(binPath)
-	args := parseCommandArgs(argsText)
-
-	return codexACPConfig{
-		Bin:  cleanBin,
-		Args: args,
-	}, nil
-}
-
-func parseCommandArgs(raw string) []string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-	return strings.Fields(raw)
 }
 
 func gracefulShutdown(
@@ -336,6 +300,13 @@ func resolveAllowedRoots(configured []string) ([]string, error) {
 		return nil, errors.New("allowed roots resolved to empty set")
 	}
 	return roots, nil
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 type stringListFlag []string

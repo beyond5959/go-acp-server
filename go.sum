@@ -1,3 +1,5 @@
+github.com/beyond5959/codex-acp v0.0.0-20260228065531-b096214d1d06 h1:D2LDypDDYRcXwK0JJYNbiS1xCihwwD9x8ckxQHSw/t4=
+github.com/beyond5959/codex-acp v0.0.0-20260228065531-b096214d1d06/go.mod h1:XPXvgqtNF3ds1dWMRHlh5+RyPp4OvEqYVT/1UN3kbn4=
 github.com/dustin/go-humanize v1.0.0/go.mod h1:HtrtbFcZ19U5GC7JDqmcUSB87Iq5E25KnS6fMYU6eOk=
 github.com/google/go-cmp v0.5.3/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/gNBxE=
 github.com/google/uuid v1.3.0 h1:t6JiXgmwXMjEs8VusXIJk2BXHsn+wx8BZdTaoZ5fu7I=

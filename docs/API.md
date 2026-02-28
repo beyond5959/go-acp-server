@@ -40,8 +40,8 @@ All errors use:
 2. `GET /v1/agents`
 - Headers: `X-Client-ID` (required), optional bearer auth if enabled.
 - `codex` status contract:
-  - when `--codex-acp-go-bin` is not configured: `unconfigured`
-  - when `--codex-acp-go-bin` is configured: `available`
+  - when embedded codex runtime preflight succeeds (for example `codex app-server` command is available): `available`
+  - when embedded runtime preflight fails: `unavailable`
 - Response `200`:
 
 ```json
@@ -49,8 +49,8 @@ All errors use:
   "agents": [
     {
       "id": "codex",
-      "name": "Codex (via codex-acp-go)",
-      "status": "unconfigured"
+      "name": "Codex (embedded codex-acp)",
+      "status": "available"
     },
     {
       "id": "claude",

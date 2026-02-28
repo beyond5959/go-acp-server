@@ -70,13 +70,13 @@
 - Follow-up plan: add explicit `permission_resolved` event with reason (`timeout|disconnect|client_decision`)
 
 - ID: KI-007
-- Title: Codex binary path misconfiguration
+- Title: Embedded codex runtime prerequisite mismatch
 - Status: Open
 - Severity: Medium
-- Affects: deployments enabling codex runtime provider
-- Symptom: codex turn creation fails at runtime with provider resolution/start errors
-- Workaround: set absolute `--codex-acp-go-bin` path and verify executable permissions before startup
-- Follow-up plan: add proactive startup preflight check for configured codex binary
+- Affects: deployments enabling embedded codex provider
+- Symptom: codex turns fail when `codex app-server` prerequisites/auth/environment are not ready even though server binary is correctly configured
+- Workaround: verify codex CLI/app-server availability and auth state before issuing codex turns; inspect startup preflight and turn error logs
+- Follow-up plan: add richer preflight diagnostics and compatibility matrix checks for codex CLI vs linked `codex-acp` module versions
 
 - ID: KI-008
 - Title: Character-based context budgeting can diverge from token budgets

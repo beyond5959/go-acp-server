@@ -8,7 +8,7 @@ This file is the source of milestone progress, validation commands, and next act
 
 ## Current Milestone
 
-- `Post-M8` Optional enhancements.
+- `Post-M8` Embedded codex mode migration and maintenance.
 
 ## Status
 
@@ -64,6 +64,15 @@ This file is the source of milestone progress, validation commands, and next act
   - aligned API/SSE error code set to include `TIMEOUT` and `UPSTREAM_UNAVAILABLE` while removing non-standard codes from baseline.
   - validated SSE disconnect fail-closed behavior and non-hanging turn convergence.
   - updated acceptance checklist with executable `go test` and `curl` verification commands.
+- `Post-M8` maintenance completed:
+  - finalized canonical Go module path as `github.com/beyond5959/go-acp-server`.
+  - replaced placeholder import path references across in-repo Go sources/tests.
+- `Post-M8` embedded codex migration completed:
+  - switched codex provider from external `codex-acp-go` path-based process spawning to embedded `github.com/beyond5959/codex-acp/pkg/codexacp`.
+  - removed user-facing codex binary path flags; codex runtime is now linked into server and lazily created per thread on first turn.
+  - kept HTTP API semantics unchanged (`threads/turns/sse/permissions/history`) and preserved permission fail-closed round-trip.
+  - updated `/v1/agents` codex status contract to runtime preflight-based `available|unavailable`.
+  - updated codex smoke test gate to `E2E_CODEX=1` without `CODEX_ACP_GO_BIN` path dependency.
 
 ### In Progress
 
@@ -71,10 +80,11 @@ This file is the source of milestone progress, validation commands, and next act
 
 ### Next
 
-- Optional enhancement 1: WebSocket streaming transport in addition to SSE.
-- Optional enhancement 2: History/event pagination and cursor-based replay.
-- Optional enhancement 3: RBAC and finer-grained authorization policies.
-- Optional enhancement 4: Expanded audit logs and retention tooling.
+- Optional enhancement 1: add embedded-runtime preflight diagnostics endpoint (auth, app-server reachability, version compatibility).
+- Optional enhancement 2: WebSocket streaming transport in addition to SSE.
+- Optional enhancement 3: History/event pagination and cursor-based replay.
+- Optional enhancement 4: RBAC and finer-grained authorization policies.
+- Optional enhancement 5: Expanded audit logs and retention tooling.
 
 ## Verification Commands
 
@@ -108,6 +118,11 @@ This file is the source of milestone progress, validation commands, and next act
   - error: `lookup modernc.org: no such host`
 - Effective workaround:
   - used locally cached module `modernc.org/sqlite@v1.18.2` and offline-capable verification.
+- Failure 4:
+  - command: `go get github.com/beyond5959/codex-acp@dev`
+  - error: `lookup proxy.golang.org: no such host`
+- Effective workaround:
+  - reused locally cached `github.com/beyond5959/codex-acp` pseudo-version already present in module cache and pinned it as direct dependency in `go.mod`.
 
 ## Milestone Plan (M0-M8)
 
@@ -183,5 +198,5 @@ This file is the source of milestone progress, validation commands, and next act
 
 ## Notes
 
-- Temporary module path is used in `go.mod`.
-- TODO in later milestone: switch to canonical module path once repository import path is finalized.
+- Canonical module path is now finalized as `github.com/beyond5959/go-acp-server`.
+- All in-repo Go import paths were updated from placeholder path to canonical path.

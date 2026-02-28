@@ -3,43 +3,33 @@ package httpapi
 import (
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/example/code-agent-hub-server/internal/agents"
-	"github.com/example/code-agent-hub-server/internal/agents/acp"
-	"github.com/example/code-agent-hub-server/internal/storage"
+	"github.com/beyond5959/go-acp-server/internal/agents"
+	codexagent "github.com/beyond5959/go-acp-server/internal/agents/codex"
+	"github.com/beyond5959/go-acp-server/internal/storage"
 )
 
 func TestE2ECodexSmoke(t *testing.T) {
 	if strings.TrimSpace(os.Getenv("E2E_CODEX")) != "1" {
-		t.Skip("skip codex smoke test: set E2E_CODEX=1 and CODEX_ACP_GO_BIN=/abs/path/to/codex-acp-go")
+		t.Skip("skip codex smoke test: set E2E_CODEX=1")
 	}
 
-	codexBin := strings.TrimSpace(os.Getenv("CODEX_ACP_GO_BIN"))
-	if codexBin == "" {
-		t.Skip("skip codex smoke test: E2E_CODEX=1 but CODEX_ACP_GO_BIN is empty")
+	runtimeConfig := codexagent.DefaultRuntimeConfig()
+	if err := codexagent.Preflight(runtimeConfig); err != nil {
+		t.Skipf("skip codex smoke test: codex embedded preflight failed: %v", err)
 	}
-	if !filepath.IsAbs(codexBin) {
-		t.Skipf("skip codex smoke test: CODEX_ACP_GO_BIN must be absolute, got %q", codexBin)
-	}
-	if _, err := os.Stat(codexBin); err != nil {
-		t.Skipf("skip codex smoke test: CODEX_ACP_GO_BIN is not accessible: %v", err)
-	}
-
-	codexArgs := strings.Fields(strings.TrimSpace(os.Getenv("CODEX_ACP_GO_ARGS")))
 
 	root := t.TempDir()
 	h := newTestServer(t, testServerOptions{
 		allowedRoots: []string{root},
 		turnAgentFactory: func(thread storage.Thread) (agents.Streamer, error) {
-			return acp.New(acp.Config{
-				Command: codexBin,
-				Args:    codexArgs,
-				Dir:     thread.CWD,
-				Name:    "codex-acp-go",
+			return codexagent.New(codexagent.Config{
+				Dir:           thread.CWD,
+				Name:          "codex-embedded",
+				RuntimeConfig: runtimeConfig,
 			})
 		},
 		permissionTimeout: 20 * time.Second,

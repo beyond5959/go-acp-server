@@ -11,9 +11,11 @@
 - ADR-007: M3 thread API tenancy and path policy. (Accepted)
 - ADR-008: M4 turn streaming over SSE with persisted event log. (Accepted)
 - ADR-009: M5 ACP stdio provider and permission bridge. (Accepted)
-- ADR-010: M6 codex-acp-go runtime wiring. (Accepted)
+- ADR-010: M6 codex-acp-go runtime wiring. (Superseded)
 - ADR-011: M7 context window injection and compact policy. (Accepted)
 - ADR-012: M8 reliability alignment (TTL, shutdown, error codes). (Accepted)
+- ADR-013: Canonical Go module path finalization. (Accepted)
+- ADR-014: Codex provider migration from sidecar binary to embedded library. (Accepted)
 
 ## ADR Template
 
@@ -140,7 +142,7 @@ Use this template for new decisions.
 
 ## ADR-010: M6 Codex-ACP-Go Runtime Wiring
 
-- Status: Accepted
+- Status: Superseded by ADR-014
 - Date: 2026-02-28
 - Context: M6 needs real codex provider enablement while keeping default tests stable in environments without codex binaries.
 - Decision:
@@ -184,3 +186,30 @@ Use this template for new decisions.
 - Consequences: operational behavior is predictable under contention, disconnects, and process lifecycle transitions.
 - Alternatives considered: no idle janitor (manual cleanup only), immediate hard shutdown without grace period, preserving non-unified legacy error codes.
 - Follow-up actions: optional enhancements after M8 include WebSocket transport, paginated history, RBAC, and audit expansion.
+
+## ADR-013: Canonical Go Module Path Finalization
+
+- Status: Accepted
+- Date: 2026-02-28
+- Context: repository ownership and canonical GitHub path are now stable (`github.com/beyond5959/go-acp-server`), while source imports still used a placeholder module path.
+- Decision:
+  - set `go.mod` module path to `github.com/beyond5959/go-acp-server`.
+  - update all in-repo imports from `github.com/example/code-agent-hub-server/...` to canonical module path.
+- Consequences: local builds/tests and downstream module consumers resolve a single stable import path; placeholder path drift is removed.
+- Alternatives considered: keep placeholder path longer and defer until post-release.
+- Follow-up actions: ensure any external examples/scripts use canonical import path only.
+
+## ADR-014: Codex Provider Migration to Embedded Library
+
+- Status: Accepted
+- Date: 2026-02-28
+- Context: sidecar mode required user-facing binary path configuration (`--codex-acp-go-bin`) and made deployment ergonomics/error modes depend on path wiring.
+- Decision:
+  - replace codex turn execution from external `codex-acp-go` process spawning to in-process `github.com/beyond5959/codex-acp/pkg/codexacp` embedded runtime.
+  - remove user-facing codex binary path flags; server now links codex-acp library directly.
+  - keep lazy startup and per-thread isolation by creating one embedded runtime per thread provider on first turn.
+  - keep existing HTTP/SSE/permission/history contracts unchanged; permission round-trip remains fail-closed.
+  - set `/v1/agents` codex status by embedded runtime preflight (`available`/`unavailable`) instead of path-config presence.
+- Consequences: simpler operator UX and fewer path misconfiguration failures; server binary is now more tightly coupled to codex-acp module/runtime behavior.
+- Alternatives considered: keep sidecar-only mode; dual mode (embedded + sidecar fallback).
+- Follow-up actions: define codex-acp version pin/upgrade policy and add compatibility smoke checks across codex CLI/app-server versions.
