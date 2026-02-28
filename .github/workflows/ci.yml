@@ -2,9 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
-    tags-ignore: ["v*"]   # releases handled by release.yml
-  pull_request:
+    branches: ["master"]
 
 jobs:
   test:
@@ -23,7 +21,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: internal/webui/web/package-lock.json
 
