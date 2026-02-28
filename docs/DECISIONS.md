@@ -18,6 +18,7 @@
 - ADR-014: Codex provider migration from sidecar binary to embedded library. (Accepted)
 - ADR-015: First-turn prompt passthrough for slash-command compatibility in embedded codex mode. (Accepted)
 - ADR-016: Remove `--allowed-root` runtime parameter and default to absolute-cwd policy. (Accepted)
+- ADR-017: Human-readable startup summary and request completion access logs. (Accepted)
 
 ## ADR Template
 
@@ -250,3 +251,21 @@ Use this template for new decisions.
   - preserve strict allowlist-only behavior.
 - Follow-up actions:
   - evaluate policy controls (for example opt-in restrictive mode) if deployments need stronger path boundaries.
+
+## ADR-017: Human-Readable Startup Summary and Request Access Logs
+
+- Status: Accepted
+- Date: 2026-02-28
+- Context: local operators found single-line JSON startup output hard to scan quickly; runtime troubleshooting also needed stable request completion telemetry.
+- Decision:
+  - print a concise multi-line startup summary to stderr with `Time`, `HTTP`, `DB`, `Agents`, and `Help`.
+  - keep structured request completion logs via `slog` for all HTTP traffic.
+  - include `requestTime`, `method`, `path`, `ip`, `statusCode`, `durationMs`, and `responseBytes` in completion logs.
+- Consequences:
+  - local startup UX is easier to read without parsing JSON.
+  - request observability is consistent across normal JSON responses and long-lived SSE requests.
+- Alternatives considered:
+  - keep startup as JSON only.
+  - add ad-hoc per-endpoint logging instead of one centralized completion logger.
+- Follow-up actions:
+  - add optional request id correlation in completion logs and outbound SSE error events.

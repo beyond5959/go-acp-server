@@ -93,6 +93,14 @@ This file is the source of milestone progress, validation commands, and next act
   - adjusted README/SPEC/API/ARCHITECTURE wording to emphasize ACP-compatible multi-agent goal.
   - kept current-state note explicit: today only `codex` is built-in.
   - simplified README startup path to `agent-hub-server` with explicit `agent-hub-server --help` guidance.
+- `Post-M8` startup log UX simplification completed:
+  - replaced startup JSON line with multi-line human-readable stderr summary (`Time`, `HTTP`, `DB`, `Agents`, `Help`).
+  - added per-request completion logs containing `requestTime`, `method`, `path`, `ip`, `statusCode`, `durationMs`, and `responseBytes`.
+  - added unit test coverage for startup summary rendering and request completion log fields.
+- `Post-M8` agent display naming normalization completed:
+  - standardized `/v1/agents` display names to `Codex` and `Claude Code`.
+  - synchronized test fixtures and API documentation examples with the same canonical names.
+  - startup summary now renders agent display names (not lowercase ids): `Codex (available), Claude Code (unavailable)`.
 
 ### In Progress
 
@@ -162,7 +170,7 @@ This file is the source of milestone progress, validation commands, and next act
 - Scope: `/healthz`, `/v1/agents`, auth toggle, startup logs.
 - DoD:
   - endpoints return stable JSON.
-  - startup log includes time, port, db path, supported agents.
+  - startup log is concise and includes listen endpoint, db path, and supported agent statuses.
   - tests cover happy path and invalid config.
 
 ### M2: SQLite Storage and Migrations

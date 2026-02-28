@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
@@ -43,6 +44,58 @@ func TestHealthz(t *testing.T) {
 	}
 	if !body.OK {
 		t.Fatalf("ok = %v, want true", body.OK)
+	}
+}
+
+func TestRequestCompletionLogIncludesPathIPAndStatus(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+	h := newTestServer(t, testServerOptions{logger: logger})
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.RemoteAddr = "198.51.100.23:53001"
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	lines := strings.Split(strings.TrimSpace(logBuf.String()), "\n")
+	entry := map[string]any{}
+	found := false
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		candidate := map[string]any{}
+		if err := json.Unmarshal([]byte(line), &candidate); err != nil {
+			continue
+		}
+		if candidate["msg"] == "http.request.completed" {
+			entry = candidate
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing http.request.completed log entry, logs:\n%s", logBuf.String())
+	}
+
+	if got := fmt.Sprintf("%v", entry["method"]); got != http.MethodGet {
+		t.Fatalf("log method = %q, want %q", got, http.MethodGet)
+	}
+	if got := fmt.Sprintf("%v", entry["path"]); got != "/healthz" {
+		t.Fatalf("log path = %q, want %q", got, "/healthz")
+	}
+	if got := fmt.Sprintf("%v", entry["ip"]); got != "198.51.100.23" {
+		t.Fatalf("log ip = %q, want %q", got, "198.51.100.23")
+	}
+	if got := int(entry["statusCode"].(float64)); got != http.StatusOK {
+		t.Fatalf("log statusCode = %d, want %d", got, http.StatusOK)
+	}
+	if got := fmt.Sprintf("%v", entry["requestTime"]); strings.TrimSpace(got) == "" {
+		t.Fatalf("log requestTime is empty")
 	}
 }
 
@@ -927,6 +980,7 @@ type testServerOptions struct {
 	turnAgentFactory  TurnAgentFactory
 	agentIdleTTL      time.Duration
 	permissionTimeout time.Duration
+	logger            *slog.Logger
 }
 
 func newTestServer(t *testing.T, opt testServerOptions) *Server {
@@ -958,8 +1012,8 @@ func newTestServer(t *testing.T, opt testServerOptions) *Server {
 	server := New(Config{
 		AuthToken: opt.authToken,
 		Agents: []AgentInfo{
-			{ID: "codex", Name: "Codex (embedded codex-acp)", Status: "available"},
-			{ID: "claude", Name: "Claude (placeholder)", Status: "unavailable"},
+			{ID: "codex", Name: "Codex", Status: "available"},
+			{ID: "claude", Name: "Claude Code", Status: "unavailable"},
 		},
 		AllowedAgentIDs:   []string{"codex"},
 		AllowedRoots:      allowedRoots,
@@ -968,6 +1022,7 @@ func newTestServer(t *testing.T, opt testServerOptions) *Server {
 		TurnAgentFactory:  turnAgentFactory,
 		AgentIdleTTL:      opt.agentIdleTTL,
 		PermissionTimeout: opt.permissionTimeout,
+		Logger:            opt.logger,
 	})
 	t.Cleanup(func() {
 		_ = server.Close()
@@ -1005,8 +1060,8 @@ func newTestServerWithDBPath(t *testing.T, dbPath string, opt testServerOptions)
 	server := New(Config{
 		AuthToken: opt.authToken,
 		Agents: []AgentInfo{
-			{ID: "codex", Name: "Codex (embedded codex-acp)", Status: "available"},
-			{ID: "claude", Name: "Claude (placeholder)", Status: "unavailable"},
+			{ID: "codex", Name: "Codex", Status: "available"},
+			{ID: "claude", Name: "Claude Code", Status: "unavailable"},
 		},
 		AllowedAgentIDs:   []string{"codex"},
 		AllowedRoots:      allowedRoots,
@@ -1015,6 +1070,7 @@ func newTestServerWithDBPath(t *testing.T, dbPath string, opt testServerOptions)
 		TurnAgentFactory:  turnAgentFactory,
 		AgentIdleTTL:      opt.agentIdleTTL,
 		PermissionTimeout: opt.permissionTimeout,
+		Logger:            opt.logger,
 	})
 	return server, func() {
 		_ = server.Close()
