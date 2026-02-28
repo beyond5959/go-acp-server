@@ -25,9 +25,6 @@ jobs:
           cache: npm
           cache-dependency-path: internal/webui/web/package-lock.json
 
-      - name: Update npm
-        run: npm install -g npm@11
-
       - name: Build frontend
         run: make build-web
 
