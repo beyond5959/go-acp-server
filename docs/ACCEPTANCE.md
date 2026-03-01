@@ -57,20 +57,20 @@ This checklist defines executable acceptance checks for requirements 1-11.
   - `go test ./internal/httpapi -run TestTurnPermissionTimeoutFailClosed -count=1`
   - `go test ./internal/httpapi -run TestTurnPermissionSSEDisconnectFailClosed -count=1`
 
-## Requirement 8: Localhost default and explicit public opt-in
+## Requirement 8: Public-by-default bind with local-only opt-out
 
 - Operation: validate listen address policy with/without allow-public.
-- Expected: non-loopback bind denied unless `--allow-public=true`.
+- Expected: non-loopback bind is allowed by default; `--allow-public=false` restricts to loopback only.
 - Verification command:
   - `go test ./cmd/agent-hub-server -run TestValidateListenAddr -count=1`
 
 ## Requirement 9: Startup logging contract
 
 - Operation: start server and inspect startup output on stderr.
-- Expected: startup summary is multi-line, human-readable, and includes `Time`, `HTTP`, `DB`, `Agents`, and `Help`.
+- Expected: startup output is multi-line, human-readable, includes a QR code (when public bind is enabled), and prints the service port + a concrete URL under the QR code.
 - Verification command:
   - `go test ./cmd/agent-hub-server -count=1`
-  - manual run: `go run ./cmd/agent-hub-server --listen 127.0.0.1:8686`
+  - manual run: `go run ./cmd/agent-hub-server`
 
 ## Requirement 10: Unified errors and structured logs
 
@@ -103,7 +103,7 @@ This checklist defines executable acceptance checks for requirements 1-11.
 - Expected: UI loads, threads can be created, turns stream in real time, permissions can be resolved, history is browsable.
 - Verification command:
   - `go test ./internal/webui -count=1` (checks `GET /` returns 200 with `text/html` content-type and SPA fallback)
-  - manual: `make run` → open `http://127.0.0.1:8686/` in browser
+  - manual: `make run` → open `http://127.0.0.1:8686/` or scan the startup QR code from another device
 
 ## Global Gate
 

@@ -6,6 +6,8 @@ toolchain go1.24.6
 
 require modernc.org/sqlite v1.18.2
 
+require github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
+
 require (
 	github.com/beyond5959/codex-acp v0.0.0-20260228090155-c970dbe97f4a
 	github.com/google/uuid v1.3.0 // indirect

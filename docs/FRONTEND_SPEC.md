@@ -158,12 +158,10 @@ GET /assets/*  → serve Vite 打包的 JS/CSS/font 资源
 
 ```
 Agent Hub Server started
-  Time:   2026-02-28 10:00:00 CST
-  HTTP:   http://127.0.0.1:8686
-  Web:    http://127.0.0.1:8686/          ← 新增
-  DB:     ~/.go-agent-server/agent-hub.db
-  Agents: Codex (available), Claude Code (unavailable)
-  Help:   agent-hub-server --help
+  [QR Code]
+Port: 8686
+URL:  http://192.168.1.10:8686/
+On your local network, scan the QR code above or open the URL.
 ```
 
 ### 6.4 Makefile 更新

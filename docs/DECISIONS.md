@@ -6,7 +6,7 @@
 - ADR-002: Client identity via `X-Client-ID` header. (Accepted)
 - ADR-003: SQLite append-only events table as interaction source of truth. (Accepted)
 - ADR-004: Permission handling defaults to fail-closed. (Accepted)
-- ADR-005: Default bind is localhost only. (Accepted)
+- ADR-005: Default bind is localhost only. (Superseded)
 - ADR-006: M1 API baseline for health/auth/agents. (Accepted)
 - ADR-007: M3 thread API tenancy and path policy. (Accepted)
 - ADR-008: M4 turn streaming over SSE with persisted event log. (Accepted)
@@ -22,6 +22,7 @@
 - ADR-018: Embedded Web UI via Go embed. (Accepted)
 - ADR-019: OpenCode ACP stdio provider. (Accepted)
 - ADR-020: Gemini CLI ACP stdio provider. (Accepted)
+- ADR-021: Public-by-default bind with local-only opt-out. (Accepted)
 
 ## ADR-018: Embedded Web UI via Go embed
 
@@ -34,7 +35,7 @@
   - register `GET /` and `GET /assets/*` in `httpapi` (lower priority than all `/v1/*` and `/healthz` routes).
   - SPA fallback: any non-API path returns `index.html`.
   - `make build-web` produces the dist; `web/dist` is committed so users without Node.js can still `go build`.
-  - startup summary gains a `Web:` line pointing to the UI URL.
+  - startup output includes a QR code for quickly opening the UI from another device on the same LAN.
 - Consequences: single-binary distribution with no external file dependencies; Go binary size increases by the size of the minified JS/CSS bundle (~200–400 KB estimated). Build pipeline requires Node.js for frontend changes.
 - Alternatives considered: separate static file directory (requires deployment of two artifacts); WebSocket-only SPA (rejected: SSE already implemented); React/Vue framework (rejected: adds runtime bundle weight and build complexity).
 - Follow-up actions: add `npm run build` to CI pipeline; version-pin Node.js in project tooling docs.
@@ -96,13 +97,29 @@ Use this template for new decisions.
 
 ## ADR-005: Localhost-by-Default Network Policy
 
-- Status: Accepted
+- Status: Superseded by ADR-021
 - Date: 2026-02-28
 - Context: server may expose local filesystem and command capabilities.
 - Decision: default bind `127.0.0.1:8686`; require explicit `--allow-public=true` for public interfaces.
 - Consequences: secure local default; remote access requires intentional operator action.
 - Alternatives considered: public by default.
 - Follow-up actions: add warning log when public bind is enabled.
+
+## ADR-021: Public-by-Default Bind with Local-Only Opt-Out
+
+- Status: Accepted
+- Date: 2026-03-01
+- Context: the primary use case is multi-device access (phone/tablet) on the same LAN, using the startup QR code for quick connection.
+- Decision:
+  - default bind changes to `0.0.0.0:8686`.
+  - `--allow-public` defaults to `true`; setting `--allow-public=false` restricts binds to loopback only.
+  - startup output prints a QR code for device-reachable access and prints the service port under the QR code.
+- Consequences:
+  - easier out-of-the-box access from other devices.
+  - operators must opt out explicitly when they need loopback-only safety.
+- Alternatives considered:
+  - keep localhost default and require an explicit `--allow-public=true`.
+  - add separate `--public`/`--local-only` flags.
 
 ## ADR-006: M1 API Baseline for Health/Auth/Agents
 
@@ -277,7 +294,7 @@ Use this template for new decisions.
 - Date: 2026-02-28
 - Context: local operators found single-line JSON startup output hard to scan quickly; runtime troubleshooting also needed stable request completion telemetry.
 - Decision:
-  - print a concise multi-line startup summary to stderr with `Time`, `HTTP`, `DB`, `Agents`, and `Help`.
+  - print a concise multi-line startup summary to stderr with a QR code; print the service port and a concrete URL under the QR code.
   - keep structured request completion logs via `slog` for all HTTP traffic.
   - include `requestTime`, `method`, `path`, `ip`, `statusCode`, `durationMs`, and `responseBytes` in completion logs.
 - Consequences:

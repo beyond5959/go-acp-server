@@ -97,8 +97,8 @@ See `docs/API.md` for endpoint and schema contracts.
 
 ## 9. Security and Runtime Constraints
 
-- default bind: `127.0.0.1:8686`.
-- public bind only when `--allow-public=true`.
+- default bind: `0.0.0.0:8686` (LAN-accessible).
+- local-only bind when `--allow-public=false`.
 - strict input validation:
   - agent must be allowlisted.
   - cwd must be absolute.

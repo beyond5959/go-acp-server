@@ -29,7 +29,6 @@ go build ./...     # compile check
 
 - Use **Go 1.24**. Module path: `github.com/beyond5959/go-acp-server`.
 - `go test ./...` must pass for every change.
-- Default listen address is `127.0.0.1`; public interfaces require explicit `--allow-public=true`.
 - Input validation:
   - `agent` must be in the server allowlist.
   - `cwd` must be an absolute path.

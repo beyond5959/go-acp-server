@@ -24,7 +24,7 @@ func TestValidateListenAddr(t *testing.T) {
 		wantPort    int
 	}{
 		{
-			name:        "loopback_default_allowed",
+			name:        "loopback_allowed_when_public_disabled",
 			listenAddr:  "127.0.0.1:8686",
 			allowPublic: false,
 			wantErr:     false,
@@ -38,19 +38,19 @@ func TestValidateListenAddr(t *testing.T) {
 			wantPort:    8080,
 		},
 		{
-			name:        "public_ipv4_denied_without_flag",
+			name:        "public_ipv4_denied_when_public_disabled",
 			listenAddr:  "0.0.0.0:8686",
 			allowPublic: false,
 			wantErr:     true,
 		},
 		{
-			name:        "public_ipv6_denied_without_flag",
+			name:        "public_ipv6_denied_when_public_disabled",
 			listenAddr:  "[::]:8686",
 			allowPublic: false,
 			wantErr:     true,
 		},
 		{
-			name:        "public_ipv4_allowed_with_flag",
+			name:        "public_ipv4_allowed_when_public_enabled",
 			listenAddr:  "0.0.0.0:8686",
 			allowPublic: true,
 			wantErr:     false,
@@ -176,21 +176,31 @@ func TestGracefulShutdownForceCancelsTurns(t *testing.T) {
 func TestPrintStartupSummary(t *testing.T) {
 	var out bytes.Buffer
 	startedAt := time.Date(2026, time.February, 28, 18, 1, 2, 0, time.FixedZone("UTC+8", 8*3600))
-	printStartupSummary(&out, startedAt, "127.0.0.1:8686", "/tmp/agent-hub.db", "Codex (available), Claude Code (unavailable)")
+	printStartupSummary(&out, startedAt)
 
 	text := out.String()
 	checks := []string{
 		"Agent Hub Server started",
-		"Time:",
-		"HTTP:   http://127.0.0.1:8686",
-		"Web:    http://127.0.0.1:8686/",
-		"DB:     /tmp/agent-hub.db",
-		"Agents: Codex (available), Claude Code (unavailable)",
-		"Help:   agent-hub-server --help",
 	}
 	for _, want := range checks {
 		if !strings.Contains(text, want) {
 			t.Fatalf("startup summary missing %q; got:\n%s", want, text)
 		}
+	}
+
+	for _, notWant := range []string{"Time:", "DB:", "Agents:", "Help:", "agent-hub-server --help", "HTTP:", "Web:", "LAN:"} {
+		if strings.Contains(text, notWant) {
+			t.Fatalf("startup summary unexpectedly contains %q; got:\n%s", notWant, text)
+		}
+	}
+}
+
+func TestPrintLANQRCodeDoesNotPrintURLOrLabels(t *testing.T) {
+	var out bytes.Buffer
+	if _, ok := printLANQRCode(&out, "127.0.0.1:8686"); ok {
+		t.Fatalf("printLANQRCode should be a no-op on loopback")
+	}
+	if got := out.String(); got != "" {
+		t.Fatalf("printLANQRCode unexpectedly wrote output for loopback:\n%s", got)
 	}
 }
