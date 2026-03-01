@@ -20,6 +20,7 @@ import (
 
 	agentimpl "github.com/beyond5959/go-acp-server/internal/agents"
 	codexagent "github.com/beyond5959/go-acp-server/internal/agents/codex"
+	geminiagent "github.com/beyond5959/go-acp-server/internal/agents/gemini"
 	opencodeagent "github.com/beyond5959/go-acp-server/internal/agents/opencode"
 	"github.com/beyond5959/go-acp-server/internal/httpapi"
 	"github.com/beyond5959/go-acp-server/internal/runtime"
@@ -50,6 +51,7 @@ func main() {
 	codexRuntimeConfig := codexagent.DefaultRuntimeConfig()
 	codexPreflightErr := codexagent.Preflight(codexRuntimeConfig)
 	opencodePreflightErr := opencodeagent.Preflight()
+	geminiPreflightErr := geminiagent.Preflight()
 
 	if *contextRecentTurns <= 0 {
 		logger.Error("startup.invalid_context_recent_turns", "value", *contextRecentTurns)
@@ -74,13 +76,17 @@ func main() {
 
 	codexAvailable := codexPreflightErr == nil
 	opencodeAvailable := opencodePreflightErr == nil
+	geminiAvailable := geminiPreflightErr == nil
 	if codexPreflightErr != nil {
 		logger.Warn("startup.codex_embedded_unavailable", "error", codexPreflightErr.Error())
 	}
 	if opencodePreflightErr != nil {
 		logger.Warn("startup.opencode_unavailable", "error", opencodePreflightErr.Error())
 	}
-	agents := supportedAgents(codexAvailable, opencodeAvailable)
+	if geminiPreflightErr != nil {
+		logger.Warn("startup.gemini_unavailable", "error", geminiPreflightErr.Error())
+	}
+	agents := supportedAgents(codexAvailable, opencodeAvailable, geminiAvailable)
 
 	listenAddr, _, err := validateListenAddr(*listenAddrFlag, *allowPublic)
 	if err != nil {
@@ -113,7 +119,7 @@ func main() {
 	handler := httpapi.New(httpapi.Config{
 		AuthToken:       *authToken,
 		Agents:          agents,
-		AllowedAgentIDs: []string{"codex", "opencode"},
+		AllowedAgentIDs: []string{"codex", "opencode", "gemini"},
 		AllowedRoots:    allowedRoots,
 		Store:           store,
 		TurnController:  turnController,
@@ -131,6 +137,8 @@ func main() {
 					Dir:     thread.CWD,
 					ModelID: modelID,
 				})
+			case "gemini":
+				return geminiagent.New(geminiagent.Config{Dir: thread.CWD})
 			default:
 				return nil, fmt.Errorf("unsupported thread agent %q", thread.AgentID)
 			}
@@ -189,7 +197,8 @@ func extractModelID(agentOptionsJSON string) string {
 	return strings.TrimSpace(opts.ModelID)
 }
 
-func supportedAgents(codexAvailable, opencodeAvailable bool) []httpapi.AgentInfo {	codexStatus := "unavailable"
+func supportedAgents(codexAvailable, opencodeAvailable, geminiAvailable bool) []httpapi.AgentInfo {
+	codexStatus := "unavailable"
 	if codexAvailable {
 		codexStatus = "available"
 	}
@@ -197,10 +206,15 @@ func supportedAgents(codexAvailable, opencodeAvailable bool) []httpapi.AgentInfo
 	if opencodeAvailable {
 		opencodeStatus = "available"
 	}
+	geminiStatus := "unavailable"
+	if geminiAvailable {
+		geminiStatus = "available"
+	}
 
 	return []httpapi.AgentInfo{
 		{ID: "codex", Name: "Codex", Status: codexStatus},
 		{ID: "opencode", Name: "OpenCode", Status: opencodeStatus},
+		{ID: "gemini", Name: "Gemini CLI", Status: geminiStatus},
 		{ID: "claude", Name: "Claude Code", Status: "unavailable"},
 	}
 }

@@ -120,3 +120,11 @@ This checklist defines executable acceptance checks for requirements 1-11.
 - Verification commands:
   - `go test ./internal/agents/opencode -run TestStreamWithFakeProcess -count=1`
   - `E2E_OPENCODE=1 go test ./internal/agents/opencode -run TestOpenCodeE2ESmoke -v -timeout 60s`
+
+## Requirement 15: Gemini CLI Agent
+
+- Operation: verify Gemini CLI provider is listed and can complete a turn.
+- Expected: `GET /v1/agents` includes `{"id":"gemini","name":"Gemini CLI","status":"available"}` when `gemini` is in PATH and `GEMINI_API_KEY` is set; a full turn over SSE returns `message_delta` events.
+- Verification commands:
+  - `go test ./internal/agents/gemini -run TestStreamWithFakeProcess -count=1`
+  - `E2E_GEMINI=1 go test ./internal/agents/gemini -run TestGeminiE2ESmoke -v -timeout 60s`

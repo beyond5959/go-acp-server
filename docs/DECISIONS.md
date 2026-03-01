@@ -21,6 +21,7 @@
 - ADR-017: Human-readable startup summary and request completion access logs. (Accepted)
 - ADR-018: Embedded Web UI via Go embed. (Accepted)
 - ADR-019: OpenCode ACP stdio provider. (Accepted)
+- ADR-020: Gemini CLI ACP stdio provider. (Accepted)
 
 ## ADR-018: Embedded Web UI via Go embed
 
@@ -304,3 +305,20 @@ Use this template for new decisions.
   - `opencode` binary must be in PATH for the provider to be available; Preflight() is called at startup.
   - Model selection is optional via `agentOptions.modelId` in thread creation; defaults to OpenCode's configured default.
   - Turn cancel sends `session/cancel` and kills the process within 2s if it doesn't exit cleanly.
+
+## ADR-020: Gemini CLI ACP stdio provider
+
+- Status: Accepted
+- Date: 2026-03-01
+- Context: Gemini CLI (v0.31+) supports ACP via `--experimental-acp` flag; it uses the `@agentclientprotocol/sdk` npm package which speaks standard newline-delimited JSON-RPC 2.0 over stdio.
+- Decision: implement `internal/agents/gemini` as a standalone ACP stdio provider. One `gemini --experimental-acp` process is spawned per turn. Protocol flow: `initialize` → `authenticate` → `session/new` → `session/prompt` with streaming `session/update` notifications.
+- Key protocol details:
+  - `PROTOCOL_VERSION = 1` (integer).
+  - An explicit `authenticate({methodId: "gemini-api-key"})` call is required between `initialize` and `session/new` so Gemini reads `GEMINI_API_KEY` from the environment.
+  - `GEMINI_CLI_HOME` is set to a fresh temp directory per turn, containing a minimal `settings.json` that selects API key auth; this prevents Gemini CLI from writing OAuth browser prompts to stdout, which would corrupt the JSON-RPC stream.
+  - `session/update` notifications carry delta text under `update.content.text` for `agent_message_chunk` events (same structure as OpenCode).
+  - Gemini can send `session/request_permission` requests; the provider bridges these through the hub server's `PermissionHandler` context mechanism. Approved maps to `{outcome: {outcome: "selected", optionId: "allow_once"}}`, declined to `reject_once`, cancelled to `{outcome: {outcome: "cancelled"}}`.
+  - Turn cancel sends a `session/cancel` notification (no id, no response expected) and kills the process within 2s.
+- Consequences:
+  - `gemini` binary must be in PATH and `GEMINI_API_KEY` must be set for the provider to be available.
+  - No model selection option at thread creation time; model is controlled by Gemini CLI's own configuration.
