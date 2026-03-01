@@ -13,6 +13,41 @@ const iconChevron = `<svg width="12" height="12" viewBox="0 0 12 12" fill="none"
   <path d="M2 4l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`
 
+// ── Agent Icons ─────────────────────────────────────────────────────────────
+// Official brand icons via Simple Icons (https://simpleicons.org, CC0 license)
+// Layout: 32×32 rounded-rect badge (brand color) + white icon path (24×24, inset 4px)
+
+const agentIcons: Record<string, string> = {
+  // Codex official icon — developers.openai.com/images/codex/codex-banner-icon.webp
+  codex: `<img src="/codex-icon.png" width="32" height="32" alt="Codex" style="border-radius:8px;display:block;">`,
+
+  // Gemini CLI official icon — https://geminicli.com/icon.png
+  gemini: `<img src="/gemini-icon.png" width="32" height="32" alt="Gemini CLI" style="border-radius:8px;display:block;">`,
+
+  // Claude Code official icon — lobehub/lobe-icons claude-color.png
+  claude: `<img src="/claude-icon.png" width="32" height="32" alt="Claude Code" style="border-radius:8px;display:block;">`,
+
+  // OpenCode — no Simple Icons entry yet; using Heroicons terminal icon (MIT)
+  opencode: `<svg width="32" height="32" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+    <rect width="32" height="32" rx="8" fill="#1a1a1a"/>
+    <g transform="translate(4,4)" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25z"/>
+    </g>
+  </svg>`,
+}
+
+const iconAgentDefault = `<svg width="32" height="32" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+  <rect width="32" height="32" rx="8" fill="#6B7280"/>
+  <g transform="translate(4,4)" stroke="white" stroke-width="1.5" stroke-linecap="round">
+    <circle cx="12" cy="12" r="9"/>
+    <path d="M12 8v4l3 3"/>
+  </g>
+</svg>`
+
+function agentIcon(agentId: string): string {
+  return agentIcons[agentId] ?? iconAgentDefault
+}
+
 // ── State ──────────────────────────────────────────────────────────────────
 
 interface ModalState {
@@ -39,12 +74,8 @@ function renderAgentCard(agent: AgentInfo, selected: boolean): string {
         ${disabled ? 'disabled' : ''}
         class="agent-card-radio"
       />
-      <div class="agent-card-body">
-        <span class="agent-card-name">${escHtml(agent.name)}</span>
-        <span class="agent-card-status ${agent.status === 'available' ? 'agent-card-status--ok' : 'agent-card-status--off'}">
-          ${agent.status}
-        </span>
-      </div>
+      <div class="agent-card-icon">${agentIcon(agent.id)}</div>
+      <span class="agent-card-name">${escHtml(agent.name)}</span>
     </label>`
 }
 

@@ -76,10 +76,15 @@ function skeletonItems(): string {
     </div>`).join('')
 }
 
+function threadTitle(t: Thread): string {
+  if (t.title) return t.title
+  return t.cwd.split('/').filter(Boolean).pop() ?? t.cwd
+}
+
 function renderThreadItem(t: Thread, activeId: string | null, query: string): string {
   const isActive     = t.threadId === activeId
   const initials     = (t.agent ?? 'A').slice(0, 1).toUpperCase()
-  const displayTitle = t.title || t.cwd
+  const displayTitle = threadTitle(t)
   const relTime      = t.updatedAt ? formatRelativeTime(t.updatedAt) : ''
 
   const titleHtml = query
@@ -115,7 +120,7 @@ function updateThreadList(): void {
   const q        = searchQuery.trim().toLowerCase()
   const filtered = q
     ? threads.filter(t =>
-        (t.title || t.cwd).toLowerCase().includes(q) || t.cwd.toLowerCase().includes(q),
+        (t.title || t.cwd).toLowerCase().includes(q) || threadTitle(t).toLowerCase().includes(q) || t.cwd.toLowerCase().includes(q),
       )
     : threads
 
@@ -325,7 +330,7 @@ function renderChatEmpty(): string {
 }
 
 function renderChatThread(t: Thread): string {
-  const titleLabel   = t.title || t.cwd
+  const titleLabel   = threadTitle(t)
   const createdLabel = t.createdAt ? `Created ${formatTimestamp(t.createdAt)}` : ''
 
   return `
