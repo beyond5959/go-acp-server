@@ -12,5 +12,8 @@ build: build-web
 run: build-web
 	go run ./cmd/agent-hub-server
 
+run-local: build-web
+	go run ./cmd/agent-hub-server --listen 127.0.0.1:8686 --allow-public=false
+
 fmt:
 	gofmt -w $$(find . -type f -name '*.go' -not -path './vendor/*')

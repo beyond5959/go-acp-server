@@ -57,20 +57,20 @@ This checklist defines executable acceptance checks for requirements 1-11.
   - `go test ./internal/httpapi -run TestTurnPermissionTimeoutFailClosed -count=1`
   - `go test ./internal/httpapi -run TestTurnPermissionSSEDisconnectFailClosed -count=1`
 
-## Requirement 8: Localhost default and explicit public opt-in
+## Requirement 8: Public-by-default bind with local-only opt-out
 
 - Operation: validate listen address policy with/without allow-public.
-- Expected: non-loopback bind denied unless `--allow-public=true`.
+- Expected: non-loopback bind is allowed by default; `--allow-public=false` restricts to loopback only.
 - Verification command:
   - `go test ./cmd/agent-hub-server -run TestValidateListenAddr -count=1`
 
 ## Requirement 9: Startup logging contract
 
 - Operation: start server and inspect startup output on stderr.
-- Expected: startup summary is multi-line, human-readable, and includes `Time`, `HTTP`, `DB`, `Agents`, and `Help`.
+- Expected: startup output is multi-line, human-readable, includes a QR code (when public bind is enabled), and prints the service port + a concrete URL under the QR code.
 - Verification command:
   - `go test ./cmd/agent-hub-server -count=1`
-  - manual run: `go run ./cmd/agent-hub-server --listen 127.0.0.1:8686`
+  - manual run: `go run ./cmd/agent-hub-server`
 
 ## Requirement 10: Unified errors and structured logs
 
@@ -103,7 +103,7 @@ This checklist defines executable acceptance checks for requirements 1-11.
 - Expected: UI loads, threads can be created, turns stream in real time, permissions can be resolved, history is browsable.
 - Verification command:
   - `go test ./internal/webui -count=1` (checks `GET /` returns 200 with `text/html` content-type and SPA fallback)
-  - manual: `make run` → open `http://127.0.0.1:8686/` in browser
+  - manual: `make run` → open `http://127.0.0.1:8686/` or scan the startup QR code from another device
 
 ## Global Gate
 
@@ -112,3 +112,19 @@ This checklist defines executable acceptance checks for requirements 1-11.
 - Verification command:
   - `gofmt -w $(find . -name '*.go' -type f)`
   - `go test ./...`
+
+## Requirement 14: OpenCode Agent
+
+- Operation: verify opencode provider is listed and can complete a turn.
+- Expected: `GET /v1/agents` includes `{"id":"opencode","name":"OpenCode","status":"available"}` when `opencode` is in PATH; a full turn over SSE returns `message_delta` events.
+- Verification commands:
+  - `go test ./internal/agents/opencode -run TestStreamWithFakeProcess -count=1`
+  - `E2E_OPENCODE=1 go test ./internal/agents/opencode -run TestOpenCodeE2ESmoke -v -timeout 60s`
+
+## Requirement 15: Gemini CLI Agent
+
+- Operation: verify Gemini CLI provider is listed and can complete a turn.
+- Expected: `GET /v1/agents` includes `{"id":"gemini","name":"Gemini CLI","status":"available"}` when `gemini` is in PATH and `GEMINI_API_KEY` is set; a full turn over SSE returns `message_delta` events.
+- Verification commands:
+  - `go test ./internal/agents/gemini -run TestStreamWithFakeProcess -count=1`
+  - `E2E_GEMINI=1 go test ./internal/agents/gemini -run TestGeminiE2ESmoke -v -timeout 60s`

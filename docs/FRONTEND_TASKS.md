@@ -37,6 +37,7 @@
 ### 验收标准
 
 - `make build-web && make run` 后，浏览器访问 `http://127.0.0.1:8686/` 返回 200，内容包含 "Agent Hub"。
+- `make build-web && make run` 后，局域网设备扫描启动输出中的二维码可打开 Web UI（页面包含 "Agent Hub"）。
 - `curl http://127.0.0.1:8686/v1/agents -H 'X-Client-ID: test'` 仍返回正确 JSON（API 路由不受影响）。
 - `go test ./...` 全部通过（含 webui 包单测：验证 Handler 对 `/` 返回 200 且 Content-Type 为 `text/html`）。
 
@@ -253,11 +254,11 @@
 
 ## F9：集成收尾
 
-**范围：** 启动摘要新增 Web 行，README/文档同步，PROGRESS.md 更新。
+**范围：** 启动输出二维码与端口提示，README/文档同步，PROGRESS.md 更新。
 
 ### 任务清单
 
-- [ ] `cmd/agent-hub-server/main.go`：`printStartupSummary` 增加 `Web: http://<addr>/` 行
+- [ ] `cmd/agent-hub-server/main.go`：启动输出包含二维码，并在二维码下方提示端口与「局域网用户可以扫上方二维码访问」。
 - [ ] 对应更新 `main_test.go` 中的启动摘要格式测试
 - [ ] `README.md`：新增「Web UI」章节，说明打开浏览器访问的地址
 - [ ] `docs/API.md`：新增 `GET /` 和 `GET /assets/*` 端点描述
@@ -268,8 +269,8 @@
 
 ### 验收标准
 
-- 启动服务，stderr 中包含 `Web:   http://127.0.0.1:8686/`。
-- `go test ./...` 全部通过（含新增 webui 包测试、main 测试中 Web 行验证）。
+- 启动服务，stderr 中包含二维码，并在二维码下方提示端口与「局域网用户可以扫上方二维码访问」。
+- `go test ./...` 全部通过（含新增 webui 包测试、main 测试中启动输出格式验证）。
 - `make build-web && go build ./...` 无错误完成。
 - 浏览器完整使用流程：新建会话 → 发送消息 → 查看历史 → 切换会话，全部功能端到端正常。
 
@@ -294,7 +295,7 @@ go build ./...
 
 # 端到端手动验证
 make run
-# 浏览器打开 http://127.0.0.1:8686
+# 浏览器打开 Web UI（本机可用 127.0.0.1，局域网设备扫二维码）
 # 1. 新建会话（选 Codex，填入真实绝对路径）
 # 2. 发送消息，确认流式回复
 # 3. 触发权限请求，点击 Allow

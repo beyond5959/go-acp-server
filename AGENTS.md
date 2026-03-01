@@ -6,8 +6,8 @@ This repository implements the Code Agent Hub Server.
 
 - MUST use Go 1.24.
 - MUST keep `go test ./...` passing for every change.
-- MUST listen on `127.0.0.1` by default.
-- MUST require explicit `--allow-public=true` to listen on public interfaces.
+- MUST default to LAN-accessible bind (`0.0.0.0:8686`) and print a QR code for quick access from other devices.
+- MUST support local-only mode when `--allow-public=false` (loopback-only binds).
 - MUST validate inputs:
   - `agent` must be in server allowlist.
   - `cwd` must be an absolute path.

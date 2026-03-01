@@ -9,12 +9,22 @@
 - ACP-compatible agent provider architecture (for example Claude Code, Gemini, OpenCode, Codex)
 - Strict runtime controls: one active turn per thread, fast cancel, and fail-closed permission handling
 
-By default, the server listens on `127.0.0.1` only.
+By default, the server listens on `0.0.0.0` and prints a QR code so other devices on the same LAN can connect.
 
 Current implementation status:
 
-- Built-in provider today: `codex` (embedded)
-- Additional ACP-compatible providers are planned through the same provider abstraction
+- Built-in providers: `codex` (embedded), `opencode` (ACP stdio), and `gemini` (ACP stdio via `--experimental-acp`)
+
+## Supported Agents
+
+| Agent | Supported |
+|---|---|
+| Codex | ✅ |
+| OpenCode | ✅ |
+| Gemini CLI | ✅ |
+| Claude Code | 🔜 |
+
+
 
 ## Installation
 
@@ -49,10 +59,22 @@ This README uses the default DB home path:
 - `DB_HOME=$HOME/.go-agent-server`
 - `DB_PATH=$HOME/.go-agent-server/agent-hub.db`
 
-Recommended local startup:
+Development (LAN-accessible) startup:
+
+```bash
+make run
+```
+
+Recommended startup:
 
 ```bash
 agent-hub-server
+```
+
+Local-only startup (no public bind):
+
+```bash
+agent-hub-server --listen 127.0.0.1:8686 --allow-public=false
 ```
 
 Show all CLI options:
@@ -75,12 +97,12 @@ agent-hub-server \
   --auth-token "your-token"
 ```
 
-Public bind (explicitly opt in):
+Local-only bind (explicitly opt out):
 
 ```bash
 agent-hub-server \
-  --listen 0.0.0.0:8686 \
-  --allow-public=true \
+  --listen 127.0.0.1:8686 \
+  --allow-public=false \
   --db-path "$HOME/.go-agent-server/agent-hub.db"
 ```
 
@@ -101,12 +123,10 @@ After starting the server, open your browser at the address shown in the startup
 
 ```
 Agent Hub Server started
-  Time:   2026-02-28 18:01:02 UTC+8
-  HTTP:   http://127.0.0.1:8686
-  Web:    http://127.0.0.1:8686/
-  DB:     /Users/you/.go-agent-server/agent-hub.db
-  Agents: Codex (available), Claude Code (unavailable)
-  Help:   agent-hub-server --help
+  [QR Code]
+Port: 8686
+URL:  http://192.168.1.10:8686/
+On your local network, scan the QR code above or open the URL.
 ```
 
 The built-in web UI lets you:

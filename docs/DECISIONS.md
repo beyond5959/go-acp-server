@@ -6,7 +6,7 @@
 - ADR-002: Client identity via `X-Client-ID` header. (Accepted)
 - ADR-003: SQLite append-only events table as interaction source of truth. (Accepted)
 - ADR-004: Permission handling defaults to fail-closed. (Accepted)
-- ADR-005: Default bind is localhost only. (Accepted)
+- ADR-005: Default bind is localhost only. (Superseded)
 - ADR-006: M1 API baseline for health/auth/agents. (Accepted)
 - ADR-007: M3 thread API tenancy and path policy. (Accepted)
 - ADR-008: M4 turn streaming over SSE with persisted event log. (Accepted)
@@ -19,6 +19,10 @@
 - ADR-015: First-turn prompt passthrough for slash-command compatibility in embedded codex mode. (Accepted)
 - ADR-016: Remove `--allowed-root` runtime parameter and default to absolute-cwd policy. (Accepted)
 - ADR-017: Human-readable startup summary and request completion access logs. (Accepted)
+- ADR-018: Embedded Web UI via Go embed. (Accepted)
+- ADR-019: OpenCode ACP stdio provider. (Accepted)
+- ADR-020: Gemini CLI ACP stdio provider. (Accepted)
+- ADR-021: Public-by-default bind with local-only opt-out. (Accepted)
 
 ## ADR-018: Embedded Web UI via Go embed
 
@@ -31,7 +35,7 @@
   - register `GET /` and `GET /assets/*` in `httpapi` (lower priority than all `/v1/*` and `/healthz` routes).
   - SPA fallback: any non-API path returns `index.html`.
   - `make build-web` produces the dist; `web/dist` is committed so users without Node.js can still `go build`.
-  - startup summary gains a `Web:` line pointing to the UI URL.
+  - startup output includes a QR code for quickly opening the UI from another device on the same LAN.
 - Consequences: single-binary distribution with no external file dependencies; Go binary size increases by the size of the minified JS/CSS bundle (~200–400 KB estimated). Build pipeline requires Node.js for frontend changes.
 - Alternatives considered: separate static file directory (requires deployment of two artifacts); WebSocket-only SPA (rejected: SSE already implemented); React/Vue framework (rejected: adds runtime bundle weight and build complexity).
 - Follow-up actions: add `npm run build` to CI pipeline; version-pin Node.js in project tooling docs.
@@ -93,13 +97,29 @@ Use this template for new decisions.
 
 ## ADR-005: Localhost-by-Default Network Policy
 
-- Status: Accepted
+- Status: Superseded by ADR-021
 - Date: 2026-02-28
 - Context: server may expose local filesystem and command capabilities.
 - Decision: default bind `127.0.0.1:8686`; require explicit `--allow-public=true` for public interfaces.
 - Consequences: secure local default; remote access requires intentional operator action.
 - Alternatives considered: public by default.
 - Follow-up actions: add warning log when public bind is enabled.
+
+## ADR-021: Public-by-Default Bind with Local-Only Opt-Out
+
+- Status: Accepted
+- Date: 2026-03-01
+- Context: the primary use case is multi-device access (phone/tablet) on the same LAN, using the startup QR code for quick connection.
+- Decision:
+  - default bind changes to `0.0.0.0:8686`.
+  - `--allow-public` defaults to `true`; setting `--allow-public=false` restricts binds to loopback only.
+  - startup output prints a QR code for device-reachable access and prints the service port under the QR code.
+- Consequences:
+  - easier out-of-the-box access from other devices.
+  - operators must opt out explicitly when they need loopback-only safety.
+- Alternatives considered:
+  - keep localhost default and require an explicit `--allow-public=true`.
+  - add separate `--public`/`--local-only` flags.
 
 ## ADR-006: M1 API Baseline for Health/Auth/Agents
 
@@ -274,7 +294,7 @@ Use this template for new decisions.
 - Date: 2026-02-28
 - Context: local operators found single-line JSON startup output hard to scan quickly; runtime troubleshooting also needed stable request completion telemetry.
 - Decision:
-  - print a concise multi-line startup summary to stderr with `Time`, `HTTP`, `DB`, `Agents`, and `Help`.
+  - print a concise multi-line startup summary to stderr with a QR code; print the service port and a concrete URL under the QR code.
   - keep structured request completion logs via `slog` for all HTTP traffic.
   - include `requestTime`, `method`, `path`, `ip`, `statusCode`, `durationMs`, and `responseBytes` in completion logs.
 - Consequences:
@@ -285,3 +305,37 @@ Use this template for new decisions.
   - add ad-hoc per-endpoint logging instead of one centralized completion logger.
 - Follow-up actions:
   - add optional request id correlation in completion logs and outbound SSE error events.
+
+## ADR-019: OpenCode ACP stdio provider
+
+- Status: Accepted
+- Date: 2026-03-01
+- Context: OpenCode supports ACP and is an actively developed coding agent; adding it as a provider gives users an alternative to the embedded Codex runtime.
+- Decision: implement `internal/agents/opencode` as a standalone ACP stdio provider. One `opencode acp --cwd <dir>` process is spawned per turn. The package is self-contained with its own JSON-RPC 2.0 transport layer to avoid coupling with the internal `acp` package.
+- Protocol differences from codex ACP that drove a separate implementation:
+  - `protocolVersion` field is an integer (`1`) not a string.
+  - `session/new` does not accept a client-supplied sessionId; the server assigns one and also returns a model list.
+  - `session/prompt` uses a `prompt` array of content items instead of a flat `input` string.
+  - `session/update` notifications carry delta text under `update.content.text` for `agent_message_chunk` events, not a flat `delta` field.
+  - No `session/request_permission` requests from server to client (OpenCode handles tool permissions internally via MCP).
+- Consequences:
+  - `opencode` binary must be in PATH for the provider to be available; Preflight() is called at startup.
+  - Model selection is optional via `agentOptions.modelId` in thread creation; defaults to OpenCode's configured default.
+  - Turn cancel sends `session/cancel` and kills the process within 2s if it doesn't exit cleanly.
+
+## ADR-020: Gemini CLI ACP stdio provider
+
+- Status: Accepted
+- Date: 2026-03-01
+- Context: Gemini CLI (v0.31+) supports ACP via `--experimental-acp` flag; it uses the `@agentclientprotocol/sdk` npm package which speaks standard newline-delimited JSON-RPC 2.0 over stdio.
+- Decision: implement `internal/agents/gemini` as a standalone ACP stdio provider. One `gemini --experimental-acp` process is spawned per turn. Protocol flow: `initialize` → `authenticate` → `session/new` → `session/prompt` with streaming `session/update` notifications.
+- Key protocol details:
+  - `PROTOCOL_VERSION = 1` (integer).
+  - An explicit `authenticate({methodId: "gemini-api-key"})` call is required between `initialize` and `session/new` so Gemini reads `GEMINI_API_KEY` from the environment.
+  - `GEMINI_CLI_HOME` is set to a fresh temp directory per turn, containing a minimal `settings.json` that selects API key auth; this prevents Gemini CLI from writing OAuth browser prompts to stdout, which would corrupt the JSON-RPC stream.
+  - `session/update` notifications carry delta text under `update.content.text` for `agent_message_chunk` events (same structure as OpenCode).
+  - Gemini can send `session/request_permission` requests; the provider bridges these through the hub server's `PermissionHandler` context mechanism. Approved maps to `{outcome: {outcome: "selected", optionId: "allow_once"}}`, declined to `reject_once`, cancelled to `{outcome: {outcome: "cancelled"}}`.
+  - Turn cancel sends a `session/cancel` notification (no id, no response expected) and kills the process within 2s.
+- Consequences:
+  - `gemini` binary must be in PATH and `GEMINI_API_KEY` must be set for the provider to be available.
+  - No model selection option at thread creation time; model is controlled by Gemini CLI's own configuration.

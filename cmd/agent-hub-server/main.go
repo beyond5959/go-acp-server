@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,10 +20,13 @@ import (
 
 	agentimpl "github.com/beyond5959/go-acp-server/internal/agents"
 	codexagent "github.com/beyond5959/go-acp-server/internal/agents/codex"
+	geminiagent "github.com/beyond5959/go-acp-server/internal/agents/gemini"
+	opencodeagent "github.com/beyond5959/go-acp-server/internal/agents/opencode"
 	"github.com/beyond5959/go-acp-server/internal/httpapi"
 	"github.com/beyond5959/go-acp-server/internal/runtime"
 	"github.com/beyond5959/go-acp-server/internal/storage"
 	"github.com/beyond5959/go-acp-server/internal/webui"
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 func main() {
@@ -34,8 +38,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	listenAddrFlag := flag.String("listen", "127.0.0.1:8686", "server listen address")
-	allowPublic := flag.Bool("allow-public", false, "allow listening on public interfaces")
+	listenAddrFlag := flag.String("listen", "0.0.0.0:8686", "server listen address")
+	allowPublic := flag.Bool("allow-public", true, "allow listening on public interfaces (set false for loopback-only)")
 	authToken := flag.String("auth-token", "", "optional bearer token for /v1/* endpoints")
 	dbPath := flag.String("db-path", defaultDBPath, "sqlite database path")
 	contextRecentTurns := flag.Int("context-recent-turns", 10, "number of recent user+assistant turns injected into each prompt")
@@ -47,6 +51,8 @@ func main() {
 
 	codexRuntimeConfig := codexagent.DefaultRuntimeConfig()
 	codexPreflightErr := codexagent.Preflight(codexRuntimeConfig)
+	opencodePreflightErr := opencodeagent.Preflight()
+	geminiPreflightErr := geminiagent.Preflight()
 
 	if *contextRecentTurns <= 0 {
 		logger.Error("startup.invalid_context_recent_turns", "value", *contextRecentTurns)
@@ -70,12 +76,20 @@ func main() {
 	}
 
 	codexAvailable := codexPreflightErr == nil
+	opencodeAvailable := opencodePreflightErr == nil
+	geminiAvailable := geminiPreflightErr == nil
 	if codexPreflightErr != nil {
 		logger.Warn("startup.codex_embedded_unavailable", "error", codexPreflightErr.Error())
 	}
-	agents := supportedAgents(codexAvailable)
+	if opencodePreflightErr != nil {
+		logger.Warn("startup.opencode_unavailable", "error", opencodePreflightErr.Error())
+	}
+	if geminiPreflightErr != nil {
+		logger.Warn("startup.gemini_unavailable", "error", geminiPreflightErr.Error())
+	}
+	agents := supportedAgents(codexAvailable, opencodeAvailable, geminiAvailable)
 
-	listenAddr, _, err := validateListenAddr(*listenAddrFlag, *allowPublic)
+	listenAddr, port, err := validateListenAddr(*listenAddrFlag, *allowPublic)
 	if err != nil {
 		logger.Error("startup.invalid_listen", "error", err.Error(), "listenAddr", *listenAddrFlag, "allowPublic", *allowPublic)
 		os.Exit(1)
@@ -106,20 +120,29 @@ func main() {
 	handler := httpapi.New(httpapi.Config{
 		AuthToken:       *authToken,
 		Agents:          agents,
-		AllowedAgentIDs: []string{"codex"},
+		AllowedAgentIDs: []string{"codex", "opencode", "gemini"},
 		AllowedRoots:    allowedRoots,
 		Store:           store,
 		TurnController:  turnController,
 		TurnAgentFactory: func(thread storage.Thread) (agentimpl.Streamer, error) {
-			if thread.AgentID != "codex" {
+			switch thread.AgentID {
+			case "codex":
+				return codexagent.New(codexagent.Config{
+					Dir:           thread.CWD,
+					Name:          "codex-embedded",
+					RuntimeConfig: codexRuntimeConfig,
+				})
+			case "opencode":
+				modelID := extractModelID(thread.AgentOptionsJSON)
+				return opencodeagent.New(opencodeagent.Config{
+					Dir:     thread.CWD,
+					ModelID: modelID,
+				})
+			case "gemini":
+				return geminiagent.New(geminiagent.Config{Dir: thread.CWD})
+			default:
 				return nil, fmt.Errorf("unsupported thread agent %q", thread.AgentID)
 			}
-
-			return codexagent.New(codexagent.Config{
-				Dir:           thread.CWD,
-				Name:          "codex-embedded",
-				RuntimeConfig: codexRuntimeConfig,
-			})
 		},
 		ContextRecentTurns: *contextRecentTurns,
 		ContextMaxChars:    *contextMaxChars,
@@ -141,7 +164,16 @@ func main() {
 	}
 
 	startedAt := time.Now()
-	printStartupSummary(os.Stderr, startedAt, listenAddr, *dbPath, startupAgentSummary(agents))
+	printStartupSummary(os.Stderr, startedAt)
+	lanURL, qrPrinted := printLANQRCode(os.Stderr, listenAddr)
+	_, _ = fmt.Fprintf(os.Stderr, "Port: %d\n", port)
+	if qrPrinted {
+		_, _ = fmt.Fprintf(os.Stderr, "URL:  %s\n", lanURL)
+		_, _ = fmt.Fprintln(os.Stderr, "On your local network, scan the QR code above or open the URL.")
+	} else {
+		_, _ = fmt.Fprintf(os.Stderr, "URL:  http://127.0.0.1:%d/\n", port)
+		_, _ = fmt.Fprintln(os.Stderr, "Local-only mode: QR code is not available for this bind address.")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -160,23 +192,40 @@ func main() {
 	logger.Info("shutdown.complete", "stoppedAt", time.Now().UTC().Format(time.RFC3339Nano))
 }
 
-func supportedAgents(codexAvailable bool) []httpapi.AgentInfo {
+// extractModelID reads an optional "modelId" string from a JSON agentOptions blob.
+// Returns empty string if absent or unparseable.
+func extractModelID(agentOptionsJSON string) string {
+	var opts struct {
+		ModelID string `json:"modelId"`
+	}
+	if strings.TrimSpace(agentOptionsJSON) == "" {
+		return ""
+	}
+	if err := json.Unmarshal([]byte(agentOptionsJSON), &opts); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(opts.ModelID)
+}
+
+func supportedAgents(codexAvailable, opencodeAvailable, geminiAvailable bool) []httpapi.AgentInfo {
 	codexStatus := "unavailable"
 	if codexAvailable {
 		codexStatus = "available"
 	}
+	opencodeStatus := "unavailable"
+	if opencodeAvailable {
+		opencodeStatus = "available"
+	}
+	geminiStatus := "unavailable"
+	if geminiAvailable {
+		geminiStatus = "available"
+	}
 
 	return []httpapi.AgentInfo{
-		{
-			ID:     "codex",
-			Name:   "Codex",
-			Status: codexStatus,
-		},
-		{
-			ID:     "claude",
-			Name:   "Claude Code",
-			Status: "unavailable",
-		},
+		{ID: "codex", Name: "Codex", Status: codexStatus},
+		{ID: "opencode", Name: "OpenCode", Status: opencodeStatus},
+		{ID: "gemini", Name: "Gemini CLI", Status: geminiStatus},
+		{ID: "claude", Name: "Claude Code", Status: "unavailable"},
 	}
 }
 
@@ -196,7 +245,7 @@ func validateListenAddr(listenAddr string, allowPublic bool) (string, int, error
 	}
 
 	if host == "" || host == "0.0.0.0" || host == "::" {
-		return "", 0, fmt.Errorf("public listen address %q requires --allow-public=true", listenAddr)
+		return "", 0, fmt.Errorf("public listen address %q is not allowed when --allow-public=false", listenAddr)
 	}
 
 	if host == "localhost" {
@@ -205,7 +254,7 @@ func validateListenAddr(listenAddr string, allowPublic bool) (string, int, error
 
 	ip := net.ParseIP(host)
 	if ip == nil || !ip.IsLoopback() {
-		return "", 0, fmt.Errorf("non-loopback listen address %q requires --allow-public=true", listenAddr)
+		return "", 0, fmt.Errorf("non-loopback listen address %q is not allowed when --allow-public=false", listenAddr)
 	}
 
 	return listenAddr, port, nil
@@ -302,50 +351,80 @@ func ensureDBPathParent(dbPath string) error {
 	return nil
 }
 
-func printStartupSummary(out io.Writer, startedAt time.Time, listenAddr, dbPath, agents string) {
+func printStartupSummary(out io.Writer, startedAt time.Time) {
 	if out == nil {
 		return
 	}
-	timestamp := startedAt.Local().Format("2006-01-02 15:04:05 MST")
-	if strings.TrimSpace(agents) == "" {
-		agents = "none"
-	}
-	addr := strings.TrimSpace(listenAddr)
 	_, _ = fmt.Fprintf(
 		out,
-		"Agent Hub Server started\n"+
-			"  Time:   %s\n"+
-			"  HTTP:   http://%s\n"+
-			"  Web:    http://%s/\n"+
-			"  DB:     %s\n"+
-			"  Agents: %s\n"+
-			"  Help:   agent-hub-server --help\n",
-		timestamp,
-		addr,
-		addr,
-		strings.TrimSpace(dbPath),
-		strings.TrimSpace(agents),
+		"Agent Hub Server started\n",
 	)
 }
 
-func startupAgentSummary(agents []httpapi.AgentInfo) string {
-	if len(agents) == 0 {
-		return "none"
+// printLANQRCode prints a QR code for the LAN-accessible URL to out.
+// It is a no-op when the server listens only on loopback.
+func printLANQRCode(out io.Writer, listenAddr string) (string, bool) {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(listenAddr))
+	if err != nil {
+		return "", false
 	}
-	parts := make([]string, 0, len(agents))
-	for _, agent := range agents {
-		name := strings.TrimSpace(agent.Name)
-		if name == "" {
-			name = strings.TrimSpace(agent.ID)
+
+	var lanIP string
+	switch host {
+	case "", "0.0.0.0", "::":
+		// Listening on all interfaces — detect the default outbound LAN IP.
+		conn, dialErr := net.Dial("udp", "8.8.8.8:80")
+		if dialErr != nil {
+			return "", false
 		}
-		if name == "" {
-			name = "unknown"
+		lanIP = conn.LocalAddr().(*net.UDPAddr).IP.String()
+		_ = conn.Close()
+	default:
+		ip := net.ParseIP(host)
+		if ip == nil || ip.IsLoopback() {
+			return "", false // loopback-only; not reachable from LAN
 		}
-		status := strings.TrimSpace(agent.Status)
-		if status == "" {
-			status = "unknown"
-		}
-		parts = append(parts, fmt.Sprintf("%s (%s)", name, status))
+		lanIP = host
 	}
-	return strings.Join(parts, ", ")
+
+	url := "http://" + net.JoinHostPort(lanIP, port) + "/"
+	qr, err := qrcode.New(url, qrcode.Medium)
+	if err != nil {
+		return "", false
+	}
+	qr.DisableBorder = true
+	_, _ = fmt.Fprintf(out, "%s", qrHalfBlocks(qr))
+	return url, true
+}
+
+// qrHalfBlocks renders a QR code using Unicode half-block characters so that
+// each terminal character encodes one module wide and two modules tall.
+// This makes the output roughly 1/4 the area of a plain ASCII render.
+func qrHalfBlocks(qr *qrcode.QRCode) string {
+	bm := qr.Bitmap() // true = dark module
+	var sb strings.Builder
+	// 1-char quiet margin: blank line on top
+	pad := strings.Repeat(" ", len(bm[0])+2)
+	sb.WriteString(pad + "\n")
+	for y := 0; y < len(bm); y += 2 {
+		sb.WriteRune(' ') // left margin
+		for x := 0; x < len(bm[y]); x++ {
+			top := bm[y][x]
+			bot := y+1 < len(bm) && bm[y+1][x]
+			switch {
+			case top && bot:
+				sb.WriteRune('█')
+			case top:
+				sb.WriteRune('▀')
+			case bot:
+				sb.WriteRune('▄')
+			default:
+				sb.WriteRune(' ')
+			}
+		}
+		sb.WriteString(" \n") // right margin
+	}
+	// blank line on bottom
+	sb.WriteString(pad + "\n")
+	return sb.String()
 }

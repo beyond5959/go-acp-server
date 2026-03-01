@@ -94,9 +94,11 @@ This file is the source of milestone progress, validation commands, and next act
   - kept current-state note explicit: today only `codex` is built-in.
   - simplified README startup path to `agent-hub-server` with explicit `agent-hub-server --help` guidance.
 - `Post-M8` startup log UX simplification completed:
-  - replaced startup JSON line with multi-line human-readable stderr summary (`Time`, `HTTP`, `DB`, `Agents`, `Help`).
+  - replaced startup JSON line with multi-line human-readable stderr summary (QR code + port and URL hint).
   - added per-request completion logs containing `requestTime`, `method`, `path`, `ip`, `statusCode`, `durationMs`, and `responseBytes`.
   - added unit test coverage for startup summary rendering and request completion log fields.
+- `Post-M8` LAN-friendly default bind completed:
+  - changed default bind to `0.0.0.0:8686` and `--allow-public` default to `true` so other devices can connect via the startup QR code.
 - `F2` completed:
   - created `src/types.ts`: full TypeScript interface set (Thread, Turn, Message, PermissionRequest, StreamState, AppState, etc.).
   - created `src/utils.ts`: generateUUID (crypto.randomUUID + fallback), formatTimestamp, formatRelativeTime, isAbsolutePath, escHtml, debounce.
@@ -116,12 +118,12 @@ This file is the source of milestone progress, validation commands, and next act
   - initialized Vite + TypeScript frontend under `internal/webui/web/`.
   - created `internal/webui/webui.go` with `//go:embed web/dist` and SPA fallback handler.
   - registered `FrontendHandler` in `httpapi.Config`; non-API paths served by frontend, API routes unaffected.
-  - updated `cmd/agent-hub-server/main.go` to pass `webui.Handler()` and added `Web:` line to startup summary.
+  - updated `cmd/agent-hub-server/main.go` to pass `webui.Handler()` and print a startup QR code for opening the UI.
   - updated `Makefile` with `build-web`, `build` targets; updated `.gitignore` for `node_modules`.
   - `go test ./...` all green; end-to-end: `GET /` → 200 HTML, `/threads` SPA fallback → 200, `/v1/agents` → JSON, `/healthz` → JSON.
   - standardized `/v1/agents` display names to `Codex` and `Claude Code`.
   - synchronized test fixtures and API documentation examples with the same canonical names.
-  - startup summary now renders agent display names (not lowercase ids): `Codex (available), Claude Code (unavailable)`.
+  - `/v1/agents` output uses display names (not lowercase ids): `Codex`, `Claude Code`.
 - `F3` completed:
   - created `src/api.ts`: ApiClient with ApiError class; getAgents(), getThreads(), createThread(); reads serverUrl/clientId/authToken from store on every request.
   - created `src/components/new-thread-modal.ts`: centered modal with agent card grid (radio, disabled for unavailable), CWD absolute-path validation, optional title, collapsible JSON agent-options textarea, submit with spinner, error banner; targeted DOM updates avoid full re-render during typing.
@@ -179,8 +181,8 @@ This file is the source of milestone progress, validation commands, and next act
   - `tsc -b && vite build` passes; `go test ./...` all green.
 
 - `F9` completed:
-  - verified `printStartupSummary` already emits `Web:   http://<addr>/` line and `TestPrintStartupSummary` already asserts it.
-  - updated `docs/API.md`: added `Web` to the startup logging conventions line; added Frontend Web UI endpoint section (`GET /` returns `text/html`, `GET /assets/*` serves static assets, SPA fallback for non-API paths).
+  - updated startup output to include a QR code with port hint (for LAN access) and updated `TestPrintStartupSummary`.
+  - updated `docs/API.md`: added Frontend Web UI endpoint section (`GET /` returns `text/html`, `GET /assets/*` serves static assets, SPA fallback for non-API paths).
   - updated `docs/ACCEPTANCE.md`: added Requirement 13 (Embedded Web UI) with `go test ./internal/webui` verification command.
   - updated `README.md`: added "Web UI" section with startup summary example, feature list (threads/streaming/permissions/history/themes), no-Node-at-runtime note, and `make build-web && go build ./...` rebuild instructions.
   - verified ADR-018 (Embedded Web UI via Go embed) already present in `docs/DECISIONS.md`.
