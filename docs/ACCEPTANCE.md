@@ -112,3 +112,11 @@ This checklist defines executable acceptance checks for requirements 1-11.
 - Verification command:
   - `gofmt -w $(find . -name '*.go' -type f)`
   - `go test ./...`
+
+## Requirement 14: OpenCode Agent
+
+- Operation: verify opencode provider is listed and can complete a turn.
+- Expected: `GET /v1/agents` includes `{"id":"opencode","name":"OpenCode","status":"available"}` when `opencode` is in PATH; a full turn over SSE returns `message_delta` events.
+- Verification commands:
+  - `go test ./internal/agents/opencode -run TestStreamWithFakeProcess -count=1`
+  - `E2E_OPENCODE=1 go test ./internal/agents/opencode -run TestOpenCodeE2ESmoke -v -timeout 60s`

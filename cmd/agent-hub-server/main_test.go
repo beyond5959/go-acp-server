@@ -92,7 +92,7 @@ func TestResolveAllowedRoots(t *testing.T) {
 }
 
 func TestSupportedAgentsCodexStatus(t *testing.T) {
-	agentsUnavailable := supportedAgents(false)
+	agentsUnavailable := supportedAgents(false, false)
 	if len(agentsUnavailable) == 0 {
 		t.Fatalf("supportedAgents returned empty list")
 	}
@@ -103,7 +103,7 @@ func TestSupportedAgentsCodexStatus(t *testing.T) {
 		t.Fatalf("codex unavailable status = %q, want %q", agentsUnavailable[0].Status, "unavailable")
 	}
 
-	agentsAvailable := supportedAgents(true)
+	agentsAvailable := supportedAgents(true, true)
 	if agentsAvailable[0].Status != "available" {
 		t.Fatalf("codex available status = %q, want %q", agentsAvailable[0].Status, "available")
 	}

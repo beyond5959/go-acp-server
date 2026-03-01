@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 
 	agentimpl "github.com/beyond5959/go-acp-server/internal/agents"
 	codexagent "github.com/beyond5959/go-acp-server/internal/agents/codex"
+	opencodeagent "github.com/beyond5959/go-acp-server/internal/agents/opencode"
 	"github.com/beyond5959/go-acp-server/internal/httpapi"
 	"github.com/beyond5959/go-acp-server/internal/runtime"
 	"github.com/beyond5959/go-acp-server/internal/storage"
@@ -47,6 +49,7 @@ func main() {
 
 	codexRuntimeConfig := codexagent.DefaultRuntimeConfig()
 	codexPreflightErr := codexagent.Preflight(codexRuntimeConfig)
+	opencodePreflightErr := opencodeagent.Preflight()
 
 	if *contextRecentTurns <= 0 {
 		logger.Error("startup.invalid_context_recent_turns", "value", *contextRecentTurns)
@@ -70,10 +73,14 @@ func main() {
 	}
 
 	codexAvailable := codexPreflightErr == nil
+	opencodeAvailable := opencodePreflightErr == nil
 	if codexPreflightErr != nil {
 		logger.Warn("startup.codex_embedded_unavailable", "error", codexPreflightErr.Error())
 	}
-	agents := supportedAgents(codexAvailable)
+	if opencodePreflightErr != nil {
+		logger.Warn("startup.opencode_unavailable", "error", opencodePreflightErr.Error())
+	}
+	agents := supportedAgents(codexAvailable, opencodeAvailable)
 
 	listenAddr, _, err := validateListenAddr(*listenAddrFlag, *allowPublic)
 	if err != nil {
@@ -106,20 +113,27 @@ func main() {
 	handler := httpapi.New(httpapi.Config{
 		AuthToken:       *authToken,
 		Agents:          agents,
-		AllowedAgentIDs: []string{"codex"},
+		AllowedAgentIDs: []string{"codex", "opencode"},
 		AllowedRoots:    allowedRoots,
 		Store:           store,
 		TurnController:  turnController,
 		TurnAgentFactory: func(thread storage.Thread) (agentimpl.Streamer, error) {
-			if thread.AgentID != "codex" {
+			switch thread.AgentID {
+			case "codex":
+				return codexagent.New(codexagent.Config{
+					Dir:           thread.CWD,
+					Name:          "codex-embedded",
+					RuntimeConfig: codexRuntimeConfig,
+				})
+			case "opencode":
+				modelID := extractModelID(thread.AgentOptionsJSON)
+				return opencodeagent.New(opencodeagent.Config{
+					Dir:     thread.CWD,
+					ModelID: modelID,
+				})
+			default:
 				return nil, fmt.Errorf("unsupported thread agent %q", thread.AgentID)
 			}
-
-			return codexagent.New(codexagent.Config{
-				Dir:           thread.CWD,
-				Name:          "codex-embedded",
-				RuntimeConfig: codexRuntimeConfig,
-			})
 		},
 		ContextRecentTurns: *contextRecentTurns,
 		ContextMaxChars:    *contextMaxChars,
@@ -160,23 +174,34 @@ func main() {
 	logger.Info("shutdown.complete", "stoppedAt", time.Now().UTC().Format(time.RFC3339Nano))
 }
 
-func supportedAgents(codexAvailable bool) []httpapi.AgentInfo {
-	codexStatus := "unavailable"
+// extractModelID reads an optional "modelId" string from a JSON agentOptions blob.
+// Returns empty string if absent or unparseable.
+func extractModelID(agentOptionsJSON string) string {
+	var opts struct {
+		ModelID string `json:"modelId"`
+	}
+	if strings.TrimSpace(agentOptionsJSON) == "" {
+		return ""
+	}
+	if err := json.Unmarshal([]byte(agentOptionsJSON), &opts); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(opts.ModelID)
+}
+
+func supportedAgents(codexAvailable, opencodeAvailable bool) []httpapi.AgentInfo {	codexStatus := "unavailable"
 	if codexAvailable {
 		codexStatus = "available"
 	}
+	opencodeStatus := "unavailable"
+	if opencodeAvailable {
+		opencodeStatus = "available"
+	}
 
 	return []httpapi.AgentInfo{
-		{
-			ID:     "codex",
-			Name:   "Codex",
-			Status: codexStatus,
-		},
-		{
-			ID:     "claude",
-			Name:   "Claude Code",
-			Status: "unavailable",
-		},
+		{ID: "codex", Name: "Codex", Status: codexStatus},
+		{ID: "opencode", Name: "OpenCode", Status: opencodeStatus},
+		{ID: "claude", Name: "Claude Code", Status: "unavailable"},
 	}
 }
 

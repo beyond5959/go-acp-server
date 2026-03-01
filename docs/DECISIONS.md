@@ -19,6 +19,8 @@
 - ADR-015: First-turn prompt passthrough for slash-command compatibility in embedded codex mode. (Accepted)
 - ADR-016: Remove `--allowed-root` runtime parameter and default to absolute-cwd policy. (Accepted)
 - ADR-017: Human-readable startup summary and request completion access logs. (Accepted)
+- ADR-018: Embedded Web UI via Go embed. (Accepted)
+- ADR-019: OpenCode ACP stdio provider. (Accepted)
 
 ## ADR-018: Embedded Web UI via Go embed
 
@@ -285,3 +287,20 @@ Use this template for new decisions.
   - add ad-hoc per-endpoint logging instead of one centralized completion logger.
 - Follow-up actions:
   - add optional request id correlation in completion logs and outbound SSE error events.
+
+## ADR-019: OpenCode ACP stdio provider
+
+- Status: Accepted
+- Date: 2026-03-01
+- Context: OpenCode supports ACP and is an actively developed coding agent; adding it as a provider gives users an alternative to the embedded Codex runtime.
+- Decision: implement `internal/agents/opencode` as a standalone ACP stdio provider. One `opencode acp --cwd <dir>` process is spawned per turn. The package is self-contained with its own JSON-RPC 2.0 transport layer to avoid coupling with the internal `acp` package.
+- Protocol differences from codex ACP that drove a separate implementation:
+  - `protocolVersion` field is an integer (`1`) not a string.
+  - `session/new` does not accept a client-supplied sessionId; the server assigns one and also returns a model list.
+  - `session/prompt` uses a `prompt` array of content items instead of a flat `input` string.
+  - `session/update` notifications carry delta text under `update.content.text` for `agent_message_chunk` events, not a flat `delta` field.
+  - No `session/request_permission` requests from server to client (OpenCode handles tool permissions internally via MCP).
+- Consequences:
+  - `opencode` binary must be in PATH for the provider to be available; Preflight() is called at startup.
+  - Model selection is optional via `agentOptions.modelId` in thread creation; defaults to OpenCode's configured default.
+  - Turn cancel sends `session/cancel` and kills the process within 2s if it doesn't exit cleanly.

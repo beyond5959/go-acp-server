@@ -13,8 +13,18 @@ By default, the server listens on `127.0.0.1` only.
 
 Current implementation status:
 
-- Built-in provider today: `codex` (embedded)
-- Additional ACP-compatible providers are planned through the same provider abstraction
+- Built-in providers: `codex` (embedded) and `opencode` (ACP stdio)
+- Additional providers planned
+
+## Supported Agents
+
+| Agent | Supported |
+|---|---|
+| Codex | ✅ |
+| OpenCode | ✅ |
+| Claude Code | 🔜 |
+
+
 
 ## Installation
 
@@ -105,7 +115,7 @@ Agent Hub Server started
   HTTP:   http://127.0.0.1:8686
   Web:    http://127.0.0.1:8686/
   DB:     /Users/you/.go-agent-server/agent-hub.db
-  Agents: Codex (available), Claude Code (unavailable)
+  Agents: Codex (available), OpenCode (available), Claude Code (unavailable)
   Help:   agent-hub-server --help
 ```
 
