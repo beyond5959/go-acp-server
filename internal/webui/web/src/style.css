@@ -285,6 +285,12 @@ body {
   min-width: 0;
 }
 
+.thread-item-actions {
+  display: flex;
+  align-items: center;
+  align-self: center;
+}
+
 .thread-item-title {
   font-size: var(--font-size-md);
   font-weight: 500;
@@ -315,6 +321,26 @@ body {
 .thread-item-time {
   font-size: var(--font-size-xs);
   color: var(--text-3);
+}
+
+.thread-delete-btn {
+  width: 26px;
+  height: 26px;
+  opacity: 0;
+  pointer-events: none;
+  color: var(--text-3);
+}
+
+.thread-item:hover .thread-delete-btn,
+.thread-item:focus-within .thread-delete-btn,
+.thread-item--active .thread-delete-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.thread-delete-btn:hover:not(:disabled) {
+  color: var(--error);
+  background: var(--error-bg);
 }
 
 .thread-unread-dot {

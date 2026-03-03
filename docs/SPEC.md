@@ -71,6 +71,7 @@ Properties:
 
 - all outbound stream events are persisted before or atomically with emission strategy.
 - each event has monotonic sequence per thread or turn.
+- thread deletion removes dependent rows in order (`events` -> `turns` -> `threads`) in one transaction.
 - restart can rebuild state from durable turn status plus event log.
 
 ## 7. Recovery Strategy
@@ -87,7 +88,7 @@ On restart:
 ## 8. API Overview
 
 - health and server metadata
-- thread CRUD (create/list/get)
+- thread CRUD (create/list/get/delete)
 - turn create/cancel
 - thread compact (`POST /v1/threads/{threadId}/compact`)
 - SSE stream for real-time events

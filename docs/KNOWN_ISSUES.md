@@ -111,3 +111,12 @@
 - Follow-up plan:
   - add clearer preflight diagnostics for qwen runtime prerequisites (filesystem writable check + auth hints).
   - map common qwen upstream errors to stable hub error details for easier operator debugging.
+
+- ID: KI-011
+- Title: Thread deletion is irreversible
+- Status: Open
+- Severity: Low
+- Affects: users deleting historical threads via API/Web UI
+- Symptom: deleting a thread permanently removes its thread/turn/event history and cannot be restored through server APIs.
+- Workaround: export needed history before delete.
+- Follow-up plan: evaluate optional soft-delete retention window and admin-only restore endpoint if product requirements demand recoverability.

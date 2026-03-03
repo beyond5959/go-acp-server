@@ -19,6 +19,7 @@ import (
 	"time"
 
 	agentimpl "github.com/beyond5959/go-acp-server/internal/agents"
+	claudeagent "github.com/beyond5959/go-acp-server/internal/agents/claude"
 	codexagent "github.com/beyond5959/go-acp-server/internal/agents/codex"
 	geminiagent "github.com/beyond5959/go-acp-server/internal/agents/gemini"
 	opencodeagent "github.com/beyond5959/go-acp-server/internal/agents/opencode"
@@ -55,6 +56,7 @@ func main() {
 	opencodePreflightErr := opencodeagent.Preflight()
 	geminiPreflightErr := geminiagent.Preflight()
 	qwenPreflightErr := qwenagent.Preflight()
+	claudePreflightErr := claudeagent.Preflight()
 
 	if *contextRecentTurns <= 0 {
 		logger.Error("startup.invalid_context_recent_turns", "value", *contextRecentTurns)
@@ -81,6 +83,7 @@ func main() {
 	opencodeAvailable := opencodePreflightErr == nil
 	geminiAvailable := geminiPreflightErr == nil
 	qwenAvailable := qwenPreflightErr == nil
+	claudeAvailable := claudePreflightErr == nil
 	if codexPreflightErr != nil {
 		logger.Warn("startup.codex_embedded_unavailable", "error", codexPreflightErr.Error())
 	}
@@ -93,7 +96,10 @@ func main() {
 	if qwenPreflightErr != nil {
 		logger.Warn("startup.qwen_unavailable", "error", qwenPreflightErr.Error())
 	}
-	agents := supportedAgents(codexAvailable, opencodeAvailable, geminiAvailable, qwenAvailable)
+	if claudePreflightErr != nil {
+		logger.Warn("startup.claude_unavailable", "error", claudePreflightErr.Error())
+	}
+	agents := supportedAgents(codexAvailable, opencodeAvailable, geminiAvailable, qwenAvailable, claudeAvailable)
 
 	listenAddr, port, err := validateListenAddr(*listenAddrFlag, *allowPublic)
 	if err != nil {
@@ -126,7 +132,7 @@ func main() {
 	handler := httpapi.New(httpapi.Config{
 		AuthToken:       *authToken,
 		Agents:          agents,
-		AllowedAgentIDs: []string{"codex", "opencode", "gemini", "qwen"},
+		AllowedAgentIDs: []string{"codex", "opencode", "gemini", "qwen", "claude"},
 		AllowedRoots:    allowedRoots,
 		Store:           store,
 		TurnController:  turnController,
@@ -151,6 +157,11 @@ func main() {
 				return qwenagent.New(qwenagent.Config{
 					Dir:     thread.CWD,
 					ModelID: modelID,
+				})
+			case "claude":
+				return claudeagent.New(claudeagent.Config{
+					Dir:  thread.CWD,
+					Name: "claude-embedded",
 				})
 			default:
 				return nil, fmt.Errorf("unsupported thread agent %q", thread.AgentID)
@@ -219,7 +230,7 @@ func extractModelID(agentOptionsJSON string) string {
 	return strings.TrimSpace(opts.ModelID)
 }
 
-func supportedAgents(codexAvailable, opencodeAvailable, geminiAvailable, qwenAvailable bool) []httpapi.AgentInfo {
+func supportedAgents(codexAvailable, opencodeAvailable, geminiAvailable, qwenAvailable, claudeAvailable bool) []httpapi.AgentInfo {
 	codexStatus := "unavailable"
 	if codexAvailable {
 		codexStatus = "available"
@@ -236,13 +247,17 @@ func supportedAgents(codexAvailable, opencodeAvailable, geminiAvailable, qwenAva
 	if qwenAvailable {
 		qwenStatus = "available"
 	}
+	claudeStatus := "unavailable"
+	if claudeAvailable {
+		claudeStatus = "available"
+	}
 
 	return []httpapi.AgentInfo{
 		{ID: "codex", Name: "Codex", Status: codexStatus},
-		{ID: "opencode", Name: "OpenCode", Status: opencodeStatus},
+		{ID: "claude", Name: "Claude Code", Status: claudeStatus},
 		{ID: "gemini", Name: "Gemini CLI", Status: geminiStatus},
 		{ID: "qwen", Name: "Qwen Code", Status: qwenStatus},
-		{ID: "claude", Name: "Claude Code", Status: "unavailable"},
+		{ID: "opencode", Name: "OpenCode", Status: opencodeStatus},
 	}
 }
 

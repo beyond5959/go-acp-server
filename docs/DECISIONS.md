@@ -25,6 +25,8 @@
 - ADR-021: Public-by-default bind with local-only opt-out. (Accepted)
 - ADR-022: Qwen Code ACP stdio provider integration. (Accepted)
 - ADR-023: Shared ACP stdio transport for OpenCode and Qwen providers. (Accepted)
+- ADR-024: Claude Code embedded provider via claudeacp runtime. (Accepted)
+- ADR-025: Hard-delete thread endpoint with active-turn lock. (Accepted)
 
 ## ADR-018: Embedded Web UI via Go embed
 
@@ -41,6 +43,21 @@
 - Consequences: single-binary distribution with no external file dependencies; Go binary size increases by the size of the minified JS/CSS bundle (~200–400 KB estimated). Build pipeline requires Node.js for frontend changes.
 - Alternatives considered: separate static file directory (requires deployment of two artifacts); WebSocket-only SPA (rejected: SSE already implemented); React/Vue framework (rejected: adds runtime bundle weight and build complexity).
 - Follow-up actions: add `npm run build` to CI pipeline; version-pin Node.js in project tooling docs.
+
+## ADR-025: Hard-delete Thread Endpoint with Active-turn Lock
+
+- Status: Accepted
+- Date: 2026-03-03
+- Context: users need to clean historical threads from both API and Web UI, while preserving the one-active-turn-per-thread guarantee and avoiding partial deletes.
+- Decision:
+  - add `DELETE /v1/threads/{threadId}` with ownership enforcement based on `X-Client-ID`.
+  - return `409 CONFLICT` when the target thread currently has an active turn.
+  - reserve a temporary turn-controller slot during deletion so no new turn can start on that thread while delete is in progress.
+  - perform storage deletion in one transaction with explicit dependency order: `events` -> `turns` -> `threads`.
+  - close and evict cached per-thread agent provider after successful delete.
+- Consequences: deletion is deterministic and race-safe with active turn startup, but remains irreversible (no soft-delete/recover endpoint).
+- Alternatives considered: soft-delete tombstone model, relying only on foreign-key cascades, and best-effort delete without turn-controller lock.
+- Follow-up actions: add optional audit trail for delete operations if compliance requirements increase.
 
 ## ADR Template
 
@@ -406,3 +423,28 @@ Use this template for new decisions.
   - extract only tiny helper funcs without shared connection type.
 - Follow-up actions:
   - if Gemini migration value is clear, evaluate moving Gemini transport to `acpstdio` in a separate change (to keep current refactor blast radius limited).
+
+## ADR-024: Claude Code embedded provider via claudeacp runtime
+
+- Status: Accepted
+- Date: 2026-03-03
+- Context:
+  - Claude Code is the primary Anthropic coding agent; it was listed as a planned provider (`🔜`) since project inception.
+  - `github.com/beyond5959/codex-acp` already contained a complete parallel `pkg/claudeacp` package with identical API surface to `pkg/codexacp`; no new library dependency was needed.
+  - Preflight for Claude does not require a binary path check — availability is determined entirely by the presence of `ANTHROPIC_AUTH_TOKEN` in the environment.
+- Decision:
+  - implement `internal/agents/claude` as an embedded provider package mirroring `internal/agents/codex`.
+  - replace `codexacp` references with `claudeacp`; `Preflight()` checks `ANTHROPIC_AUTH_TOKEN != ""` (no binary lookup).
+  - `DefaultRuntimeConfig()` delegates to `claudeacp.DefaultRuntimeConfig()`, which reads `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` from environment.
+  - wire into server startup: preflight, `/v1/agents` status, `AllowedAgentIDs`, and `TurnAgentFactory`.
+  - for local development, add `replace github.com/beyond5959/codex-acp => /path/to/local/codex-acp` in `go.mod`; remove or publish before production release.
+- Consequences:
+  - claude availability is purely environment-variable dependent; no binary installation required beyond valid API credentials.
+  - `ANTHROPIC_BASE_URL` allows pointing at a compatible proxy or local endpoint (e.g., for testing or corporate gateways).
+  - local `go.mod` replace directive must be removed or updated to a published version before CI/release builds.
+- Alternatives considered:
+  - implement as an ACP stdio provider wrapping the `claude` CLI binary (rejected: CLI spawns its own runtime per invocation with higher latency and no direct permission bridge).
+  - share implementation with codex via generics/interface (rejected: would couple two independently-versioned runtimes).
+- Follow-up actions:
+  - publish `codex-acp` with `pkg/claudeacp` to a versioned tag and remove the `replace` directive from `go.mod`.
+  - add permission round-trip E2E test for Claude (approved/declined/cancelled paths).

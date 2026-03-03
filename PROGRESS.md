@@ -214,6 +214,28 @@ This file is the source of milestone progress, validation commands, and next act
 - Optional enhancement 5: Expanded audit logs and retention tooling.
 - Optional enhancement 6: expose environment diagnostics for codex local state DB/schema mismatches (for example `~/.codex/state_5.sqlite` migration drift) and app-server method compatibility.
 
+- `Post-M8` Claude Code embedded provider completed:
+  - implemented `internal/agents/claude/embedded.go` backed by `github.com/beyond5959/codex-acp/pkg/claudeacp.EmbeddedRuntime`.
+  - preflight checks `ANTHROPIC_AUTH_TOKEN` environment variable; status reports `available` when set, `unavailable` otherwise.
+  - `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` are read from environment via `claudeacp.DefaultRuntimeConfig()` at startup.
+- `Post-M8` thread delete lifecycle completed:
+  - added `DELETE /v1/threads/{threadId}` with same-client ownership check and `409 CONFLICT` when a thread has an active turn.
+  - guarded deletion with a temporary turn-controller lock to prevent new turns from starting during delete.
+  - implemented transactional storage deletion in `internal/storage` with dependent cleanup (`events` -> `turns` -> `threads`).
+  - wired Web UI thread-list delete action with confirmation and local state cleanup (threads/messages/active selection/stream state).
+  - executed validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+  - added unit tests (`TestPreflight_*`, `TestNew_*`, `TestClose_*`, `TestDefaultRuntimeConfig_ReadsEnv`) covering token presence/absence, default/custom timeouts, and idempotent close.
+  - added optional real smoke test (`E2E_CLAUDE=1 go test ./internal/agents/claude/ -run TestClaudeE2ESmoke -v -timeout 120s`); confirmed `PONG` response and `stopReason=end_turn` (16.68s).
+  - added `go.mod` `replace` directive pointing to local `github.com/beyond5959/codex-acp` for local development; refreshed module dependencies for the embedded Claude runtime integration.
+  - wired claude into `cmd/agent-hub-server/main.go`: preflight call, `"claude"` in `AllowedAgentIDs`, `case "claude"` in `TurnAgentFactory`, real status in `supportedAgents`.
+  - updated `main_test.go`: `supportedAgents` signature extended with `claudeAvailable bool`; added claude id/status assertions.
+  - executed validation:
+    - pass: `go build ./...`
+    - pass: `go test ./...` (all packages green)
+    - pass: `E2E_CLAUDE=1 go test ./internal/agents/claude -run TestClaudeE2ESmoke -v -timeout 120s` (response: `PONG`, stopReason: `end_turn`)
+
 - `Post-F9` CI and release pipeline completed:
   - removed `internal/webui/web/dist/` and `tsconfig.tsbuildinfo` from git tracking (`git rm --cached`); added both to `.gitignore`.
   - created `.github/workflows/ci.yml`: triggers on every push/PR (non-tag); steps: Go + Node.js 20 setup, `make build-web`, gofmt check, `go test ./...`.

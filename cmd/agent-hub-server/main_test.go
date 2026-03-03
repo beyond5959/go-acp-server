@@ -92,7 +92,7 @@ func TestResolveAllowedRoots(t *testing.T) {
 }
 
 func TestSupportedAgentsCodexStatus(t *testing.T) {
-	agentsUnavailable := supportedAgents(false, false, false, false)
+	agentsUnavailable := supportedAgents(false, false, false, false, false)
 	if len(agentsUnavailable) == 0 {
 		t.Fatalf("supportedAgents returned empty list")
 	}
@@ -101,6 +101,12 @@ func TestSupportedAgentsCodexStatus(t *testing.T) {
 	}
 	if agentsUnavailable[0].Status != "unavailable" {
 		t.Fatalf("codex unavailable status = %q, want %q", agentsUnavailable[0].Status, "unavailable")
+	}
+	if agentsUnavailable[1].ID != "claude" {
+		t.Fatalf("agents[1].ID = %q, want %q", agentsUnavailable[1].ID, "claude")
+	}
+	if agentsUnavailable[1].Status != "unavailable" {
+		t.Fatalf("claude unavailable status = %q, want %q", agentsUnavailable[1].Status, "unavailable")
 	}
 	if got, want := len(agentsUnavailable), 5; got != want {
 		t.Fatalf("len(agentsUnavailable) = %d, want %d", got, want)
@@ -111,10 +117,22 @@ func TestSupportedAgentsCodexStatus(t *testing.T) {
 	if agentsUnavailable[3].Status != "unavailable" {
 		t.Fatalf("qwen unavailable status = %q, want %q", agentsUnavailable[3].Status, "unavailable")
 	}
+	if agentsUnavailable[4].ID != "opencode" {
+		t.Fatalf("agents[4].ID = %q, want %q", agentsUnavailable[4].ID, "opencode")
+	}
+	if agentsUnavailable[4].Status != "unavailable" {
+		t.Fatalf("opencode unavailable status = %q, want %q", agentsUnavailable[4].Status, "unavailable")
+	}
 
-	agentsAvailable := supportedAgents(true, true, true, true)
+	agentsAvailable := supportedAgents(true, true, true, true, true)
 	if agentsAvailable[0].Status != "available" {
 		t.Fatalf("codex available status = %q, want %q", agentsAvailable[0].Status, "available")
+	}
+	if agentsAvailable[1].ID != "claude" {
+		t.Fatalf("agents[1].ID = %q, want %q", agentsAvailable[1].ID, "claude")
+	}
+	if agentsAvailable[1].Status != "available" {
+		t.Fatalf("claude available status = %q, want %q", agentsAvailable[1].Status, "available")
 	}
 	if got, want := len(agentsAvailable), 5; got != want {
 		t.Fatalf("len(agentsAvailable) = %d, want %d", got, want)
@@ -124,6 +142,12 @@ func TestSupportedAgentsCodexStatus(t *testing.T) {
 	}
 	if agentsAvailable[3].Status != "available" {
 		t.Fatalf("qwen available status = %q, want %q", agentsAvailable[3].Status, "available")
+	}
+	if agentsAvailable[4].ID != "opencode" {
+		t.Fatalf("agents[4].ID = %q, want %q", agentsAvailable[4].ID, "opencode")
+	}
+	if agentsAvailable[4].Status != "available" {
+		t.Fatalf("opencode available status = %q, want %q", agentsAvailable[4].Status, "available")
 	}
 }
 

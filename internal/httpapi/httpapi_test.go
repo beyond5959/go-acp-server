@@ -301,6 +301,124 @@ func TestThreadAccessAcrossClientsReturnsNotFound(t *testing.T) {
 	assertErrorCode(t, getRR.Body.Bytes(), "NOT_FOUND")
 }
 
+func TestDeleteThreadRemovesThreadAndHistory(t *testing.T) {
+	root := t.TempDir()
+	h := newTestServer(t, testServerOptions{allowedRoots: []string{root}})
+
+	threadID := createThreadForClient(t, h, "client-a", root)
+
+	deleteRR := performJSONRequest(t, h, http.MethodDelete, "/v1/threads/"+threadID, nil, map[string]string{"X-Client-ID": "client-a"})
+	if deleteRR.Code != http.StatusOK {
+		t.Fatalf("delete status code = %d, want %d", deleteRR.Code, http.StatusOK)
+	}
+
+	var deleteBody struct {
+		ThreadID string `json:"threadId"`
+		Status   string `json:"status"`
+	}
+	if err := json.Unmarshal(deleteRR.Body.Bytes(), &deleteBody); err != nil {
+		t.Fatalf("unmarshal delete response: %v", err)
+	}
+	if deleteBody.ThreadID != threadID {
+		t.Fatalf("delete threadId = %q, want %q", deleteBody.ThreadID, threadID)
+	}
+	if deleteBody.Status != "deleted" {
+		t.Fatalf("delete status = %q, want %q", deleteBody.Status, "deleted")
+	}
+
+	listRR := performJSONRequest(t, h, http.MethodGet, "/v1/threads", nil, map[string]string{"X-Client-ID": "client-a"})
+	if listRR.Code != http.StatusOK {
+		t.Fatalf("list status code = %d, want %d", listRR.Code, http.StatusOK)
+	}
+	var listBody struct {
+		Threads []threadResponse `json:"threads"`
+	}
+	if err := json.Unmarshal(listRR.Body.Bytes(), &listBody); err != nil {
+		t.Fatalf("unmarshal list response: %v", err)
+	}
+	if got, want := len(listBody.Threads), 0; got != want {
+		t.Fatalf("len(threads) = %d, want %d", got, want)
+	}
+
+	getRR := performJSONRequest(t, h, http.MethodGet, "/v1/threads/"+threadID, nil, map[string]string{"X-Client-ID": "client-a"})
+	if getRR.Code != http.StatusNotFound {
+		t.Fatalf("get after delete status code = %d, want %d", getRR.Code, http.StatusNotFound)
+	}
+	assertErrorCode(t, getRR.Body.Bytes(), "NOT_FOUND")
+
+	historyRR := performJSONRequest(t, h, http.MethodGet, "/v1/threads/"+threadID+"/history", nil, map[string]string{"X-Client-ID": "client-a"})
+	if historyRR.Code != http.StatusNotFound {
+		t.Fatalf("history after delete status code = %d, want %d", historyRR.Code, http.StatusNotFound)
+	}
+	assertErrorCode(t, historyRR.Body.Bytes(), "NOT_FOUND")
+}
+
+func TestDeleteThreadConflictWhenActiveTurn(t *testing.T) {
+	root := t.TempDir()
+	h := newTestServer(t, testServerOptions{
+		allowedRoots: []string{root},
+		turnAgentFactory: func(thread storage.Thread) (agents.Streamer, error) {
+			_ = thread
+			return agents.NewFakeAgentWithConfig(1, 50*time.Millisecond), nil
+		},
+	})
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	threadID := createThreadHTTP(t, ts.URL, "client-a", root)
+
+	streamResultCh := make(chan httpTurnStreamResult, 1)
+	go func() {
+		streamResultCh <- runTurnStreamRequest(t, ts.URL, "client-a", threadID, strings.Repeat("long-delete-conflict-", 20))
+	}()
+
+	turnID := waitForTurnID(t, ts.URL, "client-a", threadID, 4*time.Second)
+	if turnID == "" {
+		t.Fatalf("failed to observe running turn before timeout")
+	}
+
+	deleteStatus, deleteBody := doJSON(t, http.MethodDelete, ts.URL+"/v1/threads/"+threadID, nil, map[string]string{"X-Client-ID": "client-a"})
+	if deleteStatus != http.StatusConflict {
+		t.Fatalf("delete status = %d, want %d, body=%s", deleteStatus, http.StatusConflict, deleteBody)
+	}
+	assertErrorCode(t, []byte(deleteBody), "CONFLICT")
+
+	cancelStatus, cancelBody := postCancel(t, ts.URL, "client-a", turnID)
+	if cancelStatus != http.StatusOK {
+		t.Fatalf("cancel status = %d, want %d, body=%s", cancelStatus, http.StatusOK, cancelBody)
+	}
+	_ = <-streamResultCh
+}
+
+func TestDeleteThreadClosesCachedAgent(t *testing.T) {
+	root := t.TempDir()
+	streamer := &countingClosableStreamer{}
+	h := newTestServer(t, testServerOptions{
+		allowedRoots: []string{root},
+		turnAgentFactory: func(thread storage.Thread) (agents.Streamer, error) {
+			_ = thread
+			return streamer, nil
+		},
+	})
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	threadID := createThreadHTTP(t, ts.URL, "client-a", root)
+	result := runTurnStreamRequest(t, ts.URL, "client-a", threadID, "prime cached provider")
+	if result.StatusCode != http.StatusOK {
+		t.Fatalf("turn stream status = %d, want %d", result.StatusCode, http.StatusOK)
+	}
+
+	deleteStatus, deleteBody := doJSON(t, http.MethodDelete, ts.URL+"/v1/threads/"+threadID, nil, map[string]string{"X-Client-ID": "client-a"})
+	if deleteStatus != http.StatusOK {
+		t.Fatalf("delete status = %d, want %d, body=%s", deleteStatus, http.StatusOK, deleteBody)
+	}
+
+	if got := streamer.CloseCount(); got != 1 {
+		t.Fatalf("provider close count after delete = %d, want %d", got, 1)
+	}
+}
+
 func TestTurnsSSEAndHistory(t *testing.T) {
 	root := t.TempDir()
 	h := newTestServer(t, testServerOptions{allowedRoots: []string{root}})
@@ -1049,7 +1167,7 @@ func newTestServer(t *testing.T, opt testServerOptions) *Server {
 	}
 
 	server := New(Config{
-		AuthToken: opt.authToken,
+		AuthToken:         opt.authToken,
 		Agents:            agentList,
 		AllowedAgentIDs:   allowedAgentIDs,
 		AllowedRoots:      allowedRoots,
@@ -1107,7 +1225,7 @@ func newTestServerWithDBPath(t *testing.T, dbPath string, opt testServerOptions)
 	}
 
 	server := New(Config{
-		AuthToken: opt.authToken,
+		AuthToken:         opt.authToken,
 		Agents:            agentList,
 		AllowedAgentIDs:   allowedAgentIDs,
 		AllowedRoots:      allowedRoots,

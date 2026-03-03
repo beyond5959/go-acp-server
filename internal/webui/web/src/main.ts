@@ -36,6 +36,17 @@ const iconMenu = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" ar
   <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
 </svg>`
 
+const iconTrash = `<svg width="14" height="14" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+  <path d="M29.5 11.5V11c0-3-2.5-5.5-5.5-5.5S18.5 8 18.5 11v.5"
+    stroke="currentColor" stroke-width="3" stroke-miterlimit="10"/>
+  <line x1="7.5" y1="11.5" x2="40.5" y2="11.5"
+    stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-miterlimit="10"/>
+  <line x1="36.5" y1="27" x2="38" y2="11.5"
+    stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-miterlimit="10"/>
+  <path d="M10.7 18.6l2 20.3c.2 2.1 1.9 3.6 4 3.6h14.7c2.1 0 3.8-1.6 4-3.6l.5-4.8"
+    stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-miterlimit="10"/>
+</svg>`
+
 const codexIconURL = '/codex-icon.png'
 const geminiIconURL = '/gemini-icon.png'
 const claudeIconURL = '/claude-icon.png'
@@ -113,6 +124,7 @@ function renderThreadItem(t: Thread, activeId: string | null, query: string): st
   const avatar       = renderAgentAvatar(t.agent ?? '', 'thread')
   const displayTitle = threadTitle(t)
   const relTime      = t.updatedAt ? formatRelativeTime(t.updatedAt) : ''
+  const deleteLabel  = `Delete thread ${displayTitle}`
 
   const titleHtml = query
     ? escHtml(displayTitle).replace(
@@ -135,6 +147,14 @@ function renderThreadItem(t: Thread, activeId: string | null, query: string): st
           <span class="badge badge--agent">${escHtml(t.agent ?? '')}</span>
           <span class="thread-item-time">${relTime}</span>
         </div>
+      </div>
+      <div class="thread-item-actions">
+        <button class="btn btn-icon thread-delete-btn" type="button"
+                data-thread-id="${escHtml(t.threadId)}"
+                aria-label="${escHtml(deleteLabel)}"
+                title="${escHtml(deleteLabel)}">
+          ${iconTrash}
+        </button>
       </div>
     </div>`
 }
@@ -163,6 +183,17 @@ function updateThreadList(): void {
     .map(t => renderThreadItem(t, activeThreadId, q))
     .join('')
 
+  el.querySelectorAll<HTMLButtonElement>('.thread-delete-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.preventDefault()
+      e.stopPropagation()
+      const id = btn.dataset.threadId ?? ''
+      if (!id) return
+      void handleDeleteThread(id)
+    })
+    btn.addEventListener('keydown', e => e.stopPropagation())
+  })
+
   el.querySelectorAll<HTMLElement>('.thread-item').forEach(item => {
     const handler = () => {
       const id = item.dataset.threadId ?? ''
@@ -174,6 +205,45 @@ function updateThreadList(): void {
     }
     item.addEventListener('click', handler)
     item.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') handler() })
+  })
+}
+
+async function handleDeleteThread(threadId: string): Promise<void> {
+  const snapshot = store.get()
+  const thread = snapshot.threads.find(t => t.threadId === threadId)
+  if (!thread) return
+
+  const label = threadTitle(thread)
+  if (!window.confirm(`Delete thread "${label}"? This will permanently remove its history.`)) return
+
+  try {
+    await api.deleteThread(threadId)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error'
+    window.alert(`Failed to delete thread: ${message}`)
+    return
+  }
+
+  const state = store.get()
+  const nextThreads = state.threads.filter(t => t.threadId !== threadId)
+  const nextMessages = { ...state.messages }
+  delete nextMessages[threadId]
+
+  const deletingActive = state.activeThreadId === threadId
+  const deletingStream = state.streamState?.threadId === threadId
+
+  if (deletingStream) {
+    activeStream?.abort()
+    activeStream = null
+    activeStreamMsgId = null
+    activeStreamThreadId = null
+  }
+
+  store.set({
+    threads: nextThreads,
+    messages: nextMessages,
+    activeThreadId: deletingActive ? (nextThreads[0]?.threadId ?? null) : state.activeThreadId,
+    streamState: deletingStream ? null : state.streamState,
   })
 }
 

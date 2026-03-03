@@ -294,6 +294,61 @@ func (s *Store) GetThread(ctx context.Context, threadID string) (Thread, error) 
 	return thread, nil
 }
 
+// DeleteThread removes one thread and its dependent turns/events.
+func (s *Store) DeleteThread(ctx context.Context, threadID string) error {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return errors.New("storage: threadID is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin delete thread tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM events
+		WHERE turn_id IN (
+			SELECT turn_id
+			FROM turns
+			WHERE thread_id = ?
+		);
+	`, threadID); err != nil {
+		return fmt.Errorf("storage: delete thread events: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM turns
+		WHERE thread_id = ?;
+	`, threadID); err != nil {
+		return fmt.Errorf("storage: delete thread turns: %w", err)
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		DELETE FROM threads
+		WHERE thread_id = ?;
+	`, threadID)
+	if err != nil {
+		return fmt.Errorf("storage: delete thread: %w", err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("storage: delete thread rows affected: %w", err)
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit delete thread tx: %w", err)
+	}
+	return nil
+}
+
 // UpdateThreadSummary updates one thread summary and updates updated_at timestamp.
 func (s *Store) UpdateThreadSummary(ctx context.Context, threadID, summary string) error {
 	if strings.TrimSpace(threadID) == "" {

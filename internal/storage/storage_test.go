@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -112,6 +113,79 @@ func TestCreateListGetThread(t *testing.T) {
 	}
 	if threads[1].ThreadID != "th-1" {
 		t.Fatalf("threads[1].thread_id = %q, want %q", threads[1].ThreadID, "th-1")
+	}
+}
+
+func TestDeleteThreadCascadeData(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer func() {
+		_ = store.Close()
+	}()
+
+	if err := store.UpsertClient(ctx, "client-delete"); err != nil {
+		t.Fatalf("UpsertClient(): %v", err)
+	}
+
+	_, err := store.CreateThread(ctx, CreateThreadParams{
+		ThreadID:         "th-delete",
+		ClientID:         "client-delete",
+		AgentID:          "codex",
+		CWD:              "/tmp/project-delete",
+		Title:            "to-delete",
+		AgentOptionsJSON: "{}",
+		Summary:          "",
+	})
+	if err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+
+	_, err = store.CreateTurn(ctx, CreateTurnParams{
+		TurnID:      "tu-delete",
+		ThreadID:    "th-delete",
+		RequestText: "hello",
+		Status:      "running",
+	})
+	if err != nil {
+		t.Fatalf("CreateTurn(): %v", err)
+	}
+
+	if _, err := store.AppendEvent(ctx, "tu-delete", "turn_started", `{"turnId":"tu-delete"}`); err != nil {
+		t.Fatalf("AppendEvent(): %v", err)
+	}
+
+	if err := store.DeleteThread(ctx, "th-delete"); err != nil {
+		t.Fatalf("DeleteThread(): %v", err)
+	}
+
+	if _, err := store.GetThread(ctx, "th-delete"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetThread after delete err = %v, want ErrNotFound", err)
+	}
+	if _, err := store.GetTurn(ctx, "tu-delete"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetTurn after delete err = %v, want ErrNotFound", err)
+	}
+
+	if got := countRows(t, store.db, "threads"); got != 0 {
+		t.Fatalf("threads rows = %d, want 0", got)
+	}
+	if got := countRows(t, store.db, "turns"); got != 0 {
+		t.Fatalf("turns rows = %d, want 0", got)
+	}
+	if got := countRows(t, store.db, "events"); got != 0 {
+		t.Fatalf("events rows = %d, want 0", got)
+	}
+}
+
+func TestDeleteThreadNotFound(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer func() {
+		_ = store.Close()
+	}()
+
+	err := store.DeleteThread(ctx, "missing-thread")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteThread missing err = %v, want ErrNotFound", err)
 	}
 }
 

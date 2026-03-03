@@ -17,10 +17,10 @@ By default, the server listens on `0.0.0.0` and prints a QR code so other device
 | Agent | Supported |
 |---|---|
 | Codex | ✅ |
-| OpenCode | ✅ |
+| Claude Code | ✅ |
 | Gemini CLI | ✅ |
 | Qwen Code | ✅ |
-| Claude Code | 🔜 |
+| OpenCode | ✅ |
 
 
 

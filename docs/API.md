@@ -158,6 +158,22 @@ All errors use:
 }
 ```
 
+5.1 `DELETE /v1/threads/{threadId}`
+- Headers: `X-Client-ID` (required), optional bearer auth if enabled.
+- Ownership rule:
+  - if thread does not exist OR does not belong to `X-Client-ID`, return `404`.
+- Behavior:
+  - hard-deletes thread history (thread row + turns + events).
+  - if the thread has an active turn, returns `409 CONFLICT`.
+- Response `200`:
+
+```json
+{
+  "threadId": "th_...",
+  "status": "deleted"
+}
+```
+
 6. `POST /v1/threads/{threadId}/turns`
 - Headers: `X-Client-ID` (required), optional bearer auth if enabled.
 - Request:

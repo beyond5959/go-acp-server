@@ -33,6 +33,7 @@ interface ThreadsResponse       { threads: Thread[] }
 interface HistoryResponse       { turns: Turn[] }
 interface CreateThreadResponse  { threadId: string }
 interface CancelTurnResponse    { turnId: string; threadId: string; status: string }
+interface DeleteThreadResponse  { threadId: string; status: string }
 
 // ── Client ─────────────────────────────────────────────────────────────────
 
@@ -108,6 +109,11 @@ class ApiClient {
   async createThread(params: CreateThreadParams): Promise<string> {
     const data = await this.request<CreateThreadResponse>('POST', '/v1/threads', params)
     return data.threadId
+  }
+
+  /** DELETE /v1/threads/{threadId} */
+  async deleteThread(threadId: string): Promise<void> {
+    await this.request<DeleteThreadResponse>('DELETE', `/v1/threads/${encodeURIComponent(threadId)}`)
   }
 
   /**
