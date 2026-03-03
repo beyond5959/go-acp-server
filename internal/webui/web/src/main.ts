@@ -36,6 +36,9 @@ const iconMenu = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" ar
   <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
 </svg>`
 
+const codexIconURL = '/codex-icon.png'
+const geminiIconURL = '/gemini-icon.png'
+const claudeIconURL = '/claude-icon.png'
 const opencodeIconURL = '/opencode-icon.png'
 const qwenIconURL = '/qwen-icon.png'
 
@@ -87,6 +90,15 @@ function threadTitle(t: Thread): string {
 function renderAgentAvatar(agentId: string, variant: 'thread' | 'message'): string {
   const normalized = (agentId || '').trim().toLowerCase()
   const cls = variant === 'thread' ? 'thread-item-avatar-icon' : 'message-avatar-icon'
+  if (normalized === 'codex') {
+    return `<img src="${codexIconURL}" alt="Codex" class="${cls}" loading="lazy" decoding="async">`
+  }
+  if (normalized === 'gemini') {
+    return `<img src="${geminiIconURL}" alt="Gemini CLI" class="${cls}" loading="lazy" decoding="async">`
+  }
+  if (normalized === 'claude') {
+    return `<img src="${claudeIconURL}" alt="Claude Code" class="${cls}" loading="lazy" decoding="async">`
+  }
   if (normalized === 'opencode') {
     return `<img src="${opencodeIconURL}" alt="OpenCode" class="${cls} ${cls}--contain" loading="lazy" decoding="async">`
   }
