@@ -267,6 +267,19 @@ body {
   color: var(--text-2);
 }
 
+.thread-item-avatar-icon {
+  width: 22px;
+  height: 22px;
+  display: block;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.thread-item-avatar-icon--contain {
+  object-fit: contain;
+  background: #ffffff;
+}
+
 .thread-item-body {
   flex: 1;
   min-width: 0;
@@ -494,6 +507,19 @@ body {
   flex-shrink: 0;
   margin-bottom: 2px;
   user-select: none;
+}
+
+.message-avatar-icon {
+  width: 18px;
+  height: 18px;
+  display: block;
+  border-radius: 5px;
+  object-fit: cover;
+}
+
+.message-avatar-icon--contain {
+  object-fit: contain;
+  background: #ffffff;
 }
 
 .message-group {
@@ -1720,4 +1746,3 @@ button:disabled, .btn:disabled {
 
 .hljs-emphasis        { font-style: italic; }
 .hljs-strong          { font-weight: bold; }
-

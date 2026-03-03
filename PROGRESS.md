@@ -4,7 +4,7 @@
 
 Code Agent Hub Server is a Go service that exposes HTTP/JSON APIs and SSE streaming for multi-client, multi-thread agent turns.
 The system targets ACP-compatible agent providers, lazily starts per-thread agents, persists interaction history in SQLite, and bridges runtime permission requests back to clients.
-Current built-in provider is `codex`; additional ACP-compatible providers are planned.
+Current built-in providers are `codex`, `opencode`, `gemini`, and `qwen`; `claude` remains planned.
 This file is the source of milestone progress, validation commands, and next actions.
 
 ## Current Milestone
@@ -91,7 +91,7 @@ This file is the source of milestone progress, validation commands, and next act
   - updated docs and tests to reflect absolute-cwd policy.
 - `Post-M8` docs framing update completed:
   - adjusted README/SPEC/API/ARCHITECTURE wording to emphasize ACP-compatible multi-agent goal.
-  - kept current-state note explicit: today only `codex` is built-in.
+  - kept current-state note explicit: built-in providers are `codex`, `opencode`, `gemini`, and `qwen`.
   - simplified README startup path to `agent-hub-server` with explicit `agent-hub-server --help` guidance.
 - `Post-M8` startup log UX simplification completed:
   - replaced startup JSON line with multi-line human-readable stderr summary (QR code + port and URL hint).
@@ -99,6 +99,24 @@ This file is the source of milestone progress, validation commands, and next act
   - added unit test coverage for startup summary rendering and request completion log fields.
 - `Post-M8` LAN-friendly default bind completed:
   - changed default bind to `0.0.0.0:8686` and `--allow-public` default to `true` so other devices can connect via the startup QR code.
+- `Post-M8` qwen ACP integration completed:
+  - implemented `internal/agents/qwen` with one-turn process lifecycle (`qwen --acp`) and ACP flow `initialize -> session/new -> session/prompt`.
+  - implemented `session/update` delta extraction (`agent_message_chunk` + `content.text`) and `session/request_permission` fail-closed mapping (`approved/declined/cancelled`).
+  - wired qwen into main server startup preflight, `/v1/agents` supported list, thread agent allowlist, and turn agent factory.
+  - added/updated tests for qwen provider and server wiring (`main` + `httpapi` qwen allowlist coverage).
+  - executed validation:
+    - pass: `qwen --version` (`0.11.0`)
+    - pass: `go test ./internal/agents/qwen -count=1`
+    - pass: `go test ./cmd/agent-hub-server ./internal/httpapi -count=1`
+    - pass: `E2E_QWEN=1 go test ./internal/agents/qwen -run TestQwenE2ESmoke -v -timeout 120s`
+- `Post-M8` ACP stdio transport refactor completed:
+  - extracted shared transport package `internal/agents/acpstdio` (JSON-RPC stdio call/notify, inbound request handling, parse helpers, process termination helper).
+  - refactored `internal/agents/opencode` and `internal/agents/qwen` to reuse `acpstdio` while preserving provider-specific behavior.
+  - executed regression:
+    - pass: `go test ./internal/agents/opencode ./internal/agents/qwen -count=1`
+    - pass: `go test ./...`
+    - pass: `E2E_OPENCODE=1 go test ./internal/agents/opencode -run TestOpenCodeE2ESmoke -v -timeout 90s`
+    - pass: `E2E_QWEN=1 go test ./internal/agents/qwen -run TestQwenE2ESmoke -v -timeout 120s`
 - `F2` completed:
   - created `src/types.ts`: full TypeScript interface set (Thread, Turn, Message, PermissionRequest, StreamState, AppState, etc.).
   - created `src/utils.ts`: generateUUID (crypto.randomUUID + fallback), formatTimestamp, formatRelativeTime, isAbsolutePath, escHtml, debounce.
@@ -226,6 +244,26 @@ This file is the source of milestone progress, validation commands, and next act
   - tests: pass (all packages green)
   - frontend build: pass (121 kB JS, 27 kB CSS)
   - full binary build: pass
+
+## Latest Verification (ACP Transport Refactor Update)
+
+- Date: `2026-03-03`
+- Commands executed:
+  - `go test ./internal/agents/opencode ./internal/agents/qwen -count=1`
+  - `E2E_OPENCODE=1 go test ./internal/agents/opencode -run TestOpenCodeE2ESmoke -v -timeout 90s`
+  - `qwen --version`
+  - `go test ./internal/agents/qwen -count=1`
+  - `E2E_QWEN=1 go test ./internal/agents/qwen -run TestQwenE2ESmoke -v -timeout 120s`
+  - `go test ./cmd/agent-hub-server ./internal/httpapi -count=1`
+  - `go test ./...`
+- Result:
+  - opencode/qwen package tests: pass
+  - opencode real smoke: pass (`PONG`, `stopReason=end_turn`)
+  - qwen version check: pass (`0.11.0`)
+  - qwen package tests: pass
+  - qwen real smoke: pass (`PONG`, `stopReason=end_turn`)
+  - server/httpapi regression tests: pass
+  - full repo tests: pass
 
 ## Dependency Fetch Notes
 

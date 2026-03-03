@@ -23,6 +23,8 @@
 - ADR-019: OpenCode ACP stdio provider. (Accepted)
 - ADR-020: Gemini CLI ACP stdio provider. (Accepted)
 - ADR-021: Public-by-default bind with local-only opt-out. (Accepted)
+- ADR-022: Qwen Code ACP stdio provider integration. (Accepted)
+- ADR-023: Shared ACP stdio transport for OpenCode and Qwen providers. (Accepted)
 
 ## ADR-018: Embedded Web UI via Go embed
 
@@ -339,3 +341,68 @@ Use this template for new decisions.
 - Consequences:
   - `gemini` binary must be in PATH and `GEMINI_API_KEY` must be set for the provider to be available.
   - No model selection option at thread creation time; model is controlled by Gemini CLI's own configuration.
+
+## ADR-022: Qwen Code ACP stdio provider integration
+
+- Status: Accepted
+- Date: 2026-03-03
+- Context:
+  - Qwen Code is available locally and supports ACP via `qwen --acp`.
+  - hub requirements remain strict: one-active-turn-per-thread, fast cancel, fail-closed permissions, and no regressions for existing providers.
+  - protocol inspection shows required ACP fields (`clientCapabilities.fs`, `mcpServers`) and provider-specific response variants.
+- Decision:
+  - implemented `internal/agents/qwen` as a standalone ACP stdio provider (one process per turn).
+  - process command is fixed as `qwen --acp` (no user-supplied binary path in server config).
+  - protocol flow is `initialize -> session/new -> session/prompt`, with required params:
+    - `initialize.protocolVersion = 1`
+    - `initialize.clientCapabilities.fs.readTextFile = false`
+    - `initialize.clientCapabilities.fs.writeTextFile = false`
+    - `session/new` includes `cwd` and `mcpServers: []`
+    - `session/prompt` uses ACP prompt blocks (`[{type:"text", text:...}]`)
+  - stream output is parsed from `session/update` when `update.sessionUpdate == "agent_message_chunk"` and delta comes from `update.content.text`.
+  - handle `session/request_permission` by mapping hub decisions into ACP outcome format:
+    - approve/decline: `outcome=selected` with matching `optionId`
+    - cancel: `outcome=cancelled`
+    - default deny on timeout/errors/no handler (fail-closed)
+  - cancellation path sends `session/cancel` with `sessionId` on context cancellation and converges to `stopReason=cancelled`.
+  - stderr is drained/discarded to avoid protocol stream corruption; existing providers (`codex`, `opencode`, `gemini`) behavior remains unchanged.
+- Consequences:
+  - qwen availability is startup-preflight dependent (`qwen` in PATH).
+  - real qwen turns depend on local runtime prerequisites (writable qwen home/config + auth/network readiness), so environment misconfiguration can fail before ACP turn execution.
+  - provider must tolerate schema drift across qwen versions (new optional fields in `session/new` response).
+  - test surface expanded:
+    - fake-process ACP tests for initialize/session/new/session/prompt/session/update
+    - permission mapping tests (`approved`, `declined`, `cancelled`)
+    - optional real smoke test (`E2E_QWEN=1`)
+- Alternatives considered:
+  - reuse a single generic ACP provider configured by command/args at runtime.
+  - force qwen through existing `opencode`/`gemini` adapters.
+  - postpone qwen until ACP schema is frozen upstream.
+- Follow-up actions:
+  - improve qwen preflight diagnostics for filesystem/auth prerequisites (beyond PATH existence).
+  - keep validating against newer qwen releases for ACP schema compatibility.
+
+## ADR-023: Shared ACP stdio transport for OpenCode and Qwen providers
+
+- Status: Accepted
+- Date: 2026-03-03
+- Context:
+  - `internal/agents/opencode` and `internal/agents/qwen` had duplicated JSON-RPC stdio transport code (request id/pending map, read loop, inbound request handling, notify/call framing, process termination helpers).
+  - duplicated protocol plumbing increased maintenance risk and made bug fixes easy to diverge across providers.
+- Decision:
+  - extracted shared package `internal/agents/acpstdio` with:
+    - newline-delimited JSON-RPC connection (`Conn`) supporting `Call`, `Notify`, notifications, and inbound request handling.
+    - shared JSON-RPC message/error types.
+    - shared helpers: `ParseSessionID`, `ParseStopReason`, `TerminateProcess`.
+  - refactored both providers to use the shared transport while keeping provider-specific ACP behavior unchanged:
+    - OpenCode flow and modelId handling unchanged.
+    - Qwen permission mapping and fail-closed behavior unchanged.
+- Consequences:
+  - transport-layer fixes are now centralized and consistent across providers.
+  - provider files are shorter and focused on protocol semantics instead of wire plumbing.
+  - regression risk from this refactor is controlled by fake-process tests + full `go test ./...` + real E2E smoke tests for both providers.
+- Alternatives considered:
+  - keep duplicated transport code and only copy fixes manually.
+  - extract only tiny helper funcs without shared connection type.
+- Follow-up actions:
+  - if Gemini migration value is clear, evaluate moving Gemini transport to `acpstdio` in a separate change (to keep current refactor blast radius limited).

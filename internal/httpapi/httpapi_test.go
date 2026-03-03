@@ -214,6 +214,30 @@ func TestCreateThreadValidationAgentAllowlist(t *testing.T) {
 	assertErrorCode(t, rr.Body.Bytes(), "INVALID_ARGUMENT")
 }
 
+func TestCreateThreadValidationAgentAllowlistAllowsQwen(t *testing.T) {
+	root := t.TempDir()
+	h := newTestServer(t, testServerOptions{
+		allowedRoots: []string{root},
+		agentList: []AgentInfo{
+			{ID: "codex", Name: "Codex", Status: "available"},
+			{ID: "qwen", Name: "Qwen Code", Status: "available"},
+			{ID: "claude", Name: "Claude Code", Status: "unavailable"},
+		},
+		allowedAgentIDs: []string{"codex", "qwen"},
+	})
+
+	body := map[string]any{"agent": "qwen", "cwd": root}
+	rr := performJSONRequest(t, h, http.MethodPost, "/v1/threads", body, map[string]string{"X-Client-ID": "client-a"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	threadID := extractThreadID(t, rr.Body.Bytes())
+	if strings.TrimSpace(threadID) == "" {
+		t.Fatalf("threadId should not be empty")
+	}
+}
+
 func TestThreadsCreateListGetHappyPath(t *testing.T) {
 	root := t.TempDir()
 	h := newTestServer(t, testServerOptions{allowedRoots: []string{root}})
@@ -976,6 +1000,8 @@ func TestRestartRecoveryWithInjectedContext(t *testing.T) {
 type testServerOptions struct {
 	authToken         string
 	allowedRoots      []string
+	allowedAgentIDs   []string
+	agentList         []AgentInfo
 	agent             agents.Streamer
 	turnAgentFactory  TurnAgentFactory
 	agentIdleTTL      time.Duration
@@ -996,6 +1022,19 @@ func newTestServer(t *testing.T, opt testServerOptions) *Server {
 		allowedRoots = []string{t.TempDir()}
 	}
 
+	agentList := opt.agentList
+	if len(agentList) == 0 {
+		agentList = []AgentInfo{
+			{ID: "codex", Name: "Codex", Status: "available"},
+			{ID: "claude", Name: "Claude Code", Status: "unavailable"},
+		}
+	}
+
+	allowedAgentIDs := opt.allowedAgentIDs
+	if len(allowedAgentIDs) == 0 {
+		allowedAgentIDs = []string{"codex"}
+	}
+
 	streamAgent := opt.agent
 	if streamAgent == nil {
 		streamAgent = agents.NewFakeAgentWithConfig(3, 10*time.Millisecond)
@@ -1011,11 +1050,8 @@ func newTestServer(t *testing.T, opt testServerOptions) *Server {
 
 	server := New(Config{
 		AuthToken: opt.authToken,
-		Agents: []AgentInfo{
-			{ID: "codex", Name: "Codex", Status: "available"},
-			{ID: "claude", Name: "Claude Code", Status: "unavailable"},
-		},
-		AllowedAgentIDs:   []string{"codex"},
+		Agents:            agentList,
+		AllowedAgentIDs:   allowedAgentIDs,
 		AllowedRoots:      allowedRoots,
 		Store:             store,
 		TurnController:    runtimectl.NewTurnController(),
@@ -1044,6 +1080,19 @@ func newTestServerWithDBPath(t *testing.T, dbPath string, opt testServerOptions)
 		allowedRoots = []string{t.TempDir()}
 	}
 
+	agentList := opt.agentList
+	if len(agentList) == 0 {
+		agentList = []AgentInfo{
+			{ID: "codex", Name: "Codex", Status: "available"},
+			{ID: "claude", Name: "Claude Code", Status: "unavailable"},
+		}
+	}
+
+	allowedAgentIDs := opt.allowedAgentIDs
+	if len(allowedAgentIDs) == 0 {
+		allowedAgentIDs = []string{"codex"}
+	}
+
 	streamAgent := opt.agent
 	if streamAgent == nil {
 		streamAgent = agents.NewFakeAgentWithConfig(3, 10*time.Millisecond)
@@ -1059,11 +1108,8 @@ func newTestServerWithDBPath(t *testing.T, dbPath string, opt testServerOptions)
 
 	server := New(Config{
 		AuthToken: opt.authToken,
-		Agents: []AgentInfo{
-			{ID: "codex", Name: "Codex", Status: "available"},
-			{ID: "claude", Name: "Claude Code", Status: "unavailable"},
-		},
-		AllowedAgentIDs:   []string{"codex"},
+		Agents:            agentList,
+		AllowedAgentIDs:   allowedAgentIDs,
 		AllowedRoots:      allowedRoots,
 		Store:             store,
 		TurnController:    runtimectl.NewTurnController(),

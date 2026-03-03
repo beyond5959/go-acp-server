@@ -95,3 +95,19 @@
 - Symptom: stderr may show warnings like `state_5.sqlite migration ... missing` and endpoint compatibility errors such as `mcpServer/call unknown variant`; turn usually still completes but tool output can be empty
 - Workaround: align local codex CLI/app-server version with linked `codex-acp` schema expectations, and repair/reset local codex state DB when migration drift appears
 - Follow-up plan: add explicit diagnostics/preflight endpoint to surface local state/schema compatibility before turn execution
+
+- ID: KI-010
+- Title: Qwen ACP environment/auth dependency
+- Status: Open
+- Severity: Medium
+- Affects: implemented `qwen --acp` provider turns in constrained environments
+- Symptom:
+  - in sandboxed or permission-restricted environments, Qwen can fail before ACP initialize completes when local runtime files under `~/.qwen` are not writable.
+  - hub-side symptom in those environments typically converges as `qwen: initialize: qwen: connection closed`.
+  - prompt execution can still fail with upstream/internal errors when auth or network is not ready, even after handshake succeeds.
+- Workaround:
+  - ensure writable home/config directory for qwen runtime (`HOME`, `~/.qwen`).
+  - ensure qwen authentication is completed and network path to model backend is available before turn execution.
+- Follow-up plan:
+  - add clearer preflight diagnostics for qwen runtime prerequisites (filesystem writable check + auth hints).
+  - map common qwen upstream errors to stable hub error details for easier operator debugging.

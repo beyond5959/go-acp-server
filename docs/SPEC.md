@@ -116,3 +116,87 @@ All API errors follow a common envelope with:
 - optional details map
 
 See `docs/API.md` for concrete schema and codes.
+
+## 11. Planned Qwen ACP Integration (2026-03-03)
+
+### 11.1 Objective and Scope
+
+- add `qwen` as a first-class ACP provider using `qwen --acp`.
+- preserve all existing contracts and behavior for `codex`, `opencode`, and `gemini`.
+- keep runtime/security invariants unchanged:
+  - one active turn per thread.
+  - fail-closed permission workflow.
+  - allowlisted `agent` and absolute+allowed `cwd` validation.
+  - protocol-only stdout/HTTP payloads, JSON logs on stderr.
+
+### 11.2 Qwen ACP Protocol Profile
+
+The integration must follow Qwen ACP requirements observed from local `qwen 0.11.0`
+and upstream ACP schema:
+
+- `initialize` requires:
+  - `protocolVersion: 1`
+  - `clientCapabilities.fs.readTextFile`
+  - `clientCapabilities.fs.writeTextFile`
+- `session/new` requires:
+  - `cwd` (thread cwd)
+  - `mcpServers` (use empty array when not configured)
+- `session/prompt` request format:
+  - `prompt` must be `[]contentBlock`, use text block for hub input.
+- `session/update` notifications:
+  - stream deltas from `update.sessionUpdate == "agent_message_chunk"`
+  - consume text from `update.content.text` only.
+- permission request/response:
+  - handle `session/request_permission` request from provider.
+  - reply with ACP outcome shape:
+    - approve: `{outcome:{outcome:"selected", optionId:<allow option>}}`
+    - decline: `{outcome:{outcome:"selected", optionId:<reject option>}}`
+    - cancel: `{outcome:{outcome:"cancelled"}}`
+  - default deny if hub decision is missing/invalid/timeout.
+- cancellation:
+  - on context cancel, send `session/cancel` with `sessionId`.
+  - return `StopReasonCancelled` quickly.
+
+### 11.3 Implementation Blueprint
+
+- add `internal/agents/qwen` as a standalone provider package:
+  - `Config{Dir string, ModelID string}`
+  - `Preflight()` checks `qwen` binary in PATH.
+  - `Client.Stream()` uses process-per-turn ACP stdio flow.
+- keep implementation additive:
+  - do not refactor shared `internal/agents/acp` or existing providers.
+- main wiring in `cmd/agent-hub-server/main.go`:
+  - qwen preflight and status in `/v1/agents`.
+  - add `qwen` to `AllowedAgentIDs`.
+  - add `TurnAgentFactory` case for `thread.AgentID == "qwen"`.
+  - optional `agentOptions.modelId` mapped to ACP `session/set_model` (best effort).
+
+### 11.4 R&D Task Breakdown
+
+1. Implement provider package `internal/agents/qwen`.
+2. Add provider unit tests with fake ACP process simulation.
+3. Add optional env-gated real smoke test for local `qwen`.
+4. Wire qwen into startup preflight, supported agents list, and thread factory.
+5. Update/extend tests in `cmd/agent-hub-server` for qwen registration/status.
+6. Update docs (`README`, `SPEC`, `ACCEPTANCE`, `DECISIONS`, `KNOWN_ISSUES`, `PROGRESS`).
+7. Run regression gates:
+   - `cd internal/webui/web && npm run build`
+   - `go test ./...`
+
+### 11.5 Detailed Execution Plan
+
+- Phase P0: protocol validation and risk framing.
+  - Deliverable: local ACP handshake evidence and compatibility notes.
+  - DoD: required request fields and response shapes confirmed.
+- Phase P1: `internal/agents/qwen` implementation.
+  - Deliverable: compilable provider with stream/cancel/permission support.
+  - DoD: provider fake tests pass.
+- Phase P2: server wiring and contract alignment.
+  - Deliverable: `/v1/agents` + thread creation + turn factory support `qwen`.
+  - DoD: wiring tests pass and existing providers unchanged.
+- Phase P3: docs and acceptance checklist.
+  - Deliverable: this plan plus executable acceptance commands.
+  - DoD: docs reviewed and committed with explicit pending status where applicable.
+- Phase P4: full regression.
+  - Deliverable: clean baseline for merge.
+  - DoD: `npm run build` and `go test ./...` pass.

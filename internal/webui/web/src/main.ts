@@ -36,6 +36,9 @@ const iconMenu = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" ar
   <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
 </svg>`
 
+const opencodeIconURL = '/opencode-icon.png'
+const qwenIconURL = '/qwen-icon.png'
+
 // ── Active stream state (DOM-managed, not in store) ───────────────────────
 
 /**
@@ -81,9 +84,21 @@ function threadTitle(t: Thread): string {
   return t.cwd.split('/').filter(Boolean).pop() ?? t.cwd
 }
 
+function renderAgentAvatar(agentId: string, variant: 'thread' | 'message'): string {
+  const normalized = (agentId || '').trim().toLowerCase()
+  const cls = variant === 'thread' ? 'thread-item-avatar-icon' : 'message-avatar-icon'
+  if (normalized === 'opencode') {
+    return `<img src="${opencodeIconURL}" alt="OpenCode" class="${cls} ${cls}--contain" loading="lazy" decoding="async">`
+  }
+  if (normalized === 'qwen') {
+    return `<img src="${qwenIconURL}" alt="Qwen Code" class="${cls}" loading="lazy" decoding="async">`
+  }
+  return escHtml((agentId || 'A').slice(0, 1).toUpperCase())
+}
+
 function renderThreadItem(t: Thread, activeId: string | null, query: string): string {
   const isActive     = t.threadId === activeId
-  const initials     = (t.agent ?? 'A').slice(0, 1).toUpperCase()
+  const avatar       = renderAgentAvatar(t.agent ?? '', 'thread')
   const displayTitle = threadTitle(t)
   const relTime      = t.updatedAt ? formatRelativeTime(t.updatedAt) : ''
 
@@ -100,7 +115,7 @@ function renderThreadItem(t: Thread, activeId: string | null, query: string): st
          role="button"
          tabindex="0"
          aria-label="${escHtml(displayTitle)}">
-      <div class="thread-item-avatar ${isActive ? '' : 'thread-item-avatar--inactive'}">${initials}</div>
+      <div class="thread-item-avatar ${isActive ? '' : 'thread-item-avatar--inactive'}">${avatar}</div>
       <div class="thread-item-body">
         <div class="thread-item-title">${titleHtml}</div>
         <div class="thread-item-preview">${escHtml(t.cwd)}</div>
@@ -212,7 +227,7 @@ async function loadHistory(threadId: string): Promise<void> {
 
 // ── Message rendering ─────────────────────────────────────────────────────
 
-function renderMessage(msg: Message, agentInitial: string): string {
+function renderMessage(msg: Message, agentAvatar: string): string {
   if (msg.role === 'user') {
     return `
       <div class="message message--user" data-msg-id="${escHtml(msg.id)}">
@@ -252,7 +267,7 @@ function renderMessage(msg: Message, agentInitial: string): string {
 
   return `
     <div class="message message--agent" data-msg-id="${escHtml(msg.id)}">
-      <div class="message-avatar">${escHtml(agentInitial)}</div>
+      <div class="message-avatar">${agentAvatar}</div>
       <div class="message-group">
         <div class="message-bubble${bubbleExtra}">${bubbleContent}</div>
         <div class="message-meta">
@@ -273,7 +288,7 @@ function updateMessageList(): void {
 
   const thread   = threads.find(t => t.threadId === activeThreadId)
   const msgs     = messages[activeThreadId] ?? []
-  const agentInitial = (thread?.agent ?? 'A').slice(0, 1).toUpperCase()
+  const agentAvatar = renderAgentAvatar(thread?.agent ?? '', 'message')
 
   if (!msgs.length) {
     listEl.innerHTML = `
@@ -285,7 +300,7 @@ function updateMessageList(): void {
     return
   }
 
-  listEl.innerHTML = msgs.map(m => renderMessage(m, agentInitial)).join('')
+  listEl.innerHTML = msgs.map(m => renderMessage(m, agentAvatar)).join('')
   bindMarkdownControls(listEl)
   listEl.scrollTop = listEl.scrollHeight
   // Sync scroll button (we just moved to the bottom)
@@ -473,7 +488,7 @@ function handleSend(): void {
   if (!activeThreadId || streamState) return
 
   const thread       = threads.find(t => t.threadId === activeThreadId)
-  const agentInitial = (thread?.agent ?? 'A').slice(0, 1).toUpperCase()
+  const agentAvatar  = renderAgentAvatar(thread?.agent ?? '', 'message')
 
   // Clear input immediately
   inputEl.value = ''
@@ -510,7 +525,7 @@ function handleSend(): void {
     div.className        = 'message message--agent'
     div.dataset.msgId    = agentMsgId
     div.innerHTML = `
-      <div class="message-avatar">${escHtml(agentInitial)}</div>
+      <div class="message-avatar">${agentAvatar}</div>
       <div class="message-group">
         <div class="message-bubble message-bubble--streaming" id="bubble-${escHtml(agentMsgId)}">
           <div class="typing-indicator"><span></span><span></span><span></span></div>

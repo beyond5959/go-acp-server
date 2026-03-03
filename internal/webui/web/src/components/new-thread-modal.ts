@@ -27,13 +27,11 @@ const agentIcons: Record<string, string> = {
   // Claude Code official icon — lobehub/lobe-icons claude-color.png
   claude: `<img src="/claude-icon.png" width="32" height="32" alt="Claude Code" style="border-radius:8px;display:block;">`,
 
-  // OpenCode — no Simple Icons entry yet; using Heroicons terminal icon (MIT)
-  opencode: `<svg width="32" height="32" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-    <rect width="32" height="32" rx="8" fill="#1a1a1a"/>
-    <g transform="translate(4,4)" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25z"/>
-    </g>
-  </svg>`,
+  // OpenCode icon from local asset
+  opencode: `<img src="/opencode-icon.png" width="32" height="32" alt="OpenCode" style="border-radius:8px;display:block;object-fit:contain;background:#ffffff;">`,
+
+  // Qwen Code icon from local asset
+  qwen: `<img src="/qwen-icon.png" width="32" height="32" alt="Qwen Code" style="border-radius:8px;display:block;">`,
 }
 
 const iconAgentDefault = `<svg width="32" height="32" viewBox="0 0 32 32" fill="none" aria-hidden="true">
