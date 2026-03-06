@@ -156,3 +156,21 @@
 - Symptom: on partial refresh failure, the server intentionally keeps older sqlite catalog rows for models that could not be refreshed, so removed/changed upstream model metadata can remain temporarily stale until a later successful refresh or an explicit config change rewrites that model row.
 - Workaround: restart again after upstream/provider health is restored, or trigger a config change on the affected model/thread so the latest snapshot is written through immediately.
 - Follow-up plan: evaluate adding per-agent refresh status/age diagnostics in the API or Web UI so operators can see when catalog data is partially stale.
+
+- ID: KI-016
+- Title: Thread rename is blocked during an active turn
+- Status: Open
+- Severity: Low
+- Affects: API/Web UI rename requests using `PATCH /v1/threads/{threadId}` with `title`
+- Symptom: rename requests return `409 CONFLICT` while the thread is actively streaming because title updates share the same active-turn lock as other thread mutations.
+- Workaround: wait for the current turn to finish or cancel it, then retry rename.
+- Follow-up plan: evaluate whether title-only updates should continue using the shared mutation lock or move to a narrower metadata-only guard in a future revision.
+
+- ID: KI-019
+- Title: `item/tool/requestUserInput` currently uses fallback auto-selection
+- Status: Open
+- Severity: Medium
+- Affects: codex app-server flows that require real user-entered answers or multi-choice semantics beyond first-option selection
+- Symptom: adapter now avoids hard `-32000` errors, but for `requestUserInput` it auto-selects first option labels and does not expose full interactive question UI in hub frontend.
+- Workaround: prefer MCP/tool flows that do not require complex interactive follow-up prompts; if needed, run the same operation in an environment with native codex app UI support.
+- Follow-up plan: add first-class user-input request bridge and frontend interaction model for arbitrary question/option responses.

@@ -504,6 +504,61 @@ func TestUpdateThreadAgentOptionsCrossClientReturnsNotFound(t *testing.T) {
 	assertErrorCode(t, updateRR.Body.Bytes(), "NOT_FOUND")
 }
 
+func TestUpdateThreadTitle(t *testing.T) {
+	root := t.TempDir()
+	h := newTestServer(t, testServerOptions{allowedRoots: []string{root}})
+
+	createRR := performJSONRequest(t, h, http.MethodPost, "/v1/threads", map[string]any{
+		"agent": "codex",
+		"cwd":   root,
+		"title": "before",
+	}, map[string]string{"X-Client-ID": "client-a"})
+	if createRR.Code != http.StatusOK {
+		t.Fatalf("create status code = %d, want %d", createRR.Code, http.StatusOK)
+	}
+	threadID := extractThreadID(t, createRR.Body.Bytes())
+
+	updateRR := performJSONRequest(t, h, http.MethodPatch, "/v1/threads/"+threadID, map[string]any{
+		"title": "after",
+	}, map[string]string{"X-Client-ID": "client-a"})
+	if updateRR.Code != http.StatusOK {
+		t.Fatalf("update status code = %d, want %d", updateRR.Code, http.StatusOK)
+	}
+
+	var updateBody struct {
+		Thread struct {
+			ThreadID string `json:"threadId"`
+			Title    string `json:"title"`
+		} `json:"thread"`
+	}
+	if err := json.Unmarshal(updateRR.Body.Bytes(), &updateBody); err != nil {
+		t.Fatalf("unmarshal update response: %v", err)
+	}
+	if updateBody.Thread.ThreadID != threadID {
+		t.Fatalf("updated threadId = %q, want %q", updateBody.Thread.ThreadID, threadID)
+	}
+	if updateBody.Thread.Title != "after" {
+		t.Fatalf("updated title = %q, want %q", updateBody.Thread.Title, "after")
+	}
+
+	getRR := performJSONRequest(t, h, http.MethodGet, "/v1/threads/"+threadID, nil, map[string]string{"X-Client-ID": "client-a"})
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("get status code = %d, want %d", getRR.Code, http.StatusOK)
+	}
+
+	var getBody struct {
+		Thread struct {
+			Title string `json:"title"`
+		} `json:"thread"`
+	}
+	if err := json.Unmarshal(getRR.Body.Bytes(), &getBody); err != nil {
+		t.Fatalf("unmarshal get response: %v", err)
+	}
+	if getBody.Thread.Title != "after" {
+		t.Fatalf("persisted title = %q, want %q", getBody.Thread.Title, "after")
+	}
+}
+
 func TestThreadAccessAcrossClientsReturnsNotFound(t *testing.T) {
 	root := t.TempDir()
 	h := newTestServer(t, testServerOptions{allowedRoots: []string{root}})

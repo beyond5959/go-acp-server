@@ -51,6 +51,7 @@ This checklist defines executable acceptance checks for requirements 1-16.
 
 - Operation: trigger permission-required flow; test approved, timeout, and disconnect cases.
 - Expected: `permission_required` emitted; timeout/disconnect fails closed.
+  - embedded codex command-approval flow should not fail with adapter-side `-32601 method not found` when using updated app-server request methods.
 - Verification command:
   - `go test ./internal/httpapi -run TestTurnPermissionRequiredSSEEvent -count=1`
   - `go test ./internal/httpapi -run TestTurnPermissionApprovedContinuesAndCompletes -count=1`
@@ -208,6 +209,23 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - `cd internal/webui/web && npm run build`
   - `go test ./...`
 
+## Requirement 20: Thread Drawer Actions and Rename
+
+- Operation:
+  - open sidebar thread actions from a thread-row drawer trigger.
+  - rename a thread inline from the drawer.
+  - delete a thread from the same drawer.
+- Expected:
+  - thread row exposes a drawer trigger instead of a direct delete icon button.
+  - drawer lists `Rename` before `Delete`.
+  - delete is text-only and styled as the dangerous action.
+  - rename persists `thread.title` through `PATCH /v1/threads/{threadId}` and returns the updated thread payload.
+  - rename/delete continue to respect active-turn safety (`409 CONFLICT` while the thread is running).
+- Verification commands (executed 2026-03-06):
+  - `go test ./internal/storage -run TestUpdateThreadTitle -count=1`
+  - `go test ./internal/httpapi -run TestUpdateThreadTitle -count=1`
+  - `cd internal/webui/web && npm run build`
+
 ## Current Acceptance Result (Integration Update, 2026-03-03)
 
 - Scope: qwen provider implementation + server wiring + test coverage.
@@ -217,3 +235,16 @@ This checklist defines executable acceptance checks for requirements 1-16.
     - server/httpapi wiring tests passed (includes qwen allowlist coverage).
   - real qwen smoke in host environment: `Passed`.
   - Requirement 16 status: `Accepted`.
+
+## Requirement 21: Embedded Codex Tool User-Input Request Compatibility
+
+- Operation:
+  - trigger codex app-server request path that emits `item/tool/requestUserInput` (for example MCP tool interaction requiring follow-up selection).
+  - observe adapter response and downstream behavior.
+- Expected:
+  - adapter no longer returns JSON-RPC hard error `-32000 ... requestUserInput is not supported`.
+  - request receives schema-compatible `answers` payload.
+  - `item/tool/call` fallback returns structured response (`success=false`) instead of hard method error.
+- Verification commands (executed 2026-03-06):
+  - `go test ./...`
+  - `cd internal/webui/web && npm run build`

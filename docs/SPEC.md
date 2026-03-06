@@ -218,7 +218,7 @@ and upstream ACP schema:
 
 ### 12.2 API and Runtime Behavior
 
-- Added `PATCH /v1/threads/{threadId}` with request body containing `agentOptions` object.
+- Added `PATCH /v1/threads/{threadId}` with request body containing optional `title` and `agentOptions`.
 - Added `GET /v1/agents/{agentId}/models`:
   - backend queries provider ACP handshake (`initialize` + `session/new`) and extracts runtime model options from `configOptions` / `models.availableModels`.
   - returns normalized `[{"id","name"}]` entries for Web UI dropdowns.
@@ -226,8 +226,9 @@ and upstream ACP schema:
 - Active turn safety is strict:
   - when the thread currently has an active turn, update returns `409 CONFLICT`.
 - On successful update:
-  - persist `threads.agent_options_json` and update `updated_at`.
-  - close cached per-thread provider instance so the next turn starts with updated model config.
+  - when `title` is provided, persist `threads.title` and update `updated_at`.
+  - when `agentOptions` is provided, persist `threads.agent_options_json` and update `updated_at`.
+  - close cached per-thread provider instance only when `agentOptions` changes, so the next turn starts with updated model config.
 
 ### 12.3 Web UI Behavior
 
@@ -272,6 +273,7 @@ and upstream ACP schema:
   - keep session-local config options in cached runtime.
   - `SetConfigOption` calls ACP `session/set_config_option` in the same session.
   - on fresh runtime/session initialization, replay persisted `agentOptions.configOverrides` after `session/new`.
+  - codex embedded runtime depends on acp-adapter compatibility with codex app-server server-request variants; current baseline includes command/file approval request compatibility (`item/commandExecution/requestApproval`, `item/fileChange/requestApproval`) with fail-closed fallback for unsupported request types.
 - Stdio providers (`opencode`, `qwen`, `gemini`):
   - perform ACP handshake for config query/apply and persist resulting config state for subsequent turns.
   - on each fresh `session/new`, replay persisted `agentOptions.configOverrides` before `session/prompt`.
@@ -285,6 +287,11 @@ and upstream ACP schema:
 - frontend cache is keyed by `agent + selected model`, so same-agent threads can reuse the same model-specific catalog without incorrectly sharing another model's reasoning list.
 - Option descriptions are rendered inside the dropdown menus for selectable values.
 - During streaming or in-flight switch request, both controls are disabled to preserve turn/config safety.
+- Sidebar thread actions now live behind a thread-row drawer:
+  - trigger stays in the row action area.
+  - drawer contains inline `Rename` and `Delete` actions.
+  - rename opens an inline text field and saves through `PATCH /v1/threads/{threadId}`.
+  - delete remains confirm-gated and styled as the only dangerous drawer action.
 
 ### 13.5 Catalog Persistence and Restart Refresh
 
@@ -308,3 +315,15 @@ and upstream ACP schema:
   - refresher queries default + per-model ACP config catalogs for all built-in agents and writes them back to sqlite.
   - refresh is best-effort and non-blocking for HTTP startup.
   - if some model refreshes fail, successful rows are upserted while older rows for failed models are preserved.
+
+## 14. Embedded Tool-Interaction Server Request Compatibility (2026-03-06)
+
+- Problem:
+  - codex app-server can issue server requests `item/tool/requestUserInput` and `item/tool/call` during MCP/tool flows.
+  - hard `-32000 not supported` responses from adapter abort these flows.
+- Current behavior:
+  - `item/tool/requestUserInput` is answered with a schema-compatible payload that auto-selects the first option label for each question.
+  - `item/tool/call` returns a schema-compatible failure response (`success=false`, text content item), avoiding method-level RPC failure.
+- Limitation:
+  - this is a compatibility fallback, not full interactive tool-user-input UX.
+  - multi-question/multi-select semantics and arbitrary free-text answers are not yet exposed through hub APIs/UI.

@@ -39,6 +39,7 @@ type ThreadStore interface {
 	CreateThread(ctx context.Context, params storage.CreateThreadParams) (storage.Thread, error)
 	GetThread(ctx context.Context, threadID string) (storage.Thread, error)
 	DeleteThread(ctx context.Context, threadID string) error
+	UpdateThreadTitle(ctx context.Context, threadID, title string) error
 	UpdateThreadSummary(ctx context.Context, threadID, summary string) error
 	UpdateThreadAgentOptions(ctx context.Context, threadID, agentOptionsJSON string) error
 	UpsertAgentConfigCatalog(ctx context.Context, params storage.UpsertAgentConfigCatalogParams) error
@@ -551,29 +552,44 @@ func (s *Server) handleUpdateThread(w http.ResponseWriter, r *http.Request, clie
 	}
 
 	var req struct {
-		AgentOptions json.RawMessage `json:"agentOptions"`
+		Title        *string          `json:"title"`
+		AgentOptions *json.RawMessage `json:"agentOptions"`
 	}
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, codeInvalidArgument, "invalid JSON body", map[string]any{"reason": err.Error()})
 		return
 	}
 
-	agentOptionsJSON, err := normalizeAgentOptions(req.AgentOptions)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, codeInvalidArgument, "agentOptions must be a JSON object", map[string]any{"field": "agentOptions"})
-		return
-	}
-
-	if err := s.store.UpdateThreadAgentOptions(r.Context(), thread.ThreadID, agentOptionsJSON); err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			writeError(w, http.StatusNotFound, codeNotFound, "thread not found", map[string]any{})
+	if req.Title != nil {
+		title := strings.TrimSpace(*req.Title)
+		if err := s.store.UpdateThreadTitle(r.Context(), thread.ThreadID, title); err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				writeError(w, http.StatusNotFound, codeNotFound, "thread not found", map[string]any{})
+				return
+			}
+			writeError(w, http.StatusInternalServerError, codeInternal, "failed to update thread", map[string]any{"reason": err.Error()})
 			return
 		}
-		writeError(w, http.StatusInternalServerError, codeInternal, "failed to update thread", map[string]any{"reason": err.Error()})
-		return
 	}
 
-	s.closeThreadAgent(thread.ThreadID, "thread_updated")
+	if req.AgentOptions != nil {
+		agentOptionsJSON, err := normalizeAgentOptions(*req.AgentOptions)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, codeInvalidArgument, "agentOptions must be a JSON object", map[string]any{"field": "agentOptions"})
+			return
+		}
+
+		if err := s.store.UpdateThreadAgentOptions(r.Context(), thread.ThreadID, agentOptionsJSON); err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				writeError(w, http.StatusNotFound, codeNotFound, "thread not found", map[string]any{})
+				return
+			}
+			writeError(w, http.StatusInternalServerError, codeInternal, "failed to update thread", map[string]any{"reason": err.Error()})
+			return
+		}
+
+		s.closeThreadAgent(thread.ThreadID, "thread_updated")
+	}
 
 	updatedThread, ok := s.getOwnedThread(r.Context(), clientID, thread.ThreadID)
 	if !ok {

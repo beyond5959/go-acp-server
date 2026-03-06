@@ -395,6 +395,33 @@ func (s *Store) UpdateThreadSummary(ctx context.Context, threadID, summary strin
 	return nil
 }
 
+// UpdateThreadTitle updates one thread title and updates updated_at timestamp.
+func (s *Store) UpdateThreadTitle(ctx context.Context, threadID, title string) error {
+	if strings.TrimSpace(threadID) == "" {
+		return errors.New("storage: threadID is required")
+	}
+
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE threads
+		SET
+			title = ?,
+			updated_at = ?
+		WHERE thread_id = ?;
+	`, title, formatTime(s.now()), threadID)
+	if err != nil {
+		return fmt.Errorf("storage: update thread title: %w", err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("storage: update thread title rows affected: %w", err)
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // UpdateThreadAgentOptions updates one thread agent options and updates updated_at timestamp.
 func (s *Store) UpdateThreadAgentOptions(ctx context.Context, threadID, agentOptionsJSON string) error {
 	if strings.TrimSpace(threadID) == "" {

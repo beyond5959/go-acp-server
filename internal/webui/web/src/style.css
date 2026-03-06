@@ -140,6 +140,7 @@ body {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  position: relative;
   overflow: hidden;
   transition: width var(--t-base), min-width var(--t-base);
 }
@@ -246,6 +247,11 @@ body {
   box-shadow: var(--shadow-sm);
 }
 
+.thread-item--menu-open {
+  background: var(--bg);
+  box-shadow: var(--shadow-sm);
+}
+
 .thread-item-avatar {
   width: 32px;
   height: 32px;
@@ -288,9 +294,11 @@ body {
 .thread-item-actions {
   display: flex;
   align-items: center;
-  align-self: center;
+  align-self: flex-start;
   gap: 6px;
   flex-shrink: 0;
+  margin-top: 1px;
+  position: relative;
 }
 
 .thread-item-title {
@@ -347,24 +355,121 @@ body {
   animation: spin 1.05s linear infinite;
 }
 
-.thread-delete-btn {
-  width: 26px;
-  height: 26px;
-  opacity: 0;
-  pointer-events: none;
+.thread-item-menu-trigger {
+  min-width: 34px;
+  padding: 5px 8px;
   color: var(--text-3);
+  letter-spacing: 0.08em;
 }
 
-.thread-item:hover .thread-delete-btn,
-.thread-item:focus-within .thread-delete-btn,
-.thread-item--active .thread-delete-btn {
-  opacity: 1;
+.thread-item:hover .thread-item-menu-trigger,
+.thread-item:focus-within .thread-item-menu-trigger,
+.thread-item--active .thread-item-menu-trigger,
+.thread-item--menu-open .thread-item-menu-trigger {
+  color: var(--text-1);
+}
+
+.thread-action-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 80;
+}
+
+.thread-action-popover {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: min(180px, calc(100% - 16px));
+  max-width: calc(100% - 16px);
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   pointer-events: auto;
+  z-index: 50;
+  animation: thread-popover-in var(--t-base) ease;
 }
 
-.thread-delete-btn:hover:not(:disabled) {
+@keyframes thread-popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.thread-action-menu {
+  padding: 6px;
+  gap: 2px;
+}
+
+.thread-action-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  border: none;
+  background: transparent;
+  color: var(--text-1);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.thread-action-menu-item:hover:not(:disabled) {
+  background: var(--bg-3);
+}
+
+.thread-action-menu-item--danger {
   color: var(--error);
+}
+
+.thread-action-menu-item--danger:hover:not(:disabled) {
   background: var(--error-bg);
+}
+
+.thread-action-popover--rename {
+  width: min(228px, calc(100% - 16px));
+}
+
+.thread-rename-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.thread-rename-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  color: var(--text-1);
+  padding: 8px 10px;
+  font: inherit;
+}
+
+.thread-rename-input:focus {
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.thread-rename-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 .thread-unread-dot {

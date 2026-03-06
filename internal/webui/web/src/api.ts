@@ -27,7 +27,8 @@ export interface CreateThreadParams {
 }
 
 export interface UpdateThreadParams {
-  agentOptions: Record<string, unknown>
+  title?: string
+  agentOptions?: Record<string, unknown>
 }
 
 export interface SetThreadConfigOptionParams {

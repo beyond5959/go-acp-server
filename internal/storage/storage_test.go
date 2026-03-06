@@ -379,6 +379,58 @@ func TestUpdateThreadAgentOptions(t *testing.T) {
 	}
 }
 
+func TestUpdateThreadTitle(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer func() {
+		_ = store.Close()
+	}()
+
+	if err := store.UpsertClient(ctx, "client-title"); err != nil {
+		t.Fatalf("UpsertClient(): %v", err)
+	}
+	_, err := store.CreateThread(ctx, CreateThreadParams{
+		ThreadID:         "th-title",
+		ClientID:         "client-title",
+		AgentID:          "codex",
+		CWD:              "/tmp/project-title",
+		Title:            "before",
+		AgentOptionsJSON: "{}",
+		Summary:          "",
+	})
+	if err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+
+	if err := store.UpdateThreadTitle(ctx, "th-title", "after"); err != nil {
+		t.Fatalf("UpdateThreadTitle(): %v", err)
+	}
+
+	thread, err := store.GetThread(ctx, "th-title")
+	if err != nil {
+		t.Fatalf("GetThread(th-title): %v", err)
+	}
+	if thread.Title != "after" {
+		t.Fatalf("title = %q, want %q", thread.Title, "after")
+	}
+
+	if err := store.UpdateThreadTitle(ctx, "th-title", ""); err != nil {
+		t.Fatalf("UpdateThreadTitle(clear): %v", err)
+	}
+
+	thread, err = store.GetThread(ctx, "th-title")
+	if err != nil {
+		t.Fatalf("GetThread(th-title after clear): %v", err)
+	}
+	if thread.Title != "" {
+		t.Fatalf("cleared title = %q, want empty", thread.Title)
+	}
+
+	if err := store.UpdateThreadTitle(ctx, "missing-thread", "noop"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateThreadTitle(missing) err = %v, want ErrNotFound", err)
+	}
+}
+
 func TestAgentConfigCatalogCRUD(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)

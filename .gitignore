@@ -3,6 +3,7 @@
 *.db-*
 *.log
 /tmp/
+vendor/
 .DS_Store
 internal/webui/web/node_modules/
 internal/webui/web/dist/

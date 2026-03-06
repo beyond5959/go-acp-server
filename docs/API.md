@@ -185,6 +185,7 @@ All errors use:
 
 ```json
 {
+  "title": "optional new title",
   "agentOptions": {
     "modelId": "gpt-5"
   }
@@ -192,9 +193,10 @@ All errors use:
 ```
 
 - Behavior:
-  - updates persisted `thread.agentOptions` and `updatedAt`.
+  - when `title` is present, trims surrounding whitespace, persists `thread.title`, and updates `updatedAt`.
+  - when `agentOptions` is present, updates persisted `thread.agentOptions` and `updatedAt`.
   - if the thread has an active turn, returns `409 CONFLICT`.
-  - closes cached thread-level agent provider so the next turn uses updated options.
+  - closes cached thread-level agent provider only when `agentOptions` is updated, so the next turn uses updated options.
 - Response `200`:
 
 ```json

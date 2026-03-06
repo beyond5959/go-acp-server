@@ -11,6 +11,14 @@ This file is the source of milestone progress, validation commands, and next act
 
 - `Post-M8` ACP multi-agent readiness and maintenance.
 
+## Latest Update (2026-03-06)
+
+- codex embedded compatibility hotfix integrated:
+  - patched local dependency `../acp-adapter` to handle newer codex app-server approval request methods (`item/commandExecution/requestApproval`, `item/fileChange/requestApproval`) and to avoid misleading `-32601 method not found` on unsupported server requests.
+- validation:
+  - pass: `go test ./...` (in `../acp-adapter`)
+  - pass: `go test ./...` (in this repository)
+
 ## Status
 
 ### Done
@@ -517,4 +525,25 @@ This file is the source of milestone progress, validation commands, and next act
     - pass: `cd internal/webui/web && npm run build`
     - pass: `go test ./...`
 
+- `Post-F9` sidebar thread drawer actions and rename completed:
+  - replaced the direct delete icon in sidebar thread rows with a drawer trigger.
+  - added drawer actions for inline rename and delete, with rename ordered before delete and delete styled as the only dangerous text action.
+  - extended `PATCH /v1/threads/{threadId}` so thread title updates reuse the existing ownership and active-turn conflict model.
+  - executed validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
+- `Post-F9` sidebar thread action popover refinement completed:
+  - replaced the expanding inline drawer with a floating popover anchored to the three-dot trigger, so opening thread actions no longer changes sidebar row height.
+  - kept rename and delete in the same order, with rename editing rendered in a floating panel and delete remaining the red dangerous action.
+  - executed validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
  
+- 2026-03-06: Removed the thread action trigger's per-thread actionLabel/title tooltip in the Web UI popover menu; the three-dot button now uses a neutral `aria-label` only, without hover text tied to the thread title.
+- 2026-03-06: Moved the sidebar thread action menu and rename form into a sidebar-level floating layer instead of rendering them inside each thread row, so the rename UI is no longer clipped by the thread list or sidebar overflow.
+- 2026-03-06: fixed embedded codex permission bridge timeout mismatch by aligning adapter-side `session/request_permission` wait window to 2h (was 30s), matching hub default timeout and avoiding premature fail-closed during manual approval.
+- 2026-03-06: fixed embedded codex server-request compatibility for tool interaction:
+  - `item/tool/requestUserInput` now returns schema-compatible answers (auto-select first option label per question) instead of `-32000 not supported`.
+  - `item/tool/call` now returns structured tool failure payload (`success=false`) instead of JSON-RPC method error, so app-server no longer aborts the whole flow on this request type.
