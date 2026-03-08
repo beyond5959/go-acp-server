@@ -36,6 +36,12 @@ jobs:
           rm -rf node_modules package-lock.json
           npm install
 
+      - name: Stage changes for GoReleaser
+        run: |
+          # GoReleaser requires clean git state, so we stage the modified package-lock.json
+          git add internal/webui/web/package-lock.json || true
+          git status
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
