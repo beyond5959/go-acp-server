@@ -30,24 +30,12 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Clean install frontend dependencies
-        run: |
-          cd internal/webui/web
-          rm -rf node_modules package-lock.json
-          npm install
-
-      - name: Stage changes for GoReleaser
-        run: |
-          # GoReleaser requires clean git state, so we stage the modified package-lock.json
-          git add internal/webui/web/package-lock.json || true
-          git status
-
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --clean
+          args: release --clean --skip=dirty
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -55,20 +43,16 @@ jobs:
         run: |
           # Get version from tag (e.g., v0.1.0)
           VERSION=${GITHUB_REF_NAME}
-          # Create a clean temp directory
-          mkdir -p /tmp/ngent-source
-          # Export source code using git archive
-          git archive --format=zip --prefix=ngent-${VERSION}/ --output=/tmp/ngent-${VERSION}-source.zip HEAD
-          echo "Created source zip: /tmp/ngent-${VERSION}-source.zip"
-          # List contents for verification
-          unzip -l /tmp/ngent-${VERSION}-source.zip | head -20
+          # Create source zip using git archive
+          git archive --format=zip --prefix=ngent-${VERSION}/ --output=ngent-${VERSION}-source.zip HEAD
+          echo "Created source zip: ngent-${VERSION}-source.zip"
 
       - name: Upload source zip to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION=${GITHUB_REF_NAME}
-          SOURCE_ZIP="/tmp/ngent-${VERSION}-source.zip"
+          SOURCE_ZIP="ngent-${VERSION}-source.zip"
           
           # Upload the source zip to the release
           gh release upload "${VERSION}" "${SOURCE_ZIP}" --clobber
