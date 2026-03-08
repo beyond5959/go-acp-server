@@ -5,8 +5,8 @@ project_name: ngent
 before:
   hooks:
     # Build the embedded frontend before compiling the Go binary.
-    # Requires Node.js 20+ and npm to be available in the CI environment.
-    - make build-web
+    # Clean install dependencies to avoid npm cache issues in CI.
+    - cd internal/webui/web && rm -rf node_modules package-lock.json && npm install && npm run build
 
 builds:
   - id: ngent

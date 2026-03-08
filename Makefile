@@ -4,7 +4,7 @@ test:
 	go test ./...
 
 build-web:
-	cd internal/webui/web && npm ci && npm run build
+	cd internal/webui/web && rm -rf node_modules && npm install && npm run build
 
 build: build-web
 	go build -o bin/ngent ./cmd/ngent

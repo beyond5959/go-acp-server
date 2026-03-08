@@ -26,7 +26,12 @@ jobs:
           cache-dependency-path: internal/webui/web/package-lock.json
 
       - name: Build frontend
-        run: make build-web
+        run: |
+          cd internal/webui/web
+          # Clean install without using corrupted cache
+          rm -rf node_modules package-lock.json
+          npm install
+          npm run build
 
       - name: Check Go formatting
         run: |
