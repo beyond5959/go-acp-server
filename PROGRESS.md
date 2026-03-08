@@ -11,12 +11,12 @@ This file is the source of milestone progress, validation commands, and next act
 
 - `Post-M8` ACP multi-agent readiness and maintenance.
 
-## Latest Update (2026-03-06)
+## Latest Update (2026-03-08)
 
-- codex embedded compatibility hotfix integrated:
-  - patched local dependency `../acp-adapter` to handle newer codex app-server approval request methods (`item/commandExecution/requestApproval`, `item/fileChange/requestApproval`) and to avoid misleading `-32601 method not found` on unsupported server requests.
+- release pipeline compatibility fix for GoReleaser v2:
+  - removed unsupported CLI argument `--skip=dirty` from `.github/workflows/release.yml` (`release --clean` only).
+  - keeps release workflow behavior unchanged while restoring successful tagged release builds.
 - validation:
-  - pass: `go test ./...` (in `../acp-adapter`)
   - pass: `go test ./...` (in this repository)
 
 ## Status
