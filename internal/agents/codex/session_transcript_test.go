@@ -1,36 +1,100 @@
 package codex
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
 
-func TestParseSessionTranscript(t *testing.T) {
-	raw := strings.Join([]string{
-		`{"timestamp":"2026-03-11T10:03:50.218Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"ignore"}]}}`,
-		`{"timestamp":"2026-03-11T10:03:50.219Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}`,
-		`{"timestamp":"2026-03-11T10:03:50.220Z","type":"event_msg","payload":{"type":"user_message","message":"ignored duplicate"}}`,
-		`{"timestamp":"2026-03-11T10:03:51.000Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"working"}]}}`,
-		`{"timestamp":"2026-03-11T10:03:51.906Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"world"}]}}`,
-	}, "\n")
+func TestParseSessionTranscriptMessage(t *testing.T) {
+	t.Parallel()
 
-	messages, err := parseSessionTranscript(strings.NewReader(raw))
-	if err != nil {
-		t.Fatalf("parseSessionTranscript(): %v", err)
+	tests := []struct {
+		name    string
+		payload string
+		want    string
+		wantOK  bool
+	}{
+		{
+			name: "assistant final answer kept",
+			payload: `{
+				"type":"message",
+				"role":"assistant",
+				"phase":"final_answer",
+				"content":[{"type":"output_text","text":"answer"}]
+			}`,
+			want:   "answer",
+			wantOK: true,
+		},
+		{
+			name: "assistant commentary skipped",
+			payload: `{
+				"type":"message",
+				"role":"assistant",
+				"phase":"commentary",
+				"content":[{"type":"output_text","text":"thinking"}]
+			}`,
+			wantOK: false,
+		},
+		{
+			name: "bootstrap user message skipped",
+			payload: `{
+				"type":"message",
+				"role":"user",
+				"content":[{"type":"input_text","text":"# AGENTS.md instructions for /tmp/repo\n\n<INSTRUCTIONS>...\n</INSTRUCTIONS>"},{"type":"input_text","text":"\n<environment_context>\n  <cwd>/tmp/repo</cwd>\n</environment_context>"}]
+			}`,
+			wantOK: false,
+		},
+		{
+			name: "ide context user message extracts request",
+			payload: `{
+				"type":"message",
+				"role":"user",
+				"content":[{"type":"input_text","text":"# Context from my IDE setup:\n\n## Active file: foo.go\n\n## My request for Codex:\nkeep only the real request"}]
+			}`,
+			want:   "keep only the real request",
+			wantOK: true,
+		},
+		{
+			name: "conversation summary extracts current input",
+			payload: `{
+				"type":"message",
+				"role":"user",
+				"content":[{"type":"input_text","text":"[Conversation Summary]\n(empty)\n\n[Recent Turns]\nUser: one\nAssistant: two\n----\n\n[Current User Input]\nreal prompt"}]
+			}`,
+			want:   "real prompt",
+			wantOK: true,
+		},
+		{
+			name: "plain user message kept",
+			payload: `{
+				"type":"message",
+				"role":"user",
+				"content":[{"type":"input_text","text":"plain prompt"}]
+			}`,
+			want:   "plain prompt",
+			wantOK: true,
+		},
 	}
-	if got, want := len(messages), 2; got != want {
-		t.Fatalf("len(messages) = %d, want %d", got, want)
-	}
-	if got := messages[0].Role; got != "user" {
-		t.Fatalf("messages[0].Role = %q, want %q", got, "user")
-	}
-	if got := messages[0].Content; got != "hello" {
-		t.Fatalf("messages[0].Content = %q, want %q", got, "hello")
-	}
-	if got := messages[1].Role; got != "assistant" {
-		t.Fatalf("messages[1].Role = %q, want %q", got, "assistant")
-	}
-	if got := messages[1].Content; got != "world" {
-		t.Fatalf("messages[1].Content = %q, want %q", got, "world")
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			msg, ok, err := parseSessionTranscriptMessage("2026-03-11T11:04:48.797Z", json.RawMessage(tt.payload))
+			if err != nil {
+				t.Fatalf("parseSessionTranscriptMessage() error = %v", err)
+			}
+			if ok != tt.wantOK {
+				t.Fatalf("parseSessionTranscriptMessage() ok = %v, want %v", ok, tt.wantOK)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if got := strings.TrimSpace(msg.Content); got != tt.want {
+				t.Fatalf("content = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

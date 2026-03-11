@@ -11,7 +11,24 @@ This file is the source of milestone progress, validation commands, and next act
 
 - `Post-M8` ACP multi-agent readiness and maintenance.
 
-## Latest Update (2026-03-09)
+## Latest Update (2026-03-11)
+
+- `Post-M8` codex session identity and replay normalization completed:
+  - fixed fresh Codex `New session` persistence so ngent no longer stores provisional runtime ids like `session-1` as the thread session binding when a durable `_meta.threadId` is not yet available.
+  - deferred initial `session_bound` persistence/emission for fresh Codex sessions until a stable session id can be resolved after the first prompt, then updated in-memory and persisted thread `agentOptions.sessionId` with the durable id.
+  - normalized Codex transcript replay by filtering bootstrap user messages injected by the desktop wrapper (`AGENTS.md` / `environment_context`) and extracting the actual user request from known wrapper formats:
+    - `[Conversation Summary] ... [Current User Input]`
+    - `# Context from my IDE setup: ... ## My request for Codex:`
+  - verified with real local Codex and Playwright against `http://127.0.0.1:8687/`:
+    - `New session` now produces distinct stable Codex session ids and no longer mixes first-session messages into the second-session chat.
+    - switching between the two replayed sessions in the Web UI now shows only the expected user/assistant pairs.
+    - direct `session-history` API responses for the repro sessions now return cleaned transcript messages.
+  - validation:
+    - pass: `go test ./internal/agents/codex -run 'Test(ParseSessionTranscriptMessage|CodexShouldDeferInitialSessionBinding|NormalizeCodexSessionListResultUsesStableThreadID|CodexSessionMatchesIDAcceptsStableAndRawIDs|CodexStableSessionIDFallsBackToRawSessionID)$' -count=1`
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
+## Previous Update (2026-03-09)
 
 - Kimi CLI ACP integration completed:
   - implemented `internal/agents/kimi` with one-turn ACP stdio lifecycle and fail-closed permission handling.

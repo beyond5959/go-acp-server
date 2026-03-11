@@ -195,6 +195,15 @@
 - Status: Open
 - Severity: Medium
 - Affects: threads that select an existing ACP `sessionId` from the Web UI/API
-- Symptom: after choosing an existing session, ngent resumes context through ACP `session/load`, but the center chat/history panel still shows only turns created through ngent itself; earlier provider-owned transcript is not imported into SQLite or rendered in the chat area.
-- Workaround: select the target session before starting new hub turns, and rely on the provider's restored context for continuity even though older messages are not shown locally.
-- Follow-up plan: evaluate reconstructing/importing transcript data from `session/load` replayed `session/update` events into local hub history without duplicating future turns.
+- Symptom: ngent now replays prior provider transcript into the center chat area when a session is selected, but that replay is still reconstructed on demand and is not imported into SQLite `turns/events`; history APIs remain source-of-truth only for hub-created turns.
+- Workaround: use the center chat/session replay for browsing earlier context, but rely on persisted hub history only for turns created through ngent itself.
+- Follow-up plan: evaluate importing selected provider transcript into local persisted history without duplicating future hub-originated turns.
+
+- ID: KI-022
+- Title: Codex session sidebar titles can still show provider wrapper text
+- Status: Open
+- Severity: Low
+- Affects: Codex `session/list` entries rendered in the Web UI session sidebar
+- Symptom: Codex provider metadata can expose long summary-style titles/previews such as `[Conversation Summary] ... [Current User Input] ...`; replayed chat messages are normalized, but the sidebar item title itself can still look noisy.
+- Workaround: use the thread title or open the session to inspect the normalized chat content when the sidebar label is ambiguous.
+- Follow-up plan: normalize Codex `session/list` display titles in the backend, likely by preferring the first replayable user prompt over raw provider preview text when available.

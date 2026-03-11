@@ -885,8 +885,13 @@ function renderSessionPanel(): string {
       <div>
         <h3 class="session-panel-title">Sessions</h3>
       </div>
-      <button class="btn btn-ghost session-new-btn" type="button" ${disabled ? 'disabled' : ''}>
-        ${selectedSessionID ? 'New session' : 'Current: new'}
+      <button
+        class="btn btn-icon session-new-btn"
+        type="button"
+        title="New session"
+        aria-label="New session"
+        ${disabled ? 'disabled' : ''}>
+        ${iconPlus}
       </button>
     </div>
     <div class="session-panel-body">
@@ -1584,8 +1589,16 @@ async function loadHistory(threadId: string): Promise<void> {
     if (getThreadStreamState(threadId)) return
 
     const localMessages = turnsToMessages(filterTurnsBySession(turns, requestedSessionID))
+    const previousLoadedSessionID = loadedHistorySessionIDByThread.get(threadId) ?? ''
+    const cachedMessages = state.messages[threadId] ?? []
     let nextMessages = localMessages
     if (requestedSessionID) {
+      // When a fresh ACP session is created from "Current: new", Codex transcripts
+      // include the injected context prompt. Reuse the in-memory turn messages in
+      // that transition instead of replaying transcript noise back into the chat.
+      if (previousLoadedSessionID === '' && localMessages.length && cachedMessages.length) {
+        nextMessages = mergeSessionReplayMessages(cachedMessages, localMessages)
+      } else {
       try {
         const replay = await api.getThreadSessionHistory(threadId, requestedSessionID)
         const transcriptState = store.get()
@@ -1600,6 +1613,7 @@ async function loadHistory(threadId: string): Promise<void> {
         }
       } catch {
         nextMessages = localMessages
+      }
       }
     }
 

@@ -60,7 +60,7 @@ func (c *Client) findSession(
 			return agents.SessionInfo{}, err
 		}
 		for _, session := range result.Sessions {
-			if strings.TrimSpace(session.SessionID) == sessionID {
+			if codexSessionMatchesID(session, sessionID) {
 				return agents.CloneSessionInfo(session), nil
 			}
 		}
@@ -181,13 +181,87 @@ func parseSessionTranscriptMessage(
 		}
 		body.WriteString(part.Text)
 	}
-	if strings.TrimSpace(body.String()) == "" {
+	content, ok := normalizeCodexTranscriptContent(role, body.String())
+	if !ok {
 		return agents.SessionTranscriptMessage{}, false, nil
 	}
 
 	return agents.SessionTranscriptMessage{
 		Role:      role,
-		Content:   body.String(),
+		Content:   content,
 		Timestamp: strings.TrimSpace(timestamp),
 	}, true, nil
+}
+
+func normalizeCodexTranscriptContent(role, content string) (string, bool) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return "", false
+	}
+	if role != "user" {
+		return content, true
+	}
+	return normalizeCodexTranscriptUserContent(content)
+}
+
+func normalizeCodexTranscriptUserContent(content string) (string, bool) {
+	content = normalizeTranscriptNewlines(content)
+
+	if normalized := codexExtractIDERequest(content); normalized != "" {
+		return normalized, true
+	}
+	if normalized := codexExtractCurrentUserInput(content); normalized != "" {
+		return normalized, true
+	}
+	if codexIsBootstrapUserContent(content) {
+		return "", false
+	}
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return "", false
+	}
+	return content, true
+}
+
+func normalizeTranscriptNewlines(content string) string {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	return strings.TrimSpace(content)
+}
+
+func codexExtractIDERequest(content string) string {
+	if !strings.HasPrefix(content, "# Context from my IDE setup:") {
+		return ""
+	}
+	return extractCodexTranscriptSuffix(content, "## My request for Codex:")
+}
+
+func codexExtractCurrentUserInput(content string) string {
+	if !strings.HasPrefix(content, "[Conversation Summary]") {
+		return ""
+	}
+	return extractCodexTranscriptSuffix(content, "[Current User Input]")
+}
+
+func extractCodexTranscriptSuffix(content, marker string) string {
+	index := strings.LastIndex(content, marker)
+	if index < 0 {
+		return ""
+	}
+	content = strings.TrimSpace(content[index+len(marker):])
+	if content == "" {
+		return ""
+	}
+	return content
+}
+
+func codexIsBootstrapUserContent(content string) bool {
+	if strings.HasPrefix(content, "# AGENTS.md instructions for ") {
+		return true
+	}
+	if strings.HasPrefix(content, "<environment_context>") {
+		return true
+	}
+	return strings.Contains(content, "\n<environment_context>") &&
+		strings.Contains(content, "# AGENTS.md instructions for ")
 }

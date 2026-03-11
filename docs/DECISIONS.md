@@ -37,6 +37,31 @@
 - ADR-033: Surface ACP plan updates as first-class SSE and Web UI state. (Accepted)
 - ADR-034: Source Kimi config catalogs from local config to avoid empty sessions. (Accepted)
 - ADR-035: Add opt-in ACP debug tracing behind `--debug`. (Accepted)
+- ADR-036: Persist stable Codex session ids and normalize Codex transcript replay. (Accepted)
+
+## ADR-036: Persist Stable Codex Session IDs and Normalize Codex Transcript Replay
+
+- Status: Accepted
+- Date: 2026-03-11
+- Context:
+  - embedded Codex `session/new` can initially return only a provisional runtime-scoped id like `session-1`, while the durable session identity arrives later via `session/list` metadata (`_meta.threadId`).
+  - persisting the provisional id caused fresh `New session` turns to collapse back onto the same thread session binding.
+  - Codex transcript files also include wrapper-generated user messages for bootstrap context (`AGENTS.md`, `environment_context`) and prompt wrappers (`[Current User Input]`, IDE setup metadata), which polluted Web UI session replay.
+- Decision:
+  - treat the durable Codex session id as the canonical thread binding and defer fresh-session `session_bound` persistence/emission when the only known id still matches the provisional raw runtime id.
+  - after the first prompt completes, retry `session/list` briefly to resolve the stable id, then update in-memory client state and persisted thread `agentOptions.sessionId` with that durable id.
+  - normalize Codex session transcript replay on the backend before returning it to the Web UI:
+    - drop bootstrap wrapper messages injected by the desktop environment.
+    - extract the actual user prompt from known wrapper formats such as `[Current User Input]` and `## My request for Codex:`.
+- Consequences:
+  - fresh `New session` flows now bind to durable Codex session identities and no longer merge unrelated turns under one provisional raw id.
+  - Web UI session replay shows user-visible prompts instead of provider/bootstrap scaffolding.
+  - session list titles from provider metadata remain raw for now; only replayed message bodies are normalized.
+- Alternatives considered:
+  - persist the first raw runtime id immediately and rely on later correction.
+  - leave transcript normalization to the frontend merge logic.
+- Follow-up actions:
+  - evaluate normalizing Codex `session/list` titles/previews in the backend so the session sidebar also hides wrapper-generated summary text.
 
 ## ADR-018: Embedded Web UI via Go embed
 

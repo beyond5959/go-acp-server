@@ -38,6 +38,9 @@ const (
 const (
 	defaultStartTimeout   = 30 * time.Second
 	defaultRequestTimeout = 15 * time.Second
+
+	stableSessionResolveRetries = 5
+	stableSessionResolveDelay   = 150 * time.Millisecond
 )
 
 // Config configures one embedded codex runtime provider instance.
@@ -66,8 +69,9 @@ type Client struct {
 	mu     sync.Mutex
 	closed bool
 
-	runtime   *codexacp.EmbeddedRuntime
-	sessionID string
+	runtime          *codexacp.EmbeddedRuntime
+	sessionID        string
+	runtimeSessionID string
 
 	configOptions  []agents.ConfigOption
 	canLoadSession bool
@@ -199,7 +203,7 @@ func (c *Client) ConfigOptions(ctx context.Context) ([]agents.ConfigOption, erro
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if _, _, err := c.ensureInitialized(ctx); err != nil {
+	if _, _, _, err := c.ensureInitialized(ctx); err != nil {
 		return nil, fmt.Errorf("codex: initialize runtime: %w", err)
 	}
 
@@ -230,6 +234,22 @@ func (c *Client) ListSessions(ctx context.Context, req agents.SessionListRequest
 		return agents.SessionListResult{}, agents.ErrSessionListUnsupported
 	}
 
+	rawResult, err := c.listSessionsRaw(startCtx, runtime, req)
+	if err != nil {
+		return agents.SessionListResult{}, err
+	}
+	return normalizeCodexSessionListResult(rawResult), nil
+}
+
+func (c *Client) listSessionsRaw(
+	ctx context.Context,
+	runtime *codexacp.EmbeddedRuntime,
+	req agents.SessionListRequest,
+) (agents.SessionListResult, error) {
+	if runtime == nil {
+		return agents.SessionListResult{}, errors.New("codex: embedded runtime is nil")
+	}
+
 	params := map[string]any{
 		"cwd":        codexSessionCWD(c, req.CWD),
 		"mcpServers": []any{},
@@ -238,7 +258,7 @@ func (c *Client) ListSessions(ctx context.Context, req agents.SessionListRequest
 		params["cursor"] = cursor
 	}
 
-	result, err := c.clientRequest(startCtx, runtime, "session/list", params)
+	result, err := c.clientRequest(ctx, runtime, "session/list", params)
 	if err != nil {
 		return agents.SessionListResult{}, fmt.Errorf("codex: session/list: %w", err)
 	}
@@ -262,7 +282,7 @@ func (c *Client) SetConfigOption(ctx context.Context, configID, value string) ([
 		ctx = context.Background()
 	}
 
-	runtime, sessionID, err := c.ensureInitialized(ctx)
+	runtime, sessionID, _, err := c.ensureInitialized(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("codex: initialize runtime: %w", err)
 	}
@@ -301,6 +321,7 @@ func (c *Client) Close() error {
 	runtime := c.runtime
 	c.runtime = nil
 	c.sessionID = ""
+	c.runtimeSessionID = ""
 	c.configOptions = nil
 	c.canLoadSession = false
 	c.mu.Unlock()
@@ -325,21 +346,32 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 
 	const maxAttempts = 2
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		runtime, sessionID, err := c.ensureInitialized(ctx)
+		runtime, sessionID, stableSessionID, err := c.ensureInitialized(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return agents.StopReasonCancelled, nil
 			}
 			return agents.StopReasonEndTurn, fmt.Errorf("codex: initialize runtime: %w", err)
 		}
-		if c.supportsLoadSession() {
-			if err := agents.NotifySessionBound(ctx, sessionID); err != nil {
+		requestedSessionID := c.CurrentSessionID()
+		deferInitialBinding := codexShouldDeferInitialSessionBinding(requestedSessionID, sessionID, stableSessionID)
+		if c.supportsLoadSession() && !deferInitialBinding {
+			if err := agents.NotifySessionBound(ctx, stableSessionID); err != nil {
 				return agents.StopReasonEndTurn, fmt.Errorf("codex: report session bound: %w", err)
 			}
 		}
 
 		stopReason, streamErr := c.streamOnce(ctx, runtime, sessionID, input, onDelta)
 		if streamErr == nil {
+			if c.supportsLoadSession() && requestedSessionID == "" {
+				resolvedSessionID := c.resolveStableSessionIDAfterPrompt(ctx, runtime, sessionID, stableSessionID)
+				c.setStableSessionID(resolvedSessionID)
+				if deferInitialBinding || resolvedSessionID != stableSessionID {
+					if err := agents.NotifySessionBound(ctx, resolvedSessionID); err != nil {
+						return agents.StopReasonEndTurn, fmt.Errorf("codex: report session bound: %w", err)
+					}
+				}
+			}
 			return stopReason, nil
 		}
 		if !isRetryableTurnStartError(streamErr) || attempt == maxAttempts {
@@ -447,6 +479,7 @@ func (c *Client) resetRuntime() {
 	runtime := c.runtime
 	c.runtime = nil
 	c.sessionID = ""
+	c.runtimeSessionID = ""
 	c.configOptions = nil
 	c.mu.Unlock()
 
@@ -569,7 +602,7 @@ func (c *Client) sendSessionCancel(runtime *codexacp.EmbeddedRuntime, sessionID 
 func (c *Client) currentSessionID() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.sessionID
+	return c.runtimeSessionID
 }
 
 func (c *Client) supportsLoadSession() bool {
@@ -578,20 +611,33 @@ func (c *Client) supportsLoadSession() bool {
 	return c.canLoadSession
 }
 
-func (c *Client) ensureInitialized(ctx context.Context) (*codexacp.EmbeddedRuntime, string, error) {
+func (c *Client) setStableSessionID(sessionID string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+
+	c.mu.Lock()
+	c.sessionID = sessionID
+	c.mu.Unlock()
+	c.SetSessionID(sessionID)
+}
+
+func (c *Client) ensureInitialized(ctx context.Context) (*codexacp.EmbeddedRuntime, string, string, error) {
 	c.initMu.Lock()
 	defer c.initMu.Unlock()
 
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		return nil, "", errors.New("codex: client is closed")
+		return nil, "", "", errors.New("codex: client is closed")
 	}
-	if c.runtime != nil && c.sessionID != "" {
+	if c.runtime != nil && c.runtimeSessionID != "" && c.sessionID != "" {
 		runtime := c.runtime
-		sessionID := c.sessionID
+		sessionID := c.runtimeSessionID
+		stableSessionID := c.sessionID
 		c.mu.Unlock()
-		return runtime, sessionID, nil
+		return runtime, sessionID, stableSessionID, nil
 	}
 	c.mu.Unlock()
 
@@ -600,23 +646,32 @@ func (c *Client) ensureInitialized(ctx context.Context) (*codexacp.EmbeddedRunti
 
 	runtime, caps, err := c.startRuntime(startCtx)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 
-	sessionID := c.CurrentSessionID()
+	requestedSessionID := c.CurrentSessionID()
+	sessionID := ""
+	stableSessionID := ""
 	configOptions := []agents.ConfigOption(nil)
-	if sessionID != "" {
+	if requestedSessionID != "" {
 		if !caps.CanLoad {
 			_ = runtime.Close()
-			return nil, "", agents.ErrSessionLoadUnsupported
+			return nil, "", "", agents.ErrSessionLoadUnsupported
 		}
+		session, err := c.findSession(startCtx, c.Dir(), requestedSessionID)
+		if err != nil {
+			_ = runtime.Close()
+			return nil, "", "", err
+		}
+		sessionID = codexLoadSessionID(session)
+		stableSessionID = session.SessionID
 		if _, err := c.clientRequest(startCtx, runtime, "session/load", map[string]any{
 			"sessionId":  sessionID,
 			"cwd":        c.Dir(),
 			"mcpServers": []any{},
 		}); err != nil {
 			_ = runtime.Close()
-			return nil, "", fmt.Errorf("codex: session/load failed: %w", err)
+			return nil, "", "", fmt.Errorf("codex: session/load failed: %w", err)
 		}
 	} else {
 		newParams := map[string]any{
@@ -628,38 +683,134 @@ func (c *Client) ensureInitialized(ctx context.Context) (*codexacp.EmbeddedRunti
 		sessionResp, err := c.clientRequest(startCtx, runtime, methodSessionNew, newParams)
 		if err != nil {
 			_ = runtime.Close()
-			return nil, "", err
+			return nil, "", "", err
 		}
 
 		sessionID, err = parseSessionID(sessionResp.Result)
 		if err != nil {
 			_ = runtime.Close()
-			return nil, "", err
+			return nil, "", "", err
+		}
+		stableSessionID, err = c.resolveStableSessionID(startCtx, runtime, sessionID)
+		if err != nil {
+			_ = runtime.Close()
+			return nil, "", "", err
 		}
 		configOptions = acpmodel.ExtractConfigOptions(sessionResp.Result)
+	}
+	if stableSessionID == "" {
+		stableSessionID = sessionID
 	}
 	configOptions, err = c.applySessionSelections(startCtx, runtime, sessionID, configOptions)
 	if err != nil {
 		_ = runtime.Close()
-		return nil, "", err
+		return nil, "", "", err
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
 		_ = runtime.Close()
-		return nil, "", errors.New("codex: client is closed")
+		return nil, "", "", errors.New("codex: client is closed")
 	}
-	if c.runtime != nil && c.sessionID != "" {
+	if c.runtime != nil && c.runtimeSessionID != "" && c.sessionID != "" {
 		_ = runtime.Close()
-		return c.runtime, c.sessionID, nil
+		return c.runtime, c.runtimeSessionID, c.sessionID, nil
 	}
 
 	c.runtime = runtime
-	c.sessionID = sessionID
+	c.sessionID = stableSessionID
+	c.runtimeSessionID = sessionID
 	c.configOptions = acpmodel.CloneConfigOptions(configOptions)
 	c.canLoadSession = caps.CanLoad
-	return c.runtime, c.sessionID, nil
+	return c.runtime, c.runtimeSessionID, c.sessionID, nil
+}
+
+func (c *Client) resolveStableSessionID(
+	ctx context.Context,
+	runtime *codexacp.EmbeddedRuntime,
+	rawSessionID string,
+) (string, error) {
+	rawSessionID = strings.TrimSpace(rawSessionID)
+	if rawSessionID == "" {
+		return "", errors.New("codex: raw session id is required")
+	}
+
+	cursor := ""
+	for {
+		result, err := c.listSessionsRaw(ctx, runtime, agents.SessionListRequest{
+			CWD:    c.Dir(),
+			Cursor: cursor,
+		})
+		if err != nil {
+			return "", err
+		}
+		for _, session := range result.Sessions {
+			if strings.TrimSpace(session.SessionID) != rawSessionID {
+				continue
+			}
+			stableSessionID := codexStableSessionID(session)
+			if stableSessionID == "" {
+				break
+			}
+			return stableSessionID, nil
+		}
+		cursor = strings.TrimSpace(result.NextCursor)
+		if cursor == "" {
+			break
+		}
+	}
+
+	return rawSessionID, nil
+}
+
+func (c *Client) resolveStableSessionIDAfterPrompt(
+	ctx context.Context,
+	runtime *codexacp.EmbeddedRuntime,
+	rawSessionID string,
+	fallbackSessionID string,
+) string {
+	rawSessionID = strings.TrimSpace(rawSessionID)
+	fallbackSessionID = strings.TrimSpace(fallbackSessionID)
+	if rawSessionID == "" {
+		return fallbackSessionID
+	}
+	if fallbackSessionID != "" && fallbackSessionID != rawSessionID {
+		return fallbackSessionID
+	}
+
+	resolvedSessionID := fallbackSessionID
+	for attempt := 0; attempt < stableSessionResolveRetries; attempt++ {
+		nextSessionID, err := c.resolveStableSessionID(ctx, runtime, rawSessionID)
+		if err == nil {
+			nextSessionID = strings.TrimSpace(nextSessionID)
+			if nextSessionID != "" {
+				resolvedSessionID = nextSessionID
+			}
+			if nextSessionID != "" && nextSessionID != rawSessionID {
+				return nextSessionID
+			}
+		}
+
+		if attempt == stableSessionResolveRetries-1 {
+			break
+		}
+		timer := time.NewTimer(stableSessionResolveDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			if resolvedSessionID != "" {
+				return resolvedSessionID
+			}
+			return rawSessionID
+		case <-timer.C:
+		}
+	}
+
+	if resolvedSessionID != "" {
+		return resolvedSessionID
+	}
+	return rawSessionID
 }
 
 func (c *Client) applySessionSelections(
