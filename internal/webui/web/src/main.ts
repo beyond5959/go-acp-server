@@ -368,9 +368,9 @@ function renderThreadActionPopover(t: Thread): string {
             data-thread-id="${escHtml(t.threadId)}"
             type="text"
             value="${escHtml(renamingThreadDraft)}"
-            placeholder="Thread name"
+            placeholder="Agent name"
             maxlength="120"
-            aria-label="Rename thread"
+            aria-label="Rename agent"
           />
           <div class="thread-rename-actions">
             <button class="btn btn-primary btn-sm" type="submit">Save</button>
@@ -383,7 +383,7 @@ function renderThreadActionPopover(t: Thread): string {
   }
 
   return `
-    <div class="thread-action-popover thread-action-menu" data-thread-id="${escHtml(t.threadId)}" role="menu" aria-label="Thread actions">
+    <div class="thread-action-popover thread-action-menu" data-thread-id="${escHtml(t.threadId)}" role="menu" aria-label="Agent actions">
       <button class="thread-action-menu-item" type="button" data-thread-id="${escHtml(t.threadId)}" data-action="rename" role="menuitem">
         Rename
       </button>
@@ -940,8 +940,8 @@ function renderThreadStatusIndicator(status: ThreadActivityIndicator): string {
       <span
         class="thread-status-indicator thread-status-indicator--loading"
         role="status"
-        aria-label="Thread is working"
-        title="Thread is working"
+        aria-label="Agent is working"
+        title="Agent is working"
       >
         <span class="thread-status-spinner" aria-hidden="true"></span>
       </span>`
@@ -999,7 +999,7 @@ function renderThreadItem(
         <button class="btn btn-ghost btn-sm thread-item-menu-trigger" type="button"
                 data-thread-id="${escHtml(t.threadId)}"
                 aria-expanded="${isMenuOpen ? 'true' : 'false'}"
-                aria-label="Thread actions">
+                aria-label="Agent actions">
           ...
         </button>
       </div>
@@ -1021,7 +1021,7 @@ function updateThreadList(): void {
   if (!filtered.length) {
     el.innerHTML = `
       <div class="thread-list-empty">
-        ${q ? `No threads matching "<strong>${escHtml(q)}</strong>"` : 'No threads yet.<br>Click <strong>+</strong> to start one.'}
+        ${q ? `No agents matching "<strong>${escHtml(q)}</strong>"` : 'No agents yet.<br>Click <strong>+</strong> to start one.'}
       </div>`
     renderThreadActionLayer()
     return
@@ -1082,7 +1082,7 @@ async function handleRenameThread(threadId: string, nextTitle: string): Promise<
     updatedThread = await api.updateThread(threadId, { title })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'
-    window.alert(`Failed to rename thread: ${message}`)
+    window.alert(`Failed to rename agent: ${message}`)
     return
   }
 
@@ -1102,13 +1102,13 @@ async function handleDeleteThread(threadId: string): Promise<void> {
   if (!thread) return
 
   const label = threadTitle(thread)
-  if (!window.confirm(`Delete thread "${label}"? This will permanently remove its history.`)) return
+  if (!window.confirm(`Delete agent "${label}"? This will permanently remove its history.`)) return
 
   try {
     await api.deleteThread(threadId)
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'
-    window.alert(`Failed to delete thread: ${message}`)
+    window.alert(`Failed to delete agent: ${message}`)
     return
   }
 
@@ -1412,12 +1412,12 @@ function renderChatEmpty(): string {
   return `
     <div class="empty-state">
       <div class="empty-state-icon">◈</div>
-      <h3 class="empty-state-title">No thread selected</h3>
+      <h3 class="empty-state-title">No agent selected</h3>
       <p class="empty-state-desc">
-        Select a thread from the sidebar, or create a new one to start chatting with an agent.
+        Select an agent from the sidebar, or create a new one to start chatting.
       </p>
       <button class="btn btn-primary" id="new-thread-empty-btn">
-        ${iconPlus} New Thread
+        ${iconPlus} New Agent
       </button>
     </div>`
 }
@@ -1685,7 +1685,7 @@ function bindThreadConfigSwitches(thread: Thread): void {
         if (store.get().activeThreadId !== thread.threadId) return
         renderConfigUI()
         const message = err instanceof Error ? err.message : String(err)
-        window.alert(`Failed to load thread config options: ${message}`)
+        window.alert(`Failed to load agent config options: ${message}`)
       })
   }
 
@@ -1975,10 +1975,10 @@ function renderShell(): void {
       <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
           <div class="sidebar-brand">
-            <div class="sidebar-brand-icon">A</div>
-            <span>Agent Hub</span>
+            <div class="sidebar-brand-icon">N</div>
+            <span>Ngent</span>
           </div>
-          <button class="btn btn-icon" id="new-thread-btn" title="New thread" aria-label="New thread">
+          <button class="btn btn-icon" id="new-thread-btn" title="New agent" aria-label="New agent">
             ${iconPlus}
           </button>
         </div>
@@ -1988,8 +1988,8 @@ function renderShell(): void {
             id="search-input"
             class="search-input"
             type="search"
-            placeholder="Search threads…"
-            aria-label="Search threads"
+            placeholder="Search agents…"
+            aria-label="Search agents"
           />
         </div>
 
@@ -2125,7 +2125,7 @@ async function init(): Promise<void> {
     const el = document.getElementById('thread-list')
     if (el) {
       el.innerHTML = `<div class="thread-list-empty" style="color:var(--error)">
-        Failed to load threads.<br>Check the server connection in Settings.
+        Failed to load agents.<br>Check the server connection in Settings.
       </div>`
     }
   }

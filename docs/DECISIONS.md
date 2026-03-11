@@ -36,6 +36,7 @@
 - ADR-032: Shared common agent config/state helper without protocol unification. (Accepted)
 - ADR-033: Surface ACP plan updates as first-class SSE and Web UI state. (Accepted)
 - ADR-034: Source Kimi config catalogs from local config to avoid empty sessions. (Accepted)
+- ADR-035: Add opt-in ACP debug tracing behind `--debug`. (Accepted)
 
 ## ADR-018: Embedded Web UI via Go embed
 

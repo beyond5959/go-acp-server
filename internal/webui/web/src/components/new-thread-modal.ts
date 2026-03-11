@@ -72,11 +72,11 @@ function renderModal(s: ModalState, agents: AgentInfo[]): string {
   const canSubmit = !!s.selectedAgent && isAbsolutePath(s.cwd) && !s.submitting
 
   return `
-    <div class="modal-overlay" id="new-thread-overlay" role="dialog" aria-modal="true" aria-label="New thread">
+    <div class="modal-overlay" id="new-thread-overlay" role="dialog" aria-modal="true" aria-label="New agent">
       <div class="modal" id="new-thread-modal">
 
         <div class="modal-header">
-          <h2 class="modal-title">New Thread</h2>
+          <h2 class="modal-title">New Agent</h2>
           <button class="btn btn-icon" id="new-thread-close" aria-label="Close">${iconClose}</button>
         </div>
 
@@ -154,7 +154,7 @@ function renderModal(s: ModalState, agents: AgentInfo[]): string {
             type="button"
             ${canSubmit ? '' : 'disabled'}
           >
-            ${s.submitting ? '<span class="btn-spinner"></span> Creating…' : 'Create Thread'}
+            ${s.submitting ? '<span class="btn-spinner"></span> Creating…' : 'Create Agent'}
           </button>
         </div>
 

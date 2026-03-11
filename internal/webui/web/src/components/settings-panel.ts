@@ -42,7 +42,7 @@ function renderPanel(): string {
             <h3 class="settings-section-title">Identity</h3>
             <label class="settings-label">Client ID</label>
             <p class="settings-description">
-              Automatically assigned. All threads and turns are scoped to this ID.
+              Automatically assigned. All agents and turns are scoped to this ID.
             </p>
             <div class="settings-id-row">
               <code class="settings-client-id" id="client-id-display">${escHtml(clientId)}</code>
@@ -86,7 +86,7 @@ function renderPanel(): string {
             <h3 class="settings-section-title">Connection</h3>
             <label class="settings-label" for="server-url-input">Server URL</label>
             <p class="settings-description">
-              Base URL of the Agent Hub Server API. Change if using a reverse proxy.
+              Base URL of the Ngent Server API. Change if using a reverse proxy.
             </p>
             <input
               id="server-url-input"
@@ -163,7 +163,7 @@ function bindEvents(): void {
 
   // Reset client ID (with confirmation)
   container.querySelector('#reset-client-id-btn')?.addEventListener('click', () => {
-    if (!confirm('Reset your Client ID? You will lose access to existing threads in this browser.')) return
+    if (!confirm('Reset your Client ID? You will lose access to existing agents in this browser.')) return
     store.resetClientId()
     const display = container?.querySelector<HTMLElement>('#client-id-display')
     if (display) display.textContent = store.get().clientId
