@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/beyond5959/ngent/internal/agents"
+	"github.com/beyond5959/ngent/internal/observability"
 )
 
 const (
@@ -127,7 +128,7 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 		errCh <- cmd.Wait()
 	}()
 
-	conn := newRPCConn(stdin, stdout)
+	conn := newRPCConn(stdin, stdout, c.Name())
 	defer conn.Close()
 	defer terminateProcess(cmd, errCh)
 
@@ -250,6 +251,8 @@ func terminateProcess(cmd *exec.Cmd, errCh <-chan error) {
 }
 
 type rpcConn struct {
+	prefix string
+
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
 
@@ -271,8 +274,13 @@ type rpcConn struct {
 	doneErr   error
 }
 
-func newRPCConn(stdin io.WriteCloser, stdout io.ReadCloser) *rpcConn {
+func newRPCConn(stdin io.WriteCloser, stdout io.ReadCloser, prefix string) *rpcConn {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		prefix = "acp-stdio"
+	}
 	conn := &rpcConn{
+		prefix:  prefix,
 		stdin:   stdin,
 		stdout:  stdout,
 		pending: make(map[string]chan rpcMessage),
@@ -392,6 +400,7 @@ func (c *rpcConn) writeMessage(msg rpcMessage) error {
 	if _, err := c.stdin.Write([]byte("\n")); err != nil {
 		return fmt.Errorf("acp: write rpc delimiter: %w", err)
 	}
+	observability.LogACPMessage(c.prefix, "outbound", msg)
 	return nil
 }
 
@@ -426,6 +435,7 @@ func (c *rpcConn) consumeLine(line []byte) error {
 	if err := json.Unmarshal(line, &msg); err != nil {
 		return fmt.Errorf("acp: decode rpc line: %w", err)
 	}
+	observability.LogACPMessage(c.prefix, "inbound", msg)
 
 	if msg.Method == "" && len(msg.ID) > 0 {
 		return c.dispatchResponse(msg)

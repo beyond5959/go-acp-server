@@ -46,6 +46,7 @@ func main() {
 
 	portFlag := flag.Int("port", 8686, "server listen port (1-65535)")
 	allowPublic := flag.Bool("allow-public", false, "allow listening on public interfaces (default false for loopback-only)")
+	debugFlag := flag.Bool("debug", false, "enable verbose debug logs, including ACP request/response payloads on stderr")
 	authToken := flag.String("auth-token", "", "optional bearer token for /v1/* endpoints")
 	dbPath := flag.String("db-path", defaultDBPath, "sqlite database path")
 	contextRecentTurns := flag.Int("context-recent-turns", 10, "number of recent user+assistant turns injected into each prompt")
@@ -54,6 +55,13 @@ func main() {
 	agentIdleTTL := flag.Duration("agent-idle-ttl", 5*time.Minute, "idle TTL before closing cached thread agent provider")
 	shutdownGraceTimeout := flag.Duration("shutdown-grace-timeout", 8*time.Second, "graceful shutdown timeout for active turns")
 	flag.Parse()
+
+	logLevel := slog.LevelInfo
+	if *debugFlag {
+		logLevel = slog.LevelDebug
+	}
+	logger = observability.NewJSONLogger(logLevel)
+	observability.ConfigureACPDebug(logger, *debugFlag)
 
 	codexRuntimeConfig := codexagent.DefaultRuntimeConfig()
 	codexPreflightErr := codexagent.Preflight(codexRuntimeConfig)
@@ -107,6 +115,9 @@ func main() {
 	}
 	if claudePreflightErr != nil {
 		logger.Warn("startup.claude_unavailable", "error", claudePreflightErr.Error())
+	}
+	if *debugFlag {
+		logger.Info("startup.debug_enabled", "acpTrace", true)
 	}
 	agents := supportedAgents(codexAvailable, opencodeAvailable, geminiAvailable, kimiAvailable, qwenAvailable, claudeAvailable)
 

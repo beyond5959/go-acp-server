@@ -19,6 +19,7 @@ import (
 	"github.com/beyond5959/ngent/internal/agents"
 	"github.com/beyond5959/ngent/internal/agents/acpmodel"
 	"github.com/beyond5959/ngent/internal/agents/agentutil"
+	"github.com/beyond5959/ngent/internal/observability"
 )
 
 const (
@@ -412,6 +413,8 @@ func (c *Client) handleUpdate(
 	msg codexacp.RPCMessage,
 	onDelta func(delta string) error,
 ) error {
+	observability.LogACPMessage(c.Name(), "inbound", msg)
+
 	if msg.Method == methodSessionUpdate {
 		update, err := agents.ParseACPUpdate(msg.Params)
 		if err != nil {
@@ -494,6 +497,13 @@ func (c *Client) handlePermissionRequest(
 	); err != nil {
 		return fmt.Errorf("codex: respond permission outcome: %w", err)
 	}
+	observability.LogACPMessage(c.Name(), "outbound", map[string]any{
+		"jsonrpc": jsonRPCVersion,
+		"id":      *msg.ID,
+		"result": map[string]any{
+			"outcome": string(outcome),
+		},
+	})
 	return nil
 }
 
@@ -656,11 +666,13 @@ func (c *Client) clientRequest(
 		}
 		msg.Params = paramsJSON
 	}
+	observability.LogACPMessage(c.Name(), "outbound", msg)
 
 	response, err := runtime.ClientRequest(ctx, msg)
 	if err != nil {
 		return codexacp.RPCMessage{}, err
 	}
+	observability.LogACPMessage(c.Name(), "inbound", response)
 	if response.Error != nil {
 		return codexacp.RPCMessage{}, fmt.Errorf(
 			"codex: %s rpc error code=%d message=%s",

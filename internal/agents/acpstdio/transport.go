@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/beyond5959/ngent/internal/observability"
 )
 
 const (
@@ -179,6 +181,7 @@ func (c *Conn) write(msg Message) error {
 	if _, err := c.stdin.Write([]byte("\n")); err != nil {
 		return c.errf("write rpc delimiter: %w", err)
 	}
+	observability.LogACPMessage(c.prefix, "outbound", msg)
 	return nil
 }
 
@@ -213,6 +216,7 @@ func (c *Conn) consume(line []byte) error {
 	if err := json.Unmarshal(line, &msg); err != nil {
 		return c.errf("decode rpc line: %w", err)
 	}
+	observability.LogACPMessage(c.prefix, "inbound", msg)
 
 	// Response: has id, no method.
 	if msg.Method == "" && len(msg.ID) > 0 {

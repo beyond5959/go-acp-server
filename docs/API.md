@@ -22,6 +22,12 @@ This document defines the current HTTP API contract.
   - `duration_ms`
   - `resp_bytes`
 - Structured log `time` is emitted as UTC `time.DateTime` with second precision.
+- When server starts with `--debug=true`, stderr also emits `acp.message` debug entries for ACP JSON-RPC traffic with:
+  - `component`
+  - `direction` (`inbound|outbound`)
+  - `rpcType` (`request|response|notification`)
+  - `method` when present
+  - sanitized `rpc` payload with sensitive fields redacted
 
 ## Unified Error Envelope
 

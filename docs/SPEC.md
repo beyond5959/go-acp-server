@@ -106,6 +106,7 @@ See `docs/API.md` for endpoint and schema contracts.
   - cwd must be absolute.
 - thread option updates are rejected while a turn is active on the same thread.
 - logs are JSON on stderr and redact sensitive data.
+- `--debug=true` raises log verbosity to debug level and emits sanitized ACP JSON-RPC request/response traces on stderr.
 - HTTP payloads contain protocol data only.
 
 ## 10. Error Contract

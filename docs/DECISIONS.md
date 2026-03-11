@@ -688,3 +688,28 @@ Use this template for new decisions.
 - Alternatives considered:
   - keep ACP-only config discovery (rejected: side effect creates noisy empty sessions).
   - disable Kimi config/model catalog refresh entirely (rejected: would regress model picker accuracy).
+
+## ADR-035: Add opt-in ACP debug tracing behind `--debug`
+
+- Status: Accepted
+- Date: 2026-03-11
+- Context:
+  - operators need a direct way to inspect the exact ACP methods and payloads exchanged with built-in agents when debugging protocol/runtime issues.
+  - normal production logs must remain concise, protocol-only, and continue redacting sensitive information.
+  - ACP traffic currently flows through three different boundaries:
+    - stdio JSON-RPC transport (`acpstdio`)
+    - legacy stdio ACP client (`internal/agents/acp`)
+    - embedded runtimes (`codex`, `claude`)
+- Decision:
+  - add a startup flag `--debug` that raises the shared `slog` logger to debug level.
+  - when enabled, emit structured stderr log entries `acp.message` for inbound/outbound ACP JSON-RPC messages across all supported transport paths.
+  - include `component`, `direction`, `rpcType`, `method`, `id`, and the sanitized `rpc` payload in each trace log.
+  - keep a redaction pass in front of debug logging so sensitive keys and common token formats are masked before serialization.
+- Consequences:
+  - ACP handshakes, prompts, updates, permission requests, and permission responses are inspectable without changing HTTP/stdout protocol behavior.
+  - debug mode can produce high log volume and should be used only when investigating runtime issues.
+  - the tracing mechanism remains transport-local and does not require changing provider/public API contracts.
+- Alternatives considered:
+  - always log ACP payloads at info level (rejected: too noisy and unsafe for normal operation).
+  - add per-provider bespoke debug flags (rejected: fragmented UX and duplicated plumbing).
+  - expose raw unredacted ACP dumps (rejected: conflicts with repository logging/redaction requirements).

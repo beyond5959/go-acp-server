@@ -574,3 +574,4 @@ This file is the source of milestone progress, validation commands, and next act
 - 2026-03-09: unified ACP message-chunk constant usage across stdio providers by removing per-provider `updateTypeMessageChunk` definitions and reusing `agents.ACPUpdateTypeMessageChunk`.
 - 2026-03-09: hid the Web UI Reasoning switch when the active agent exposes fewer than two reasoning choices, so agents without switchable reasoning no longer show a dead control.
 - 2026-03-09: switched Kimi model/reasoning catalog queries to local `config.toml` when available, so startup catalog refresh and thread config/model operations no longer create empty Kimi sessions; real prompt turns still use ACP.
+- 2026-03-11: added opt-in `--debug` startup flag; when enabled, stderr now emits sanitized `acp.message` traces for ACP stdio and embedded-runtime request/response traffic, including session prompts, updates, and permission flows.

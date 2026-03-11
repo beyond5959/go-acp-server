@@ -265,3 +265,20 @@ This checklist defines executable acceptance checks for requirements 1-16.
 - Verification commands (executed 2026-03-06):
   - `go test ./...`
   - `cd internal/webui/web && npm run build`
+
+## Requirement 22: ACP Debug Trace Logging
+
+- Operation:
+  - start server with `--debug=true`.
+  - execute an ACP-backed request path.
+  - inspect stderr logs.
+- Expected:
+  - logger runs at debug level.
+  - stderr includes `acp.message` entries for outbound and inbound ACP JSON-RPC traffic.
+  - entries include `component`, `direction`, `rpcType`, `method` when present, and sanitized `rpc` payload.
+  - sensitive fields/tokens are redacted before logging.
+- Verification commands (executed 2026-03-11):
+  - `go test ./internal/observability ./internal/agents/acpstdio -count=1`
+  - `go test ./cmd/ngent -count=1`
+  - `cd internal/webui/web && npm run build`
+  - `go test ./...`
