@@ -123,9 +123,15 @@ body {
 }
 
 /* Custom scrollbar */
-::-webkit-scrollbar        { width: 5px; }
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+::-webkit-scrollbar        { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track  { background: transparent; }
 ::-webkit-scrollbar-thumb  { background: var(--scrollbar-thumb); border-radius: var(--r-full); }
+::-webkit-scrollbar-corner { background: transparent; }
 
 /* ===== Layout ===== */
 .layout {
@@ -2323,9 +2329,9 @@ button:disabled, .btn:disabled {
   line-height: 1.3;
 }
 
-.message-bubble--md h1 { font-size: var(--font-size-lg); }
-.message-bubble--md h2 { font-size: var(--font-size-base); }
-.message-bubble--md h3 { font-size: var(--font-size-md); }
+.message-bubble--md h1 { font-size: 22px; }
+.message-bubble--md h2 { font-size: 18px; }
+.message-bubble--md h3 { font-size: 16px; }
 
 .message-bubble--md ul,
 .message-bubble--md ol {
