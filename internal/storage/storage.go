@@ -66,6 +66,19 @@ type UpsertAgentConfigCatalogParams struct {
 	ConfigOptionsJSON string
 }
 
+// AgentSlashCommands stores one persisted agent slash-command snapshot.
+type AgentSlashCommands struct {
+	AgentID      string
+	CommandsJSON string
+	UpdatedAt    time.Time
+}
+
+// UpsertAgentSlashCommandsParams contains input for UpsertAgentSlashCommands.
+type UpsertAgentSlashCommandsParams struct {
+	AgentID      string
+	CommandsJSON string
+}
+
 // SessionTranscriptCache stores one persisted provider session transcript snapshot.
 type SessionTranscriptCache struct {
 	AgentID      string
@@ -498,6 +511,65 @@ func (s *Store) UpsertAgentConfigCatalog(ctx context.Context, params UpsertAgent
 		formatTime(s.now()),
 	); err != nil {
 		return fmt.Errorf("storage: upsert agent config catalog: %w", err)
+	}
+
+	return nil
+}
+
+// GetAgentSlashCommands returns the stored slash-command snapshot for one agent.
+func (s *Store) GetAgentSlashCommands(ctx context.Context, agentID string) (AgentSlashCommands, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			agent_id,
+			commands_json,
+			updated_at
+		FROM agent_slash_commands
+		WHERE agent_id = ?;
+	`, strings.TrimSpace(agentID))
+
+	var (
+		commands    AgentSlashCommands
+		updatedAtDB string
+	)
+	if err := row.Scan(&commands.AgentID, &commands.CommandsJSON, &updatedAtDB); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return AgentSlashCommands{}, ErrNotFound
+		}
+		return AgentSlashCommands{}, fmt.Errorf("storage: get agent slash commands: %w", err)
+	}
+
+	updatedAt, err := parseTime(updatedAtDB)
+	if err != nil {
+		return AgentSlashCommands{}, fmt.Errorf("storage: parse agent slash commands.updated_at: %w", err)
+	}
+	commands.UpdatedAt = updatedAt
+	return commands, nil
+}
+
+// UpsertAgentSlashCommands stores one agent slash-command snapshot.
+func (s *Store) UpsertAgentSlashCommands(ctx context.Context, params UpsertAgentSlashCommandsParams) error {
+	if strings.TrimSpace(params.AgentID) == "" {
+		return errors.New("storage: agentID is required")
+	}
+	if strings.TrimSpace(params.CommandsJSON) == "" {
+		params.CommandsJSON = "[]"
+	}
+
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO agent_slash_commands (
+			agent_id,
+			commands_json,
+			updated_at
+		) VALUES (?, ?, ?)
+		ON CONFLICT(agent_id) DO UPDATE SET
+			commands_json = excluded.commands_json,
+			updated_at = excluded.updated_at;
+	`,
+		strings.TrimSpace(params.AgentID),
+		params.CommandsJSON,
+		formatTime(s.now()),
+	); err != nil {
+		return fmt.Errorf("storage: upsert agent slash commands: %w", err)
 	}
 
 	return nil

@@ -107,4 +107,15 @@ var migrations = []migration{
 			);`,
 		},
 	},
+	{
+		version: 8,
+		name:    "create_agent_slash_commands",
+		sql: []string{
+			`CREATE TABLE IF NOT EXISTS agent_slash_commands (
+				agent_id TEXT PRIMARY KEY,
+				commands_json TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);`,
+		},
+	},
 }

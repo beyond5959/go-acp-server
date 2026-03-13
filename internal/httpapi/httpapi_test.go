@@ -983,6 +983,231 @@ func TestThreadSessionHistoryEndpointUsesSQLiteCacheAcrossRestart(t *testing.T) 
 	}
 }
 
+func TestThreadSlashCommandsPersistAndLoad(t *testing.T) {
+	root := t.TempDir()
+	streamer := &slashCommandStreamer{
+		commands: []agents.SlashCommand{
+			{Name: "plan", Description: "Toggle plan mode", InputHint: "on|off|view|clear"},
+			{Name: "clear", Description: "Clear the context"},
+		},
+	}
+	h := newTestServer(t, testServerOptions{
+		allowedRoots: []string{root},
+		turnAgentFactory: func(thread storage.Thread) (agents.Streamer, error) {
+			_ = thread
+			return streamer, nil
+		},
+	})
+
+	threadID := createThreadForClient(t, h, "client-a", root)
+	streamRR := performJSONRequest(t, h, http.MethodPost, "/v1/threads/"+threadID+"/turns", map[string]any{
+		"input":  "hello",
+		"stream": true,
+	}, map[string]string{"X-Client-ID": "client-a"})
+	if streamRR.Code != http.StatusOK {
+		t.Fatalf("turn stream status code = %d, want %d, body=%s", streamRR.Code, http.StatusOK, streamRR.Body.String())
+	}
+
+	rr := performJSONRequest(t, h, http.MethodGet, "/v1/threads/"+threadID+"/slash-commands", nil, map[string]string{
+		"X-Client-ID": "client-a",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("slash commands status code = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var body struct {
+		ThreadID string                `json:"threadId"`
+		AgentID  string                `json:"agentId"`
+		Commands []agents.SlashCommand `json:"commands"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal slash commands response: %v", err)
+	}
+	if body.ThreadID != threadID {
+		t.Fatalf("threadId = %q, want %q", body.ThreadID, threadID)
+	}
+	if body.AgentID != "codex" {
+		t.Fatalf("agentId = %q, want %q", body.AgentID, "codex")
+	}
+	if got, want := len(body.Commands), 2; got != want {
+		t.Fatalf("len(commands) = %d, want %d", got, want)
+	}
+	if got := body.Commands[0]; got.Name != "plan" || got.InputHint != "on|off|view|clear" {
+		t.Fatalf("commands[0] = %+v, want plan command", got)
+	}
+	if got := body.Commands[1]; got.Name != "clear" {
+		t.Fatalf("commands[1] = %+v, want clear command", got)
+	}
+}
+
+func TestThreadSlashCommandsPersistAcrossRestart(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(t.TempDir(), "slash-commands.db")
+
+	serverOne, closeOne := newTestServerWithDBPath(t, dbPath, testServerOptions{
+		allowedRoots: []string{root},
+		turnAgentFactory: func(thread storage.Thread) (agents.Streamer, error) {
+			_ = thread
+			return &slashCommandStreamer{
+				commands: []agents.SlashCommand{
+					{Name: "plan", Description: "Toggle plan mode"},
+				},
+			}, nil
+		},
+	})
+
+	threadID := createThreadForClient(t, serverOne, "client-a", root)
+	streamRR := performJSONRequest(t, serverOne, http.MethodPost, "/v1/threads/"+threadID+"/turns", map[string]any{
+		"input":  "hello",
+		"stream": true,
+	}, map[string]string{"X-Client-ID": "client-a"})
+	if streamRR.Code != http.StatusOK {
+		t.Fatalf("turn stream status code = %d, want %d, body=%s", streamRR.Code, http.StatusOK, streamRR.Body.String())
+	}
+	closeOne()
+
+	serverTwo, closeTwo := newTestServerWithDBPath(t, dbPath, testServerOptions{
+		allowedRoots: []string{root},
+	})
+	defer closeTwo()
+
+	rr := performJSONRequest(t, serverTwo, http.MethodGet, "/v1/threads/"+threadID+"/slash-commands", nil, map[string]string{
+		"X-Client-ID": "client-a",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("slash commands status code after restart = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var body struct {
+		Commands []agents.SlashCommand `json:"commands"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal slash commands response after restart: %v", err)
+	}
+	if got, want := len(body.Commands), 1; got != want {
+		t.Fatalf("len(commands) after restart = %d, want %d", got, want)
+	}
+	if got := body.Commands[0].Name; got != "plan" {
+		t.Fatalf("commands[0].name after restart = %q, want %q", got, "plan")
+	}
+}
+
+func TestThreadConfigOptionsBackfillsSlashCommandsWhenCatalogAlreadyStored(t *testing.T) {
+	root := t.TempDir()
+	streamer := newConfigOptionStreamer("gpt-5", []agents.ConfigOptionValue{
+		{Value: "gpt-5", Name: "GPT-5"},
+	})
+	streamer.slashCommands = []agents.SlashCommand{
+		{Name: "mcp", Description: "Show MCP server status"},
+	}
+
+	h := newTestServer(t, testServerOptions{
+		allowedRoots: []string{root},
+		turnAgentFactory: func(thread storage.Thread) (agents.Streamer, error) {
+			_ = thread
+			return streamer, nil
+		},
+	})
+
+	storeImpl, ok := h.store.(*storage.Store)
+	if !ok {
+		t.Fatalf("server store type = %T, want *storage.Store", h.store)
+	}
+	if err := storeImpl.UpsertAgentConfigCatalog(context.Background(), storage.UpsertAgentConfigCatalogParams{
+		AgentID: "codex",
+		ModelID: storage.DefaultAgentConfigCatalogModelID,
+		ConfigOptionsJSON: `[
+			{
+				"id":"model",
+				"category":"model",
+				"type":"select",
+				"currentValue":"gpt-5",
+				"options":[
+					{"value":"gpt-5","name":"GPT-5"}
+				]
+			}
+		]`,
+	}); err != nil {
+		t.Fatalf("UpsertAgentConfigCatalog(): %v", err)
+	}
+
+	threadID := createThreadForClient(t, h, "client-a", root)
+
+	configRR := performJSONRequest(t, h, http.MethodGet, "/v1/threads/"+threadID+"/config-options", nil, map[string]string{
+		"X-Client-ID": "client-a",
+	})
+	if configRR.Code != http.StatusOK {
+		t.Fatalf("config options status code = %d, want %d, body=%s", configRR.Code, http.StatusOK, configRR.Body.String())
+	}
+
+	rr := performJSONRequest(t, h, http.MethodGet, "/v1/threads/"+threadID+"/slash-commands", nil, map[string]string{
+		"X-Client-ID": "client-a",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("slash commands status code = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var body struct {
+		Commands []agents.SlashCommand `json:"commands"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal slash commands response: %v", err)
+	}
+	if got, want := len(body.Commands), 1; got != want {
+		t.Fatalf("len(commands) = %d, want %d", got, want)
+	}
+	if got := body.Commands[0].Name; got != "mcp" {
+		t.Fatalf("commands[0].name = %q, want %q", got, "mcp")
+	}
+	if got := streamer.SlashCommandsCalls(); got != 1 {
+		t.Fatalf("SlashCommandsCalls() = %d, want %d", got, 1)
+	}
+}
+
+func TestThreadSlashCommandsEndpointBackfillsMissingSnapshot(t *testing.T) {
+	root := t.TempDir()
+	streamer := newConfigOptionStreamer("gpt-5", []agents.ConfigOptionValue{
+		{Value: "gpt-5", Name: "GPT-5"},
+	})
+	streamer.slashCommands = []agents.SlashCommand{
+		{Name: "bug", Description: "Submit a bug report"},
+		{Name: "summary", Description: "Summarize context"},
+	}
+
+	h := newTestServer(t, testServerOptions{
+		allowedRoots: []string{root},
+		turnAgentFactory: func(thread storage.Thread) (agents.Streamer, error) {
+			_ = thread
+			return streamer, nil
+		},
+	})
+
+	threadID := createThreadForClient(t, h, "client-a", root)
+
+	rr := performJSONRequest(t, h, http.MethodGet, "/v1/threads/"+threadID+"/slash-commands", nil, map[string]string{
+		"X-Client-ID": "client-a",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("slash commands status code = %d, want %d, body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	var body struct {
+		Commands []agents.SlashCommand `json:"commands"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal slash commands response: %v", err)
+	}
+	if got, want := len(body.Commands), 2; got != want {
+		t.Fatalf("len(commands) = %d, want %d", got, want)
+	}
+	if body.Commands[0].Name != "bug" || body.Commands[1].Name != "summary" {
+		t.Fatalf("commands = %+v, want bug/summary", body.Commands)
+	}
+	if got := streamer.SlashCommandsCalls(); got != 1 {
+		t.Fatalf("SlashCommandsCalls() = %d, want %d", got, 1)
+	}
+}
+
 func TestThreadSessionHistoryEndpointUnsupported(t *testing.T) {
 	root := t.TempDir()
 	streamer := &sessionListStreamer{}
@@ -2746,6 +2971,25 @@ func (s *planStreamer) Stream(ctx context.Context, input string, onDelta func(de
 	return agents.StopReasonEndTurn, nil
 }
 
+type slashCommandStreamer struct {
+	commands []agents.SlashCommand
+}
+
+func (s *slashCommandStreamer) Name() string {
+	return "slash-command-streamer"
+}
+
+func (s *slashCommandStreamer) Stream(ctx context.Context, input string, onDelta func(delta string) error) (agents.StopReason, error) {
+	_ = input
+	if err := agents.NotifySlashCommands(ctx, s.commands); err != nil {
+		return agents.StopReasonEndTurn, err
+	}
+	if err := onDelta("ok"); err != nil {
+		return agents.StopReasonEndTurn, err
+	}
+	return agents.StopReasonEndTurn, nil
+}
+
 type countingClosableStreamer struct {
 	streamCalls atomic.Int32
 	closeCalls  atomic.Int32
@@ -2820,9 +3064,11 @@ func (s *errorStreamer) Stream(ctx context.Context, input string, onDelta func(d
 }
 
 type configOptionStreamer struct {
-	options        []agents.ConfigOption
-	setConfigCalls atomic.Int32
-	closeCalls     atomic.Int32
+	options            []agents.ConfigOption
+	slashCommands      []agents.SlashCommand
+	setConfigCalls     atomic.Int32
+	slashCommandsCalls atomic.Int32
+	closeCalls         atomic.Int32
 }
 
 func newConfigOptionStreamer(currentModel string, models []agents.ConfigOptionValue) *configOptionStreamer {
@@ -2858,6 +3104,12 @@ func (s *configOptionStreamer) ConfigOptions(ctx context.Context) ([]agents.Conf
 	return acpmodel.CloneConfigOptions(s.options), nil
 }
 
+func (s *configOptionStreamer) SlashCommands(ctx context.Context) ([]agents.SlashCommand, bool, error) {
+	_ = ctx
+	s.slashCommandsCalls.Add(1)
+	return agents.CloneSlashCommands(s.slashCommands), true, nil
+}
+
 func (s *configOptionStreamer) SetConfigOption(ctx context.Context, configID, value string) ([]agents.ConfigOption, error) {
 	_ = ctx
 	configID = strings.TrimSpace(configID)
@@ -2886,6 +3138,10 @@ func (s *configOptionStreamer) SetConfigCalls() int32 {
 
 func (s *configOptionStreamer) CloseCount() int32 {
 	return s.closeCalls.Load()
+}
+
+func (s *configOptionStreamer) SlashCommandsCalls() int32 {
+	return s.slashCommandsCalls.Load()
 }
 
 type sessionListStreamer struct {

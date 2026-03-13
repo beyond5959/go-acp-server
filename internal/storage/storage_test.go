@@ -570,6 +570,61 @@ func TestSessionTranscriptCacheCRUD(t *testing.T) {
 	}
 }
 
+func TestAgentSlashCommandsCRUD(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer func() {
+		_ = store.Close()
+	}()
+
+	base := time.Date(2026, 3, 13, 11, 0, 0, 0, time.UTC)
+	counter := 0
+	store.now = func() time.Time {
+		counter++
+		return base.Add(time.Duration(counter) * time.Second)
+	}
+
+	if _, err := store.GetAgentSlashCommands(ctx, "codex"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetAgentSlashCommands(missing) err = %v, want ErrNotFound", err)
+	}
+
+	if err := store.UpsertAgentSlashCommands(ctx, UpsertAgentSlashCommandsParams{
+		AgentID:      "codex",
+		CommandsJSON: `[{"name":"plan","description":"Toggle plan mode"}]`,
+	}); err != nil {
+		t.Fatalf("UpsertAgentSlashCommands(first): %v", err)
+	}
+
+	commands, err := store.GetAgentSlashCommands(ctx, "codex")
+	if err != nil {
+		t.Fatalf("GetAgentSlashCommands(first): %v", err)
+	}
+	if commands.CommandsJSON != `[{"name":"plan","description":"Toggle plan mode"}]` {
+		t.Fatalf("commands_json = %q", commands.CommandsJSON)
+	}
+	if got, want := commands.UpdatedAt, base.Add(1*time.Second); !got.Equal(want) {
+		t.Fatalf("updated_at = %s, want %s", got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
+	}
+
+	if err := store.UpsertAgentSlashCommands(ctx, UpsertAgentSlashCommandsParams{
+		AgentID:      "codex",
+		CommandsJSON: `[{"name":"clear","description":"Clear the context"}]`,
+	}); err != nil {
+		t.Fatalf("UpsertAgentSlashCommands(update): %v", err)
+	}
+
+	updated, err := store.GetAgentSlashCommands(ctx, "codex")
+	if err != nil {
+		t.Fatalf("GetAgentSlashCommands(update): %v", err)
+	}
+	if updated.CommandsJSON != `[{"name":"clear","description":"Clear the context"}]` {
+		t.Fatalf("updated commands_json = %q", updated.CommandsJSON)
+	}
+	if got, want := updated.UpdatedAt, base.Add(2*time.Second); !got.Equal(want) {
+		t.Fatalf("updated updated_at = %s, want %s", got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
+	}
+}
+
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 

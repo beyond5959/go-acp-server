@@ -41,6 +41,7 @@ const (
 
 	stableSessionResolveRetries = 5
 	stableSessionResolveDelay   = 150 * time.Millisecond
+	initialSlashCommandsWait    = 250 * time.Millisecond
 )
 
 // Config configures one embedded codex runtime provider instance.
@@ -72,9 +73,13 @@ type Client struct {
 	runtime          *codexacp.EmbeddedRuntime
 	sessionID        string
 	runtimeSessionID string
+	updateUnsub      func()
 
-	configOptions  []agents.ConfigOption
-	canLoadSession bool
+	configOptions      []agents.ConfigOption
+	canLoadSession     bool
+	slashCommands      []agents.SlashCommand
+	slashCommandsKnown bool
+	slashCommandsReady chan struct{}
 
 	requestSeq uint64
 }
@@ -82,6 +87,7 @@ type Client struct {
 var _ agents.Streamer = (*Client)(nil)
 var _ agents.ConfigOptionManager = (*Client)(nil)
 var _ agents.SessionLister = (*Client)(nil)
+var _ agents.SlashCommandsProvider = (*Client)(nil)
 var _ io.Closer = (*Client)(nil)
 
 // DefaultRuntimeConfig returns the default embedded runtime configuration.
@@ -212,6 +218,26 @@ func (c *Client) ConfigOptions(ctx context.Context) ([]agents.ConfigOption, erro
 	return acpmodel.CloneConfigOptions(c.configOptions), nil
 }
 
+// SlashCommands returns the latest slash-command snapshot after runtime init.
+func (c *Client) SlashCommands(ctx context.Context) ([]agents.SlashCommand, bool, error) {
+	if c == nil {
+		return nil, false, errors.New("codex: nil client")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, _, _, err := c.ensureInitialized(ctx); err != nil {
+		return nil, false, fmt.Errorf("codex: initialize runtime: %w", err)
+	}
+	c.waitForInitialSlashCommands(ctx)
+
+	c.mu.Lock()
+	known := c.slashCommandsKnown
+	commands := agents.CloneSlashCommands(c.slashCommands)
+	c.mu.Unlock()
+	return commands, known, nil
+}
+
 // ListSessions queries ACP session/list for the current cwd.
 func (c *Client) ListSessions(ctx context.Context, req agents.SessionListRequest) (agents.SessionListResult, error) {
 	if c == nil {
@@ -322,10 +348,20 @@ func (c *Client) Close() error {
 	c.runtime = nil
 	c.sessionID = ""
 	c.runtimeSessionID = ""
+	updateUnsub := c.updateUnsub
+	c.updateUnsub = nil
 	c.configOptions = nil
 	c.canLoadSession = false
+	c.slashCommands = nil
+	c.slashCommandsKnown = false
+	slashCommandsReady := c.slashCommandsReady
+	c.slashCommandsReady = nil
 	c.mu.Unlock()
 
+	if updateUnsub != nil {
+		updateUnsub()
+	}
+	closeReadySignal(slashCommandsReady)
 	if runtime != nil {
 		return runtime.Close()
 	}
@@ -352,6 +388,10 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 				return agents.StopReasonCancelled, nil
 			}
 			return agents.StopReasonEndTurn, fmt.Errorf("codex: initialize runtime: %w", err)
+		}
+		c.waitForInitialSlashCommands(ctx)
+		if err := c.notifyCachedSlashCommands(ctx); err != nil {
+			return agents.StopReasonEndTurn, fmt.Errorf("codex: report slash commands: %w", err)
 		}
 		requestedSessionID := c.CurrentSessionID()
 		deferInitialBinding := codexShouldDeferInitialSessionBinding(requestedSessionID, sessionID, stableSessionID)
@@ -480,9 +520,20 @@ func (c *Client) resetRuntime() {
 	c.runtime = nil
 	c.sessionID = ""
 	c.runtimeSessionID = ""
+	updateUnsub := c.updateUnsub
+	c.updateUnsub = nil
 	c.configOptions = nil
+	c.canLoadSession = false
+	c.slashCommands = nil
+	c.slashCommandsKnown = false
+	slashCommandsReady := c.slashCommandsReady
+	c.slashCommandsReady = nil
 	c.mu.Unlock()
 
+	if updateUnsub != nil {
+		updateUnsub()
+	}
+	closeReadySignal(slashCommandsReady)
 	if runtime != nil {
 		_ = runtime.Close()
 	}
@@ -517,6 +568,12 @@ func (c *Client) handleUpdate(
 				return nil
 			}
 			if err := handler(ctx, update.PlanEntries); err != nil {
+				c.sendSessionCancel(runtime, c.currentSessionID())
+				return err
+			}
+		case agents.ACPUpdateTypeAvailableCommands:
+			c.cacheSlashCommands(update.Commands)
+			if err := agents.NotifySlashCommands(ctx, update.Commands); err != nil {
 				c.sendSessionCancel(runtime, c.currentSessionID())
 				return err
 			}
@@ -648,6 +705,7 @@ func (c *Client) ensureInitialized(ctx context.Context) (*codexacp.EmbeddedRunti
 	if err != nil {
 		return nil, "", "", err
 	}
+	c.installUpdateMonitor(runtime)
 
 	requestedSessionID := c.CurrentSessionID()
 	sessionID := ""
@@ -655,11 +713,13 @@ func (c *Client) ensureInitialized(ctx context.Context) (*codexacp.EmbeddedRunti
 	configOptions := []agents.ConfigOption(nil)
 	if requestedSessionID != "" {
 		if !caps.CanLoad {
+			c.clearUpdateMonitor()
 			_ = runtime.Close()
 			return nil, "", "", agents.ErrSessionLoadUnsupported
 		}
 		session, err := c.findSessionInRuntime(startCtx, runtime, c.Dir(), requestedSessionID)
 		if err != nil {
+			c.clearUpdateMonitor()
 			_ = runtime.Close()
 			return nil, "", "", err
 		}
@@ -670,6 +730,7 @@ func (c *Client) ensureInitialized(ctx context.Context) (*codexacp.EmbeddedRunti
 			"cwd":        c.Dir(),
 			"mcpServers": []any{},
 		}); err != nil {
+			c.clearUpdateMonitor()
 			_ = runtime.Close()
 			return nil, "", "", fmt.Errorf("codex: session/load failed: %w", err)
 		}
@@ -682,17 +743,20 @@ func (c *Client) ensureInitialized(ctx context.Context) (*codexacp.EmbeddedRunti
 		}
 		sessionResp, err := c.clientRequest(startCtx, runtime, methodSessionNew, newParams)
 		if err != nil {
+			c.clearUpdateMonitor()
 			_ = runtime.Close()
 			return nil, "", "", err
 		}
 
 		sessionID, err = parseSessionID(sessionResp.Result)
 		if err != nil {
+			c.clearUpdateMonitor()
 			_ = runtime.Close()
 			return nil, "", "", err
 		}
 		stableSessionID, err = c.resolveStableSessionID(startCtx, runtime, sessionID)
 		if err != nil {
+			c.clearUpdateMonitor()
 			_ = runtime.Close()
 			return nil, "", "", err
 		}
@@ -703,19 +767,26 @@ func (c *Client) ensureInitialized(ctx context.Context) (*codexacp.EmbeddedRunti
 	}
 	configOptions, err = c.applySessionSelections(startCtx, runtime, sessionID, configOptions)
 	if err != nil {
+		c.clearUpdateMonitor()
 		_ = runtime.Close()
 		return nil, "", "", err
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.closed {
+		c.mu.Unlock()
+		c.clearUpdateMonitor()
 		_ = runtime.Close()
 		return nil, "", "", errors.New("codex: client is closed")
 	}
 	if c.runtime != nil && c.runtimeSessionID != "" && c.sessionID != "" {
+		existingRuntime := c.runtime
+		existingSessionID := c.runtimeSessionID
+		existingStableSessionID := c.sessionID
+		c.mu.Unlock()
+		c.clearUpdateMonitor()
 		_ = runtime.Close()
-		return c.runtime, c.runtimeSessionID, c.sessionID, nil
+		return existingRuntime, existingSessionID, existingStableSessionID, nil
 	}
 
 	c.runtime = runtime
@@ -723,7 +794,8 @@ func (c *Client) ensureInitialized(ctx context.Context) (*codexacp.EmbeddedRunti
 	c.runtimeSessionID = sessionID
 	c.configOptions = acpmodel.CloneConfigOptions(configOptions)
 	c.canLoadSession = caps.CanLoad
-	return c.runtime, c.runtimeSessionID, c.sessionID, nil
+	c.mu.Unlock()
+	return runtime, sessionID, stableSessionID, nil
 }
 
 func (c *Client) resolveStableSessionID(
@@ -991,4 +1063,115 @@ func idToString(raw json.RawMessage) string {
 		return strconv.FormatFloat(asNumber, 'f', -1, 64)
 	}
 	return strings.TrimSpace(string(raw))
+}
+
+func (c *Client) installUpdateMonitor(runtime *codexacp.EmbeddedRuntime) {
+	if runtime == nil {
+		return
+	}
+
+	updates, unsubscribe := runtime.SubscribeUpdates(256)
+	ready := make(chan struct{})
+
+	c.mu.Lock()
+	prevUnsub := c.updateUnsub
+	prevReady := c.slashCommandsReady
+	c.updateUnsub = unsubscribe
+	c.slashCommands = nil
+	c.slashCommandsKnown = false
+	c.slashCommandsReady = ready
+	c.mu.Unlock()
+
+	if prevUnsub != nil {
+		prevUnsub()
+	}
+	closeReadySignal(prevReady)
+
+	go c.monitorUpdates(updates, ready)
+}
+
+func (c *Client) monitorUpdates(updates <-chan codexacp.RPCMessage, ready chan struct{}) {
+	defer closeReadySignal(ready)
+
+	for msg := range updates {
+		if msg.Method != methodSessionUpdate || len(msg.Params) == 0 {
+			continue
+		}
+		update, err := agents.ParseACPUpdate(msg.Params)
+		if err != nil || update.Type != agents.ACPUpdateTypeAvailableCommands {
+			continue
+		}
+		c.mu.Lock()
+		if c.slashCommandsReady == ready {
+			c.slashCommands = agents.CloneSlashCommands(update.Commands)
+			c.slashCommandsKnown = true
+		}
+		c.mu.Unlock()
+		closeReadySignal(ready)
+	}
+}
+
+func (c *Client) clearUpdateMonitor() {
+	c.mu.Lock()
+	updateUnsub := c.updateUnsub
+	c.updateUnsub = nil
+	slashCommandsReady := c.slashCommandsReady
+	c.slashCommandsReady = nil
+	c.slashCommands = nil
+	c.slashCommandsKnown = false
+	c.mu.Unlock()
+
+	if updateUnsub != nil {
+		updateUnsub()
+	}
+	closeReadySignal(slashCommandsReady)
+}
+
+func (c *Client) cacheSlashCommands(commands []agents.SlashCommand) {
+	c.mu.Lock()
+	c.slashCommands = agents.CloneSlashCommands(commands)
+	c.slashCommandsKnown = true
+	c.mu.Unlock()
+}
+
+func (c *Client) waitForInitialSlashCommands(ctx context.Context) {
+	c.mu.Lock()
+	if c.slashCommandsKnown || c.slashCommandsReady == nil {
+		c.mu.Unlock()
+		return
+	}
+	ready := c.slashCommandsReady
+	c.mu.Unlock()
+
+	timer := time.NewTimer(initialSlashCommandsWait)
+	defer timer.Stop()
+
+	select {
+	case <-ready:
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+}
+
+func (c *Client) notifyCachedSlashCommands(ctx context.Context) error {
+	c.mu.Lock()
+	known := c.slashCommandsKnown
+	commands := agents.CloneSlashCommands(c.slashCommands)
+	c.mu.Unlock()
+	if !known {
+		return nil
+	}
+	return agents.NotifySlashCommands(ctx, commands)
+}
+
+func closeReadySignal(ch chan struct{}) {
+	if ch == nil {
+		return
+	}
+	select {
+	case <-ch:
+		return
+	default:
+		close(ch)
+	}
 }

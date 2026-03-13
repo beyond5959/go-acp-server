@@ -36,11 +36,13 @@ type Config = agentutil.Config
 // Client runs one gemini --experimental-acp process per Stream call.
 type Client struct {
 	*agentutil.State
+	slashCommands agents.SlashCommandsCache
 }
 
 var _ agents.Streamer = (*Client)(nil)
 var _ agents.ConfigOptionManager = (*Client)(nil)
 var _ agents.SessionLister = (*Client)(nil)
+var _ agents.SlashCommandsProvider = (*Client)(nil)
 
 // New constructs a Gemini CLI ACP client.
 func New(cfg Config) (*Client, error) {
@@ -70,6 +72,24 @@ func (c *Client) ConfigOptions(ctx context.Context) ([]agents.ConfigOption, erro
 		ctx = context.Background()
 	}
 	return c.runConfigSession(ctx, c.CurrentModelID(), c.CurrentConfigOverrides(), "", "")
+}
+
+// SlashCommands returns the latest slash-command snapshot for the current context.
+func (c *Client) SlashCommands(ctx context.Context) ([]agents.SlashCommand, bool, error) {
+	if c == nil {
+		return nil, false, errors.New("gemini: nil client")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if commands, known := c.slashCommands.Snapshot(); known {
+		return commands, true, nil
+	}
+	if _, err := c.runConfigSession(ctx, c.CurrentModelID(), c.CurrentConfigOverrides(), "", ""); err != nil {
+		return nil, false, err
+	}
+	commands, known := c.slashCommands.Snapshot()
+	return commands, known, nil
 }
 
 // SetConfigOption applies one ACP session config option.
@@ -236,6 +256,12 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 	}
 	caps := acpsession.ParseInitializeCapabilities(initResult)
 
+	streamCtx := c.slashCommands.WrapContext(ctx)
+	handleNotification, markPromptStarted := agents.NewACPNotificationHandler(streamCtx, onDelta)
+	conn.SetNotificationHandler(func(msg rpcMessage) error {
+		return handleNotification(msg.Method, msg.Params)
+	})
+
 	// 2. session/load or session/new
 	sessionID := c.CurrentSessionID()
 	initialOptions := []agents.ConfigOption(nil)
@@ -262,38 +288,13 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 	}
 	if caps.CanLoad {
 		c.SetSessionID(sessionID)
-		if err := agents.NotifySessionBound(ctx, sessionID); err != nil {
+		if err := agents.NotifySessionBound(streamCtx, sessionID); err != nil {
 			return agents.StopReasonEndTurn, fmt.Errorf("gemini: report session bound: %w", err)
 		}
 	}
 
-	// 3. Wire streaming: agent_message_chunk updates → onDelta.
-	conn.SetNotificationHandler(func(msg rpcMessage) error {
-		if msg.Method != "session/update" {
-			return nil
-		}
-		if len(msg.Params) == 0 {
-			return nil
-		}
-		update, err := agents.ParseACPUpdate(msg.Params)
-		if err != nil {
-			return nil // ignore malformed updates
-		}
-		switch update.Type {
-		case agents.ACPUpdateTypeMessageChunk:
-			if update.Delta != "" {
-				return onDelta(update.Delta)
-			}
-		case agents.ACPUpdateTypePlan:
-			if handler, ok := agents.PlanHandlerFromContext(ctx); ok {
-				return handler(ctx, update.PlanEntries)
-			}
-		}
-		return nil
-	})
-
 	// 4. Wire permission requests: session/request_permission → PermissionHandler.
-	permHandler, hasHandler := agents.PermissionHandlerFromContext(ctx)
+	permHandler, hasHandler := agents.PermissionHandlerFromContext(streamCtx)
 	conn.SetRequestHandler(func(method string, params json.RawMessage) (json.RawMessage, error) {
 		if method != "session/request_permission" {
 			return nil, &rpcError{Code: methodNotFound, Message: "method not found"}
@@ -312,7 +313,7 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 			return buildPermResponse("reject_once")
 		}
 
-		resp, err := permHandler(ctx, agents.PermissionRequest{
+		resp, err := permHandler(streamCtx, agents.PermissionRequest{
 			Approval:  extractToolTitle(req.ToolCall),
 			Command:   extractToolKind(req.ToolCall),
 			RawParams: map[string]any{"sessionId": req.SessionID, "toolCall": req.ToolCall},
@@ -338,6 +339,7 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 	if modelID != "" {
 		promptParams["model"] = modelID
 	}
+	markPromptStarted()
 	promptResult, err := conn.Call(ctx, "session/prompt", promptParams)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -438,6 +440,12 @@ func (c *Client) runConfigSession(
 	}); err != nil {
 		return nil, fmt.Errorf("gemini: config options initialize: %w", err)
 	}
+
+	configCtx := c.slashCommands.WrapContext(ctx)
+	handleNotification, _ := agents.NewACPNotificationHandler(configCtx, func(string) error { return nil })
+	conn.SetNotificationHandler(func(msg rpcMessage) error {
+		return handleNotification(msg.Method, msg.Params)
+	})
 
 	newParams := map[string]any{
 		"cwd":        c.Dir(),

@@ -28,11 +28,13 @@ type Config = agentutil.Config
 // Client runs one opencode acp process per Stream call.
 type Client struct {
 	*agentutil.State
+	slashCommands agents.SlashCommandsCache
 }
 
 var _ agents.Streamer = (*Client)(nil)
 var _ agents.ConfigOptionManager = (*Client)(nil)
 var _ agents.SessionLister = (*Client)(nil)
+var _ agents.SlashCommandsProvider = (*Client)(nil)
 
 // New constructs an OpenCode ACP client.
 func New(cfg Config) (*Client, error) {
@@ -62,6 +64,24 @@ func (c *Client) ConfigOptions(ctx context.Context) ([]agents.ConfigOption, erro
 		ctx = context.Background()
 	}
 	return c.runConfigSession(ctx, c.CurrentModelID(), c.CurrentConfigOverrides(), "", "")
+}
+
+// SlashCommands returns the latest slash-command snapshot for the current context.
+func (c *Client) SlashCommands(ctx context.Context) ([]agents.SlashCommand, bool, error) {
+	if c == nil {
+		return nil, false, errors.New("opencode: nil client")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if commands, known := c.slashCommands.Snapshot(); known {
+		return commands, true, nil
+	}
+	if _, err := c.runConfigSession(ctx, c.CurrentModelID(), c.CurrentConfigOverrides(), "", ""); err != nil {
+		return nil, false, err
+	}
+	commands, known := c.slashCommands.Snapshot()
+	return commands, known, nil
 }
 
 // SetConfigOption applies one ACP session config option.
@@ -209,6 +229,9 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 	}
 	caps := acpsession.ParseInitializeCapabilities(initResult)
 
+	streamCtx := c.slashCommands.WrapContext(ctx)
+	markPromptStarted := agents.InstallACPStdioNotificationHandler(conn, streamCtx, onDelta)
+
 	// 2. session/load or session/new.
 	sessionID := c.CurrentSessionID()
 	initialOptions := []agents.ConfigOption(nil)
@@ -235,35 +258,10 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 	}
 	if caps.CanLoad {
 		c.SetSessionID(sessionID)
-		if err := agents.NotifySessionBound(ctx, sessionID); err != nil {
+		if err := agents.NotifySessionBound(streamCtx, sessionID); err != nil {
 			return agents.StopReasonEndTurn, fmt.Errorf("opencode: report session bound: %w", err)
 		}
 	}
-
-	// 3. Wire streaming: agent_message_chunk -> onDelta.
-	conn.SetNotificationHandler(func(msg acpstdio.Message) error {
-		if msg.Method != "session/update" {
-			return nil
-		}
-		if len(msg.Params) == 0 {
-			return nil
-		}
-		update, err := agents.ParseACPUpdate(msg.Params)
-		if err != nil {
-			return nil // ignore malformed updates
-		}
-		switch update.Type {
-		case agents.ACPUpdateTypeMessageChunk:
-			if update.Delta != "" {
-				return onDelta(update.Delta)
-			}
-		case agents.ACPUpdateTypePlan:
-			if handler, ok := agents.PlanHandlerFromContext(ctx); ok {
-				return handler(ctx, update.PlanEntries)
-			}
-		}
-		return nil
-	})
 
 	// 4. session/prompt.
 	promptParams := map[string]any{
@@ -274,6 +272,7 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 		promptParams["modelId"] = modelID
 	}
 
+	markPromptStarted()
 	promptResult, err := conn.Call(ctx, "session/prompt", promptParams)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -360,6 +359,9 @@ func (c *Client) runConfigSession(
 	}); err != nil {
 		return nil, fmt.Errorf("opencode: config options initialize: %w", err)
 	}
+
+	configCtx := c.slashCommands.WrapContext(ctx)
+	_ = agents.InstallACPStdioNotificationHandler(conn, configCtx, func(string) error { return nil })
 
 	newParams := map[string]any{
 		"cwd":        c.Dir(),

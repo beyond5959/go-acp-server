@@ -73,6 +73,12 @@
 - `updated_at TEXT NOT NULL`
 - `PRIMARY KEY (agent_id, cwd, session_id)`
 
+### `agent_slash_commands`
+
+- `agent_id TEXT PRIMARY KEY`
+- `commands_json TEXT NOT NULL`
+- `updated_at TEXT NOT NULL`
+
 ## Indexes (M2)
 
 - `idx_threads_client_id` on `threads(client_id)`
@@ -89,6 +95,8 @@
 - `ListThreadsByClient(clientID)`
 - `GetSessionTranscriptCache(agentID, cwd, sessionID)`
 - `UpsertSessionTranscriptCache(...)`
+- `GetAgentSlashCommands(agentID)`
+- `UpsertAgentSlashCommands(...)`
 - `CreateTurn(...)`
 - `GetTurn(turnID)`
 - `ListTurnsByThread(threadID)`

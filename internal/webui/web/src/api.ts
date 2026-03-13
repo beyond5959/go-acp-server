@@ -1,5 +1,5 @@
 import { store } from './store.ts'
-import type { AgentInfo, ConfigOption, ModelOption, SessionInfo, SessionTranscriptMessage, Thread, Turn } from './types.ts'
+import type { AgentInfo, ConfigOption, ModelOption, SessionInfo, SessionTranscriptMessage, SlashCommand, Thread, Turn } from './types.ts'
 import { TurnStream } from './sse.ts'
 import type { TurnStreamCallbacks } from './sse.ts'
 
@@ -51,6 +51,11 @@ interface ThreadSessionHistoryResponse {
   sessionId: string
   supported: boolean
   messages: SessionTranscriptMessage[]
+}
+interface ThreadSlashCommandsResponse {
+  threadId: string
+  agentId: string
+  commands: SlashCommand[]
 }
 interface CancelTurnResponse    { turnId: string; threadId: string; status: string }
 interface DeleteThreadResponse  { threadId: string; status: string }
@@ -176,6 +181,15 @@ class ApiClient {
       supported: !!data.supported,
       messages: data.messages ?? [],
     }
+  }
+
+  /** GET /v1/threads/{threadId}/slash-commands */
+  async getThreadSlashCommands(threadId: string): Promise<SlashCommand[]> {
+    const data = await this.request<ThreadSlashCommandsResponse>(
+      'GET',
+      `/v1/threads/${encodeURIComponent(threadId)}/slash-commands`,
+    )
+    return data.commands ?? []
   }
 
   /** POST /v1/threads/{threadId}/config-options */

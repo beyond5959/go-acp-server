@@ -974,3 +974,37 @@ Use this template for new decisions.
 - Alternatives considered:
   - keep thread-wide turn serialization and force users to create separate threads per ACP session (rejected: poor UX and redundant thread duplication).
   - remove the conflict check without changing provider cache scope (rejected: would mix session-bound provider state and route turns to the wrong ACP session).
+
+## ADR-039: Persist ACP slash commands as agent-level SQLite snapshots
+
+- Status: Accepted
+- Date: 2026-03-13
+- Context:
+  - ACP agents can emit `available_commands_update` during `session/update`, and the Web UI needs a durable source for slash-command suggestions instead of depending on the current in-memory stream only.
+  - the same agent can be opened from multiple threads, and slash-command suggestions should survive server restart once any thread has observed them.
+  - the requested UI interaction is lightweight composer assistance, not a separate command palette service.
+- Decision:
+  - extend shared ACP update parsing with `available_commands_update` and normalize the payload into a common `SlashCommand` model.
+  - add a shared per-turn `SlashCommandsHandler` callback and wire all built-in ACP providers to forward the latest slash-command snapshot through that callback.
+  - persist the snapshot in SQLite table `agent_slash_commands` keyed by `agent_id`, replacing the previous row each time a new update arrives.
+  - expose `GET /v1/threads/{threadId}/slash-commands` so the Web UI can read the cached commands for the active thread's agent while still enforcing normal thread ownership checks.
+  - in the Web UI composer, only open the slash-command picker when the current input starts with `/`, so `abc /plan` remains ordinary message text.
+  - fetch slash commands lazily when the user types `/`; the first bare `/` in each slash interaction forces a backend refresh for the active thread even if the browser already has an in-memory agent cache, and if the refreshed snapshot is empty, keep the composer as plain text and do not render an empty or loading picker.
+  - provider adapters must start observing `session/update` before `session/new` / `session/load` completes if they want to capture capability snapshots, because real agents such as Kimi can emit `available_commands_update` before the first `session/prompt`.
+- Consequences:
+  - once any thread observes an agent's slash commands, later threads for that agent can reuse them immediately and server restart does not clear the cache.
+  - slash-command updates do not become part of persisted turn history; they are stored as agent capability snapshots instead of user-visible transcript events.
+  - agents that never emit `available_commands_update` still behave normally in the composer because `/` falls back to plain input instead of trapping the UI in a retry loop.
+  - the first `/` after entering slash mode always re-checks sqlite through the thread endpoint, so the browser no longer silently masks stale or newly refreshed slash-command snapshots behind a hot in-memory cache.
+  - adapters that also support transcript replay must still suppress pre-prompt message chunks, otherwise `session/load` history replays could leak into the visible answer stream.
+  - embedded adapters whose runtime does not replay historical notifications must install a slash-command monitor before `session/new` / `session/load`, cache the initial snapshot on the provider instance, and replay that cached snapshot into the active turn before `session/prompt`; codex now follows this rule so config-option queries and first turns observe the same slash-command state.
+  - stdio adapters must also install `session/update` handlers immediately after `initialize`, because `acpstdio.Conn` drops notifications that arrive before `SetNotificationHandler`; Qwen and OpenCode now follow the same pre-prompt capability-capture rule as Kimi.
+  - Kimi, Qwen, OpenCode, and Gemini now share one internal ACP notification handler builder so the providers cannot silently drift on pre-prompt slash-command, message-chunk, or plan handling semantics even when they use different connection implementations.
+  - when a provider can expose its current slash-command snapshot outside a turn, ngent may backfill a missing sqlite row from that live provider state during thread initialization flows; codex now does this on the `config-options` path so a fresh thread can show slash commands before the first prompt.
+  - `GET /v1/threads/{threadId}/slash-commands` must also perform the same best-effort backfill on sqlite miss, because users can type `/` before any parallel thread-initialization request finishes; Qwen now relies on this path for deterministic fresh-thread behavior.
+  - direct ACP stdio providers must apply the same slash-command cache logic to both their turn path and their config-session path; Kimi, Qwen, OpenCode, and Gemini now all use one provider-local `SlashCommandsCache` so fresh-thread slash probes and later turns observe the same snapshot source.
+  - if a future provider varies slash commands by workspace, model, or session, the current `agent_id` cache key may be too coarse and will need refinement.
+- Alternatives considered:
+  - keep slash commands in memory only (rejected: loses state on restart and leaves fresh threads without suggestions until another turn streams).
+  - persist slash commands per thread (rejected: duplicates identical agent data and prevents reuse across threads).
+  - append slash-command updates into `turns/events` only (rejected: complicates retrieval for the composer and mixes capability cache with transcript history).

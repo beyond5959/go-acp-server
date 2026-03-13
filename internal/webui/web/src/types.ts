@@ -56,6 +56,12 @@ export interface SessionTranscriptMessage {
   timestamp?: string
 }
 
+export interface SlashCommand {
+  name: string
+  description?: string
+  inputHint?: string
+}
+
 export interface TurnEvent {
   eventId: number
   seq: number

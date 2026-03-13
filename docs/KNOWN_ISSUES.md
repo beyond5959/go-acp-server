@@ -263,3 +263,19 @@
   - wait for active sessions to finish or cancel them before renaming the thread or changing shared model/config options.
 - Follow-up plan:
   - evaluate whether some metadata-only updates can move to a narrower guard without letting shared provider state drift across sessions.
+
+- ID: KI-027
+- Title: Slash-command cache currently assumes one stable command set per agent
+- Status: Open
+- Severity: Low
+- Affects: agents whose ACP `available_commands_update` payload may vary by workspace, session, or model
+- Symptom:
+  - ngent currently stores the latest slash-command snapshot in SQLite keyed only by `agent_id`.
+  - if a provider later emits different slash-command sets for different contexts, the most recently observed snapshot for that agent will replace the earlier one and the Web UI composer may show commands from the wrong context.
+- Workaround:
+  - for Codex, simply opening the thread is now enough because `config-options` backfills the latest provider snapshot into sqlite before the first turn.
+  - for Kimi, Qwen, OpenCode, and Gemini, the first `/slash-commands` request now backfills sqlite directly from the live provider snapshot cache when the provider has already emitted one, so typing `/` on a fresh thread is enough as long as the underlying CLI actually publishes `available_commands_update`.
+  - for other agents, run a fresh turn in the target context before relying on slash-command suggestions, so the latest provider snapshot overwrites the cache.
+- Follow-up plan:
+  - keep provider-specific delivery timing fixes in place; codex caches the initial `session/new` / `session/load` snapshot before the first prompt, and Kimi/Qwen/OpenCode/Gemini now share both the same early ACP notification handling and the same provider-local slash-command cache across turn/config-session flows, so the remaining risk here is cache-key scope or provider emission behavior, not notification loss inside ngent.
+  - revisit the cache key and move to `(agent_id, cwd)` or another provider-specific scope if a real agent starts varying slash commands by context.

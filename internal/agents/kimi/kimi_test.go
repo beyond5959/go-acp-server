@@ -246,6 +246,200 @@ for line in sys.stdin:
 	}
 }
 
+func TestStreamCapturesSlashCommandsEmittedBeforePrompt(t *testing.T) {
+	python3, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not in PATH")
+	}
+
+	fakeScript := fmt.Sprintf(`#!%s
+import json
+import sys
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    method = req.get("method", "")
+    rid = req.get("id")
+    params = req.get("params", {})
+
+    if method == "initialize":
+        send({"jsonrpc":"2.0","id":rid,"result":{
+            "protocolVersion":1,
+            "agentInfo":{"name":"kimi-code","title":"Kimi CLI","version":"0.0.1"},
+            "authMethods":[],
+            "modes":{"currentModeId":"default","availableModes":[]},
+            "agentCapabilities":{"loadSession":True}
+        }})
+    elif method == "session/new":
+        send({"jsonrpc":"2.0","method":"session/update","params":{
+            "sessionId":"ses_kimi_slash_123",
+            "update":{
+                "sessionUpdate":"available_commands_update",
+                "availableCommands":[
+                    {"name":"plan","description":"Toggle plan mode"},
+                    {"name":"compact","description":"Compact the context"}
+                ]
+            }
+        }})
+        send({"jsonrpc":"2.0","id":rid,"result":{
+            "sessionId":"ses_kimi_slash_123",
+            "models":{"currentModelId":"test-model","availableModels":[]}
+        }})
+    elif method == "session/prompt":
+        sid = params.get("sessionId","")
+        send({"jsonrpc":"2.0","method":"session/update","params":{
+            "sessionId":sid,
+            "update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"OK"}}
+        }})
+        send({"jsonrpc":"2.0","id":rid,"result":{"stopReason":"end_turn"}})
+        sys.exit(0)
+    elif method == "session/cancel":
+        send({"jsonrpc":"2.0","id":rid,"result":{}})
+        sys.exit(0)
+`, python3)
+
+	tmpDir := t.TempDir()
+	fakeBin := tmpDir + "/kimi"
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+	setEmptyKimiHome(t, tmpDir)
+
+	c, err := kimi.New(kimi.Config{Dir: tmpDir})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var captured []agents.SlashCommand
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ctx = agents.WithSlashCommandsHandler(ctx, func(_ context.Context, commands []agents.SlashCommand) error {
+		captured = append([]agents.SlashCommand(nil), commands...)
+		return nil
+	})
+
+	reason, err := c.Stream(ctx, "show slash commands", func(delta string) error { return nil })
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if reason != agents.StopReasonEndTurn {
+		t.Fatalf("StopReason = %q, want %q", reason, agents.StopReasonEndTurn)
+	}
+	if got, want := len(captured), 2; got != want {
+		t.Fatalf("len(captured) = %d, want %d", got, want)
+	}
+	if captured[0].Name != "plan" || captured[1].Name != "compact" {
+		t.Fatalf("captured = %+v, want plan/compact", captured)
+	}
+}
+
+func TestSlashCommandsAfterConfigOptionsInit(t *testing.T) {
+	python3, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not in PATH")
+	}
+
+	fakeScript := fmt.Sprintf(`#!%s
+import json
+import sys
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    method = req.get("method", "")
+    rid = req.get("id")
+
+    if method == "initialize":
+        send({"jsonrpc":"2.0","id":rid,"result":{
+            "protocolVersion":1,
+            "agentInfo":{"name":"kimi-code","title":"Kimi CLI","version":"0.0.1"},
+            "authMethods":[],
+            "modes":{"currentModeId":"default","availableModes":[]},
+            "agentCapabilities":{"loadSession":True}
+        }})
+    elif method == "session/new":
+        send({"jsonrpc":"2.0","method":"session/update","params":{
+            "sessionId":"ses_kimi_config_slash_123",
+            "update":{
+                "sessionUpdate":"available_commands_update",
+                "availableCommands":[
+                    {"name":"plan","description":"Toggle plan mode"},
+                    {"name":"compact","description":"Compact the context"}
+                ]
+            }
+        }})
+        send({"jsonrpc":"2.0","id":rid,"result":{
+            "sessionId":"ses_kimi_config_slash_123",
+            "configOptions":[
+                {
+                    "id":"model",
+                    "category":"model",
+                    "name":"Model",
+                    "type":"select",
+                    "currentValue":"kimi-k2-turbo-preview",
+                    "options":[
+                        {"value":"kimi-k2-turbo-preview","name":"Kimi K2 Turbo Preview"}
+                    ]
+                }
+            ]
+        }})
+`, python3)
+
+	tmpDir := t.TempDir()
+	fakeBin := tmpDir + "/kimi"
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+	setEmptyKimiHome(t, tmpDir)
+
+	c, err := kimi.New(kimi.Config{Dir: tmpDir})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	options, err := c.ConfigOptions(ctx)
+	if err != nil {
+		t.Fatalf("ConfigOptions: %v", err)
+	}
+	if got, want := len(options), 1; got != want {
+		t.Fatalf("len(options) = %d, want %d", got, want)
+	}
+
+	commands, known, err := c.SlashCommands(ctx)
+	if err != nil {
+		t.Fatalf("SlashCommands: %v", err)
+	}
+	if !known {
+		t.Fatal("SlashCommands returned known=false, want true")
+	}
+	if got, want := len(commands), 2; got != want {
+		t.Fatalf("len(commands) = %d, want %d", got, want)
+	}
+	if commands[0].Name != "plan" || commands[1].Name != "compact" {
+		t.Fatalf("commands = %+v, want plan/compact", commands)
+	}
+}
+
 func TestDiscoverModelsWithFakeProcess(t *testing.T) {
 	python3, err := exec.LookPath("python3")
 	if err != nil {

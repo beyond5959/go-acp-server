@@ -167,6 +167,8 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 			if handler, ok := agents.PlanHandlerFromContext(ctx); ok {
 				return handler(ctx, update.PlanEntries)
 			}
+		case agents.ACPUpdateTypeAvailableCommands:
+			return agents.NotifySlashCommands(ctx, update.Commands)
 		}
 		return nil
 	})

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/beyond5959/ngent/internal/agents"
 	opencode "github.com/beyond5959/ngent/internal/agents/opencode"
 )
 
@@ -138,6 +139,192 @@ for line in sys.stdin:
 	}
 	if got := strings.Join(deltas, ""); !strings.Contains(got, "Hello") {
 		t.Errorf("deltas = %q, want to contain %q", got, "Hello")
+	}
+}
+
+func TestStreamCapturesSlashCommandsEmittedBeforePrompt(t *testing.T) {
+	python3, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not in PATH")
+	}
+
+	fakeScript := fmt.Sprintf(`#!%s
+import sys, json
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    method = req.get("method", "")
+    rid = req.get("id")
+    params = req.get("params", {})
+    if method == "initialize":
+        send({"jsonrpc":"2.0","id":rid,"result":{
+            "protocolVersion":1,
+            "agentInfo":{"name":"FakeOpenCode","version":"0.0.1"},
+            "agentCapabilities":{},"authMethods":[]
+        }})
+    elif method == "session/new":
+        send({"jsonrpc":"2.0","method":"session/update","params":{
+            "sessionId":"ses_opencode_slash_123",
+            "update":{
+                "sessionUpdate":"available_commands_update",
+                "availableCommands":[
+                    {"name":"init","description":"Initialize workspace"},
+                    {"name":"review","description":"Review changes"}
+                ]
+            }
+        }})
+        send({"jsonrpc":"2.0","id":rid,"result":{
+            "sessionId":"ses_opencode_slash_123",
+            "models":{"currentModelId":"fake/model","availableModels":[]}
+        }})
+    elif method == "session/prompt":
+        sid = params.get("sessionId","")
+        send({"jsonrpc":"2.0","method":"session/update","params":{
+            "sessionId":sid,
+            "update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"OK"}}
+        }})
+        send({"jsonrpc":"2.0","id":rid,"result":{"stopReason":"end_turn","usage":{}}})
+        sys.exit(0)
+    elif method == "session/cancel":
+        send({"jsonrpc":"2.0","id":rid,"result":{}})
+        sys.exit(0)
+`, python3)
+
+	tmpDir := t.TempDir()
+	fakeBin := tmpDir + "/opencode"
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+
+	c, err := opencode.New(opencode.Config{Dir: tmpDir})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var captured []agents.SlashCommand
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ctx = agents.WithSlashCommandsHandler(ctx, func(_ context.Context, commands []agents.SlashCommand) error {
+		captured = append([]agents.SlashCommand(nil), commands...)
+		return nil
+	})
+
+	reason, err := c.Stream(ctx, "show slash commands", func(string) error { return nil })
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if reason != agents.StopReasonEndTurn {
+		t.Fatalf("StopReason = %q, want %q", reason, agents.StopReasonEndTurn)
+	}
+	if got, want := len(captured), 2; got != want {
+		t.Fatalf("len(captured) = %d, want %d", got, want)
+	}
+	if captured[0].Name != "init" || captured[1].Name != "review" {
+		t.Fatalf("captured = %+v, want init/review", captured)
+	}
+}
+
+func TestSlashCommandsAfterConfigOptionsInit(t *testing.T) {
+	python3, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not in PATH")
+	}
+
+	fakeScript := fmt.Sprintf(`#!%s
+import json
+import sys
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    method = req.get("method", "")
+    rid = req.get("id")
+
+    if method == "initialize":
+        send({"jsonrpc":"2.0","id":rid,"result":{
+            "protocolVersion":1,
+            "agentInfo":{"name":"FakeOpenCode","version":"0.0.1"},
+            "agentCapabilities":{},"authMethods":[]
+        }})
+    elif method == "session/new":
+        send({"jsonrpc":"2.0","method":"session/update","params":{
+            "sessionId":"ses_opencode_config_slash_123",
+            "update":{
+                "sessionUpdate":"available_commands_update",
+                "availableCommands":[
+                    {"name":"init","description":"create/update AGENTS.md"},
+                    {"name":"compact","description":"compact the session"}
+                ]
+            }
+        }})
+        send({"jsonrpc":"2.0","id":rid,"result":{
+            "sessionId":"ses_opencode_config_slash_123",
+            "configOptions":[
+                {
+                    "id":"model",
+                    "category":"model",
+                    "name":"Model",
+                    "type":"select",
+                    "currentValue":"openai/gpt-5",
+                    "options":[
+                        {"value":"openai/gpt-5","name":"GPT-5"}
+                    ]
+                }
+            ]
+        }})
+`, python3)
+
+	tmpDir := t.TempDir()
+	fakeBin := tmpDir + "/opencode"
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+
+	c, err := opencode.New(opencode.Config{Dir: tmpDir})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	options, err := c.ConfigOptions(ctx)
+	if err != nil {
+		t.Fatalf("ConfigOptions: %v", err)
+	}
+	if got, want := len(options), 1; got != want {
+		t.Fatalf("len(options) = %d, want %d", got, want)
+	}
+
+	commands, known, err := c.SlashCommands(ctx)
+	if err != nil {
+		t.Fatalf("SlashCommands: %v", err)
+	}
+	if !known {
+		t.Fatal("SlashCommands returned known=false, want true")
+	}
+	if got, want := len(commands), 2; got != want {
+		t.Fatalf("len(commands) = %d, want %d", got, want)
+	}
+	if commands[0].Name != "init" || commands[1].Name != "compact" {
+		t.Fatalf("commands = %+v, want init/compact", commands)
 	}
 }
 

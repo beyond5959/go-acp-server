@@ -151,3 +151,47 @@ func TestParseACPUpdateIgnoresNonTextToolCallPayload(t *testing.T) {
 		t.Fatalf("update.Delta = %q, want empty", update.Delta)
 	}
 }
+
+func TestParseACPUpdateAvailableCommands(t *testing.T) {
+	t.Parallel()
+
+	raw := json.RawMessage(`{
+		"update": {
+			"sessionUpdate": "available_commands_update",
+			"availableCommands": [
+				{
+					"name": "plan",
+					"description": " Toggle plan mode ",
+					"input": {
+						"placeholder": "on|off|view|clear"
+					}
+				},
+				{
+					"name": "clear",
+					"description": "Clear the context"
+				},
+				{
+					"name": "plan",
+					"description": "duplicate should be ignored"
+				}
+			]
+		}
+	}`)
+
+	update, err := ParseACPUpdate(raw)
+	if err != nil {
+		t.Fatalf("ParseACPUpdate() error = %v", err)
+	}
+	if update.Type != ACPUpdateTypeAvailableCommands {
+		t.Fatalf("update.Type = %q, want %q", update.Type, ACPUpdateTypeAvailableCommands)
+	}
+	if got, want := len(update.Commands), 2; got != want {
+		t.Fatalf("len(update.Commands) = %d, want %d", got, want)
+	}
+	if got := update.Commands[0]; got.Name != "plan" || got.Description != "Toggle plan mode" || got.InputHint != "on|off|view|clear" {
+		t.Fatalf("first command = %+v, want normalized plan command", got)
+	}
+	if got := update.Commands[1]; got.Name != "clear" || got.Description != "Clear the context" {
+		t.Fatalf("second command = %+v, want clear command", got)
+	}
+}

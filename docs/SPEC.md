@@ -446,3 +446,65 @@ and upstream ACP schema:
   - highlights the currently selected `sessionId`.
   - offers `New session` to clear `sessionId`.
   - refreshes after turns complete so newly created/bound sessions appear in the list.
+
+## 16. ACP Slash Commands Cache and Composer Picker (2026-03-13)
+
+### 16.1 Backend Parsing and Persistence
+
+- Extend shared ACP `session/update` parsing to normalize `available_commands_update` into:
+  - `name`
+  - `description`
+  - `inputHint`
+- Add a shared per-turn callback for slash-command snapshots so all built-in ACP providers reuse the same forwarding path.
+- Providers must install their `session/update` observer before `session/new` or `session/load` completes, because real ACP agents can emit `available_commands_update` before the first prompt starts.
+- For providers that also replay transcript chunks during `session/load`, pre-prompt `agent_message_chunk` / `user_message_chunk` updates must be ignored for live output while capability snapshots such as `available_commands_update` are still accepted.
+- Embedded runtimes that do not replay already-emitted notifications to late subscribers must additionally keep a provider-local slash-command cache fed by a runtime-lifecycle update monitor, then replay that cached snapshot into the active turn before `session/prompt`; otherwise first-turn and pre-configured-session slash commands can still be lost even if prompt-time streaming is correct.
+- Stdio providers using `acpstdio.Conn` must register `SetNotificationHandler` before `session/new` / `session/load`; that transport does not buffer notifications for later delivery, so early capability snapshots are otherwise dropped on the floor.
+- Kimi, Qwen, OpenCode, and Gemini implement that ACP notification rule through one shared handler builder that:
+  - always forwards pre-prompt `available_commands_update`.
+  - suppresses pre-prompt message/plan replay.
+  - forwards message chunks and plan updates only after the provider marks prompt start.
+- Direct ACP providers that also expose config-session probes must reuse the same slash-command snapshot source outside streaming turns:
+  - keep a provider-local `SlashCommandsCache`.
+  - wrap both `Stream()` and `runConfigSession()` contexts so every observed `available_commands_update` refreshes that cache before the normal turn-scoped handler runs.
+  - implement `SlashCommandsProvider` by first reading the provider-local cache and then, if still unknown, running a best-effort config session to populate it.
+- Persist the latest observed slash-command snapshot in SQLite table `agent_slash_commands`:
+  - `agent_id TEXT PRIMARY KEY`
+  - `commands_json TEXT NOT NULL`
+  - `updated_at TEXT NOT NULL`
+- Persistence semantics:
+  - treat each `available_commands_update` as a full replacement snapshot for that agent.
+  - overwrite the existing row every time a new snapshot arrives.
+
+### 16.2 HTTP API
+
+- Add `GET /v1/threads/{threadId}/slash-commands`.
+- Ownership model matches other thread-scoped endpoints.
+- Response shape:
+  - `threadId`
+  - `agentId`
+  - `commands`
+- Read semantics:
+  - resolve owned thread.
+  - read cached slash commands by `thread.agent_id`.
+  - if the active provider supports exposing a live slash-command snapshot and sqlite does not have one yet, initialization flows such as `GET /v1/threads/{threadId}/config-options` may backfill sqlite before the composer asks for `/slash-commands`; Codex uses this path so a fresh thread can surface slash commands before the first turn.
+  - if `GET /v1/threads/{threadId}/slash-commands` still misses sqlite, the handler may probe the live provider through `SlashCommandsProvider` and persist the result before responding; this removes races between thread-open initialization and the user's first `/`.
+  - return empty list when no snapshot has been observed yet.
+
+### 16.3 Web UI
+
+- Keep slash-command cache client-side by agent id to avoid repeated fetches across same-agent threads.
+- Fetch slash commands on demand:
+  - when the user types `/` at the start of the composer, load cached slash commands through `GET /v1/threads/{threadId}/slash-commands`.
+  - the first bare `/` in each slash interaction must force a thread-scoped refresh even if the same agent already has an in-memory browser cache, so the UI always re-checks sqlite at slash-entry time.
+  - refresh the cache again after turn completion/error/disconnect so newly streamed snapshots become visible in the composer.
+- Composer behavior:
+  - only show the slash-command picker when the textarea value starts with `/`.
+  - typing `/` in an otherwise empty input opens the full list.
+  - after the slash-entry refresh finishes, continue filtering from the refreshed in-memory snapshot until the user leaves slash mode.
+  - if the fetched or cached slash-command snapshot is empty, keep `/` as ordinary message text and leave the picker hidden.
+  - additional text after the first `/` filters by command name and description.
+  - `ArrowUp` / `ArrowDown` move selection.
+  - `Enter` inserts the highlighted command.
+  - `Escape` closes the picker.
+  - clicking a command inserts `/<name>` and appends a trailing space when the command advertises an input hint.

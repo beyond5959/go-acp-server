@@ -1,5 +1,7 @@
-github.com/beyond5959/acp-adapter v0.3.0 h1:g9LHARs5jHgtPOP9lEfWQYYlbwE9NHmz4QfU8k6jldo=
-github.com/beyond5959/acp-adapter v0.3.0/go.mod h1:cr4I+9+la75oUge+Pr97KlcdQrkwIG6VwWHbc9ALxSE=
+github.com/beyond5959/acp-adapter v0.2.1-0.20260313090730-8c07c32144c3 h1:PUh2AuLRbTG3lgGRmrAIOBp9Juely/C4Ydp0GjheZVQ=
+github.com/beyond5959/acp-adapter v0.2.1-0.20260313090730-8c07c32144c3/go.mod h1:cr4I+9+la75oUge+Pr97KlcdQrkwIG6VwWHbc9ALxSE=
+github.com/beyond5959/acp-adapter v0.3.1-0.20260313104211-08e49ba1c367 h1:LOT0AfexFf14hiZlForYTkDbXBAWIu14nqXFP2Lya2Q=
+github.com/beyond5959/acp-adapter v0.3.1-0.20260313104211-08e49ba1c367/go.mod h1:cr4I+9+la75oUge+Pr97KlcdQrkwIG6VwWHbc9ALxSE=
 github.com/dustin/go-humanize v1.0.0 h1:VSnTsYCnlFHaM2/igO1h6X3HA71jcobQuxemgkq4zYo=
 github.com/dustin/go-humanize v1.0.0/go.mod h1:HtrtbFcZ19U5GC7JDqmcUSB87Iq5E25KnS6fMYU6eOk=
 github.com/google/go-cmp v0.5.3 h1:x95R7cp+rSeeqAMI2knLtQ0DKlaBhv2NrtrOvafPHRo=

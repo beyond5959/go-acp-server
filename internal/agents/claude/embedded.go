@@ -454,6 +454,11 @@ func (c *Client) handleUpdate(
 				c.sendSessionCancel(runtime, c.currentSessionID())
 				return err
 			}
+		case agents.ACPUpdateTypeAvailableCommands:
+			if err := agents.NotifySlashCommands(ctx, update.Commands); err != nil {
+				c.sendSessionCancel(runtime, c.currentSessionID())
+				return err
+			}
 		}
 		return nil
 	}
