@@ -942,9 +942,11 @@ Use this template for new decisions.
 - Decision:
   - treat `(threadId, sessionId)` as the client-side chat render scope.
   - when the active thread's selected session changes outside an active turn, rebuild the chat area and reload history for that scope.
+  - when the selected scope changes to one that is still streaming in the background, rebuild the chat area unless that same scope's streaming bubble is already mounted in the current DOM.
   - filter locally persisted turns by their `session_bound` event so the center chat panel renders only turns recorded for the selected session; an empty `sessionId` shows only unbound turns.
 - Consequences:
   - clicking a session in the sidebar replays that session's ngent-recorded turns instead of keeping the previously rendered session on screen.
+  - revisiting a background-streaming session restores its live typing/loading state from scope-local client buffers instead of dropping back to the persisted history snapshot.
   - session changes reported during a live turn do not wipe the streaming bubble; the full refresh is deferred until the turn finishes.
   - transcript content that predates ngent participation is still not imported from the provider and remains covered by KI-021.
 - Alternatives considered:

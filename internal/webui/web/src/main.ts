@@ -18,7 +18,7 @@ import type {
   SessionTranscriptMessage,
 } from './types.ts'
 import type { TurnStream, PermissionRequiredPayload, PlanUpdatePayload, SessionBoundPayload } from './sse.ts'
-import { escHtml, formatRelativeTime, formatTimestamp, generateUUID } from './utils.ts'
+import { copyText, escHtml, formatRelativeTime, formatTimestamp, generateUUID } from './utils.ts'
 
 // ── Theme ─────────────────────────────────────────────────────────────────
 
@@ -49,6 +49,17 @@ const iconMenu = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" ar
 
 const iconCheck = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
   <path d="M3.5 8.5l3 3 6-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`
+
+const iconCopy = `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+  <rect x="6" y="3" width="7" height="10" rx="1.5" stroke="currentColor" stroke-width="1.4"/>
+  <path d="M4.5 11H4A1.5 1.5 0 0 1 2.5 9.5V4A1.5 1.5 0 0 1 4 2.5h5.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+</svg>`
+
+const iconInfo = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+  <circle cx="8" cy="8" r="6.25" stroke="currentColor" stroke-width="1.5"/>
+  <path d="M8 7v3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  <circle cx="8" cy="4.5" r="0.8" fill="currentColor"/>
 </svg>`
 
 const iconRefresh = `<svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
@@ -589,6 +600,10 @@ function getActiveChatStreamState(): StreamState | null {
   return getScopeStreamState(activeChatScopeKey())
 }
 
+function hasMountedActiveStream(scopeKey: string): boolean {
+  return !!scopeKey && activeStreamMsgId !== null && activeStreamScopeKey === scopeKey
+}
+
 function hasThreadStream(threadId: string | null): boolean {
   if (!threadId) return false
   return Object.values(store.get().streamStates).some(streamState => streamState.threadId === threadId)
@@ -910,11 +925,8 @@ async function switchThreadSession(thread: Thread, nextSessionID: string): Promi
   }
 }
 
-function renderSessionItem(item: SessionInfo, active: boolean): string {
+function renderSessionItem(item: SessionInfo, active: boolean, loading: boolean): string {
   const title = item.title?.trim() || item.sessionId
-  const cwd = item.cwd?.trim() || ''
-  const updatedAt = item.updatedAt?.trim() || ''
-  const relTime = updatedAt ? formatRelativeTime(updatedAt) : ''
   return `
     <button
       class="session-item ${active ? 'session-item--active' : ''}"
@@ -922,16 +934,15 @@ function renderSessionItem(item: SessionInfo, active: boolean): string {
       data-session-id="${escHtml(item.sessionId)}"
       aria-pressed="${active ? 'true' : 'false'}"
     >
-      <div class="session-item-title">${escHtml(title)}</div>
-      <div class="session-item-meta">
-        <span class="session-item-path">${escHtml(cwd || item.sessionId)}</span>
-        <span class="session-item-time">${escHtml(relTime)}</span>
+      <div class="session-item-title-row">
+        ${renderSessionStatusIndicator(loading)}
+        <div class="session-item-title">${escHtml(title)}</div>
       </div>
     </button>`
 }
 
 function renderSessionPanel(): string {
-  const { activeThreadId, threads } = store.get()
+  const { activeThreadId, threads, streamStates } = store.get()
   const thread = activeThreadId ? threads.find(item => item.threadId === activeThreadId) : null
   if (!thread) {
     return `
@@ -952,6 +963,11 @@ function renderSessionPanel(): string {
   if (selectedSessionID && !knownIDs.has(selectedSessionID)) {
     sessions.unshift({ sessionId: selectedSessionID, title: selectedSessionID })
   }
+  const loadingSessionIDs = new Set(
+    Object.values(streamStates)
+      .filter(streamState => streamState.threadId === thread.threadId && !!streamState.sessionId)
+      .map(streamState => streamState.sessionId),
+  )
 
   let bodyHTML = ''
   if (state.loading && !sessions.length) {
@@ -962,7 +978,11 @@ function renderSessionPanel(): string {
     bodyHTML = `<div class="session-panel-empty">This agent does not expose ACP session history.</div>`
   } else {
     const itemsHTML = sessions.length
-      ? sessions.map(item => renderSessionItem(item, item.sessionId === selectedSessionID)).join('')
+      ? sessions.map(item => renderSessionItem(
+          item,
+          item.sessionId === selectedSessionID,
+          loadingSessionIDs.has(item.sessionId),
+        )).join('')
       : `<div class="session-panel-empty">No previous sessions for this working directory.</div>`
     const showMoreHTML = state.nextCursor
       ? `<button class="btn btn-ghost session-show-more-btn" type="button" ${state.loadingMore || disabled ? 'disabled' : ''}>
@@ -1388,6 +1408,19 @@ function renderThreadStatusIndicator(status: ThreadActivityIndicator): string {
       </span>`
   }
   return ''
+}
+
+function renderSessionStatusIndicator(loading: boolean): string {
+  if (!loading) return ''
+  return `
+      <span
+        class="thread-status-indicator session-status-indicator thread-status-indicator--loading"
+        role="status"
+        aria-label="Session is working"
+        title="Session is working"
+      >
+        <span class="thread-status-spinner" aria-hidden="true"></span>
+      </span>`
 }
 
 function renderThreadItem(
@@ -2002,6 +2035,50 @@ function renderChatEmpty(): string {
     </div>`
 }
 
+function renderSessionInfoField(label: string, value: string, copyLabel: string): string {
+  return `
+    <div class="session-info-field">
+      <div class="session-info-label">${label}</div>
+      <div class="session-info-row">
+        <div class="session-info-value" title="${escHtml(value)}">${escHtml(value)}</div>
+        <button
+          class="btn btn-icon session-info-copy-btn"
+          type="button"
+          data-copy-value="${escHtml(encodeURIComponent(value))}"
+          aria-label="${copyLabel}"
+          title="${copyLabel}"
+        >
+          ${iconCopy}
+        </button>
+      </div>
+    </div>`
+}
+
+function renderSessionInfoPopover(thread: Thread): string {
+  const sessionID = threadSessionID(thread)
+  if (!sessionID) return ''
+
+  return `
+    <div class="session-info" id="session-info">
+      <button
+        class="btn btn-icon session-info-trigger"
+        id="session-info-trigger"
+        type="button"
+        aria-label="Session info"
+        aria-expanded="false"
+        aria-controls="session-info-panel"
+        title="Session info"
+      >
+        ${iconInfo}
+      </button>
+      <div class="session-info-popover" id="session-info-panel" role="dialog" aria-label="Session Info" hidden>
+        <div class="session-info-heading">Session Info</div>
+        ${renderSessionInfoField('Session ID', sessionID, 'Copy session ID')}
+        ${renderSessionInfoField('Working Directory', thread.cwd, 'Copy working directory')}
+      </div>
+    </div>`
+}
+
 function renderChatThread(t: Thread): string {
   const titleLabel   = threadTitle(t)
   const createdLabel = t.createdAt ? `Created ${formatTimestamp(t.createdAt)}` : ''
@@ -2031,13 +2108,17 @@ function renderChatThread(t: Thread): string {
     <div class="chat-header">
       <div class="chat-header-left">
         <button class="btn btn-icon mobile-menu-btn" aria-label="Open menu">${iconMenu}</button>
-        <h2 class="chat-title" title="${escHtml(titleLabel)}">${escHtml(titleLabel)}</h2>
-        <span class="badge badge--agent">${escHtml(t.agent ?? '')}</span>
-        <span class="chat-cwd" title="${escHtml(t.cwd)}">${escHtml(t.cwd)}</span>
+        <div class="chat-header-main">
+          <div class="chat-header-title-row">
+            <h2 class="chat-title" title="${escHtml(titleLabel)}">${escHtml(titleLabel)}</h2>
+            <span class="badge badge--agent">${escHtml(t.agent ?? '')}</span>
+          </div>
+        </div>
       </div>
       <div class="chat-header-right">
         <button class="btn btn-sm btn-danger" id="cancel-btn" style="display:none" aria-label="Cancel turn">Cancel</button>
         <span class="chat-header-meta">${escHtml(createdLabel)}</span>
+        ${renderSessionInfoPopover(t)}
       </div>
     </div>
 
@@ -2115,6 +2196,7 @@ function updateChatArea(): void {
   renderPendingPermissionCards(scopeKey)
 
   updateInputState()
+  bindSessionInfoPopover()
   bindInputResize()
   bindSendHandler()
   bindCancelHandler()
@@ -2320,6 +2402,59 @@ function bindThreadConfigSwitches(thread: Thread): void {
     }
     triggerEl.addEventListener('keydown', onEsc)
     menuEl.addEventListener('keydown', onEsc)
+  })
+}
+
+function closeSessionInfoPopover(): void {
+  const root = document.getElementById('session-info')
+  const trigger = document.getElementById('session-info-trigger') as HTMLButtonElement | null
+  const panel = document.getElementById('session-info-panel') as HTMLDivElement | null
+  if (!root || !trigger || !panel) return
+
+  root.classList.remove('session-info--open')
+  trigger.setAttribute('aria-expanded', 'false')
+  panel.hidden = true
+}
+
+function bindSessionInfoPopover(): void {
+  const root = document.getElementById('session-info')
+  const trigger = document.getElementById('session-info-trigger') as HTMLButtonElement | null
+  const panel = document.getElementById('session-info-panel') as HTMLDivElement | null
+  if (!root || !trigger || !panel) return
+
+  const setOpen = (open: boolean): void => {
+    root.classList.toggle('session-info--open', open)
+    trigger.setAttribute('aria-expanded', open ? 'true' : 'false')
+    panel.hidden = !open
+  }
+
+  trigger.addEventListener('click', e => {
+    e.preventDefault()
+    e.stopPropagation()
+    setOpen(panel.hidden)
+  })
+
+  panel.addEventListener('click', e => e.stopPropagation())
+
+  root.querySelectorAll<HTMLButtonElement>('.session-info-copy-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.preventDefault()
+      e.stopPropagation()
+
+      const encoded = btn.dataset.copyValue ?? ''
+      const value = encoded ? decodeURIComponent(encoded) : ''
+      if (!value) return
+
+      void copyText(value).then(copied => {
+        if (!copied) return
+        btn.innerHTML = iconCheck
+        btn.classList.add('session-info-copy-btn--copied')
+        setTimeout(() => {
+          btn.innerHTML = iconCopy
+          btn.classList.remove('session-info-copy-btn--copied')
+        }, 1_500)
+      })
+    })
   })
 }
 
@@ -2671,7 +2806,14 @@ function bindGlobalShortcuts(): void {
         updateThreadList()
         return
       }
-      // (3) clear search if focused
+      // (3) close session info popover if open
+      const sessionInfoPanel = document.getElementById('session-info-panel')
+      if (sessionInfoPanel && !sessionInfoPanel.hidden) {
+        e.preventDefault()
+        closeSessionInfoPopover()
+        return
+      }
+      // (4) clear search if focused
       const searchEl = document.getElementById('search-input') as HTMLInputElement | null
       if (searchEl && document.activeElement === searchEl) {
         searchEl.value = ''
@@ -2679,7 +2821,7 @@ function bindGlobalShortcuts(): void {
         searchEl.blur()
         return
       }
-      // (4) cancel active stream
+      // (5) cancel active stream
       const streamState = getActiveChatStreamState()
       if (streamState?.turnId) {
         void handleCancel()
@@ -2700,8 +2842,12 @@ async function init(): Promise<void> {
   document.getElementById('thread-list')?.addEventListener('scroll', repositionThreadActionLayer, { passive: true })
   window.addEventListener('resize', repositionThreadActionLayer)
   document.addEventListener('click', e => {
-    if (!openThreadActionMenuId) return
     const target = e.target as HTMLElement | null
+    if (!target?.closest('.session-info')) {
+      closeSessionInfoPopover()
+    }
+
+    if (!openThreadActionMenuId) return
     if (target?.closest('.thread-item-menu-trigger') || target?.closest('.thread-action-popover')) return
     resetThreadActionMenuState()
     updateThreadList()
@@ -2713,11 +2859,13 @@ async function init(): Promise<void> {
     const threadChanged = activeThreadId !== lastRenderThreadId
     const chatScopeKey = threadChatScopeKey(activeThread)
     const chatScopeChanged = chatScopeKey !== lastRenderChatScopeKey
+    const chatScopeStreamState = getScopeStreamState(chatScopeKey)
+    const shouldRefreshForScopeChange = chatScopeChanged && (!chatScopeStreamState || !hasMountedActiveStream(chatScopeKey))
 
     updateThreadList()
     updateSessionPanel()
 
-    if (threadChanged || (chatScopeChanged && !getScopeStreamState(chatScopeKey))) {
+    if (threadChanged || shouldRefreshForScopeChange) {
       lastRenderThreadId = activeThreadId
       lastRenderChatScopeKey = chatScopeKey
       updateChatArea()

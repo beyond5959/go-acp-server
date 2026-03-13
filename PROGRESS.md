@@ -526,8 +526,6 @@ This file is the source of milestone progress, validation commands, and next act
     - thread model list now loads successfully from ACP `configOptions`.
     - model switching calls `POST /v1/threads/{threadId}/config-options` and persists selected model.
     - no frontend console errors during switch flow.
-  - executed validation:
-    - pass: `go test ./...`
 
 - `Post-F9` codex model-discovery stability improvement:
   - replaced per-request codex model discovery runtime startup/shutdown with a shared discovery client in `internal/agents/codex/models.go`.
@@ -617,22 +615,31 @@ This file is the source of milestone progress, validation commands, and next act
   - the active chat view now treats `(threadId, sessionId)` as its render scope instead of refreshing only on `threadId` changes.
   - `loadHistory()` now filters locally persisted turns by each turn's `session_bound` event so the center chat panel replays the selected session's ngent-recorded turns instead of leaving the previous session on screen.
   - session changes reported mid-stream by `session_bound` defer the full chat refresh until the active turn completes, so the live streaming bubble is not destroyed.
-  - executed validation:
-    - pass: `cd internal/webui/web && npm run build`
-    - pass: `go test ./...`
 
 - 2026-03-11: fixed Web UI history replay for legacy session threads whose `/history` data lacks per-turn `session_bound` events.
   - session-scoped history filtering now falls back to showing all turns when a thread has no annotated session markers at all, instead of rendering an empty chat pane despite non-empty `/history`.
   - when a thread has exactly one annotated session, the selected session view also keeps older unannotated turns so pre-annotation history is still visible for that same session.
-  - executed validation:
-    - pass: `cd internal/webui/web && npm run build`
-    - pass: `go test ./...`
 
 - 2026-03-13: allowed concurrent turns across different sessions on the same thread.
   - changed the runtime turn controller from thread-wide locking to `(threadId, sessionId)` scoping, while keeping delete/compact/shared thread mutations guarded at whole-thread scope.
   - changed cached provider reuse from thread scope to session/config scope so switching sessions mid-stream no longer reuses the wrong provider instance.
   - updated the Web UI to key cached messages, live stream state, and permission cards by `(threadId, sessionId)`, which keeps background session output from overwriting the currently visible session.
   - session-only `PATCH /v1/threads/{threadId}` updates now succeed while another session on the same thread is active, so the right-side session switcher can move to a new session before starting the next turn.
+
+- 2026-03-13: fixed Web UI session switching while another session on the same thread is still streaming.
+  - the chat subscribe loop now forces a full chat-area rebuild when the selected `(threadId, sessionId)` changes to a scope with an active stream whose bubble is not mounted in the current DOM.
+  - returning to a background-streaming session now restores the loading/typing bubble, live partial text, and pending permission UI instead of rendering only the persisted message list.
+
+- 2026-03-13: moved working-directory details into a chat-header Session Info popover in the Web UI.
+  - removed the visible working-directory line from the chat header and added an info icon that appears only when the selected session already has a persisted `sessionId`.
+  - clicking the icon now opens a `Session Info` popover showing `Session ID` and `Working Directory`, each with a dedicated copy action; clicking outside or pressing `Esc` closes it.
+  - executed validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
+- 2026-03-13: added per-session loading indicators to the Web UI session sidebar.
+  - the right-side `Sessions` list now shows the same spinner used by the left agent list when a specific `sessionId` on the active thread is still streaming.
+  - session items derive their loading state from scope-local `streamStates`, so background activity is shown only on the matching session row.
   - executed validation:
     - pass: `cd internal/webui/web && npm run build`
     - pass: `go test ./...`

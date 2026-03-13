@@ -567,7 +567,6 @@ body {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
   padding: 11px 12px;
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
@@ -586,8 +585,17 @@ body {
   background: color-mix(in srgb, var(--accent) 7%, var(--bg));
 }
 
-.session-item-title {
+.session-item-title-row {
   width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.session-item-title {
+  flex: 1;
+  min-width: 0;
   font-size: var(--font-size-md);
   font-weight: 600;
   line-height: 1.35;
@@ -597,27 +605,14 @@ body {
   text-overflow: ellipsis;
 }
 
-.session-item-meta {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: var(--font-size-xs);
-  color: var(--text-3);
+.session-status-indicator {
+  width: 16px;
+  height: 16px;
 }
 
-.session-item-path {
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-family: var(--font-mono);
-}
-
-.session-item-time {
-  flex-shrink: 0;
+.session-status-indicator .thread-status-spinner {
+  width: 12px;
+  height: 12px;
 }
 
 .session-new-btn {
@@ -657,7 +652,7 @@ body {
 
 /* Chat header */
 .chat-header {
-  height: var(--header-h);
+  min-height: var(--header-h);
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
@@ -671,28 +666,33 @@ body {
 .chat-header-left {
   display: flex;
   align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.chat-header-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+
+.chat-header-title-row {
+  display: flex;
+  align-items: center;
   gap: 8px;
   min-width: 0;
 }
 
 .chat-title {
+  min-width: 0;
   font-size: var(--font-size-lg);
   font-weight: 600;
   color: var(--text-1);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 200px;
-}
-
-.chat-cwd {
-  font-size: var(--font-size-sm);
-  color: var(--text-3);
-  font-family: var(--font-mono);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 280px;
 }
 
 .chat-header-right {
@@ -700,6 +700,84 @@ body {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+  position: relative;
+}
+
+.session-info {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.session-info-trigger {
+  color: var(--text-3);
+}
+
+.session-info-trigger:hover:not(:disabled),
+.session-info--open .session-info-trigger {
+  color: var(--text-1);
+}
+
+.session-info-popover {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: min(360px, calc(100vw - 24px));
+  padding: 14px 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg);
+  box-shadow: var(--shadow-md);
+  z-index: 60;
+}
+
+.session-info-heading {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  color: var(--text-1);
+  margin-bottom: 14px;
+}
+
+.session-info-field + .session-info-field {
+  margin-top: 14px;
+}
+
+.session-info-label {
+  margin-bottom: 6px;
+  font-size: var(--font-size-sm);
+  color: var(--text-3);
+}
+
+.session-info-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.session-info-value {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+  word-break: break-all;
+}
+
+.session-info-copy-btn {
+  flex-shrink: 0;
+  color: var(--text-3);
+}
+
+.session-info-copy-btn:hover:not(:disabled) {
+  color: var(--text-1);
+}
+
+.session-info-copy-btn--copied {
+  color: var(--ok);
+  background: var(--bg-3);
 }
 
 .thread-model-switch {
@@ -1593,10 +1671,6 @@ button:disabled, .btn:disabled {
     display: flex !important;
   }
 
-  .chat-cwd {
-    display: none;
-  }
-
   .thread-model-trigger {
     width: 100%;
   }
@@ -1623,6 +1697,10 @@ button:disabled, .btn:disabled {
 
   .chat-header-meta {
     display: none;
+  }
+
+  .session-info-popover {
+    width: min(320px, calc(100vw - 16px));
   }
 }
 
