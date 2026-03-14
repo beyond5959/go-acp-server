@@ -762,3 +762,28 @@ This file is the source of milestone progress, validation commands, and next act
   - executed validation:
     - pass: `go test ./internal/agents/kimi ./internal/agents/opencode ./internal/agents/gemini ./internal/agents/qwen -run 'Test(StreamCapturesSlashCommandsEmittedBeforePrompt|SlashCommandsAfterConfigOptionsInit|WithFakeProcess|WithFakeProcessModelID)$' -count=1`
     - pass: `go test ./...`
+
+- 2026-03-14: fixed real Kimi/Qwen ACP permission requests that carried structured `toolCall` previews instead of flat strings.
+  - root cause: the direct ACP provider adapters decoded `session/request_permission.toolCall` as `map[string]string`, but real Kimi 1.22.0 sends rich payloads with `content` arrays and diff metadata, so JSON decode failed and ngent immediately returned a fail-closed reject without emitting `permission_required`.
+  - updated Kimi and Qwen to use the shared parser, added regression coverage for real-style rich payloads, and normalized `agent_thought_chunk` as the same hidden-thought update family used by the rest of ngent's ACP parser.
+  - updated the Web UI streaming bubble to show `Thinking...` immediately before the first visible delta so long Kimi reasoning phases no longer look like a dead blank bubble.
+  - executed validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
+- 2026-03-14: fixed real OpenCode ACP permission requests so Web UI permission cards appear instead of silently dropping the tool call.
+  - root cause: after the shared ACP CLI refactor, the OpenCode adapter never installed a `HandlePermissionRequest` hook, so any real `session/request_permission` call still hit the default `method not found` path. In addition, OpenCode can encode file-like permissions via `toolCall.locations[]` or `toolCall.rawInput.filepath` with generic titles such as `external_directory`.
+  - extended the shared ACP permission parser to extract path-like previews from `locations[]` and `rawInput`, classify directory/path requests as `file`, and fall back to the resolved path when the provider title is too generic for the Web UI.
+  - wired OpenCode into the same permission bridge as Kimi/Qwen and added regression coverage for real-style OpenCode `external_directory` payloads.
+  - executed validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
+- 2026-03-14: converged direct ACP structured-permission bridging into one shared helper in `internal/agents/acpcli`.
+  - Kimi, Qwen, and OpenCode previously carried identical provider-local `handlePermissionRequest` implementations even after sharing the same normalized permission-request parser.
+  - moved that common bridge logic into `acpcli.StructuredPermissionRequestHandler(timeout)` and reduced each provider to a one-line hook binding plus its local timeout constant.
+  - kept Gemini unchanged because it still uses a different provider-specific permission payload/response shape rather than the shared normalized `PermissionRequestPayload`.
+  - executed validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+

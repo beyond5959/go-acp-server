@@ -17,6 +17,8 @@ import (
 
 const defaultPermissionTimeout = 15 * time.Second
 
+var handlePermissionRequest = acpcli.StructuredPermissionRequestHandler(defaultPermissionTimeout)
+
 // Config configures the Kimi CLI ACP stdio provider.
 type Config = agentutil.Config
 
@@ -220,64 +222,6 @@ func cancelWithNotify(conn *acpstdio.Conn, sessionID string) {
 		return
 	}
 	conn.Notify("session/cancel", map[string]any{"sessionId": strings.TrimSpace(sessionID)})
-}
-
-func handlePermissionRequest(
-	ctx context.Context,
-	params json.RawMessage,
-	handler agents.PermissionHandler,
-	hasHandler bool,
-) (json.RawMessage, error) {
-	var req struct {
-		SessionID string                    `json:"sessionId"`
-		ToolCall  map[string]string         `json:"toolCall"`
-		Options   []acpcli.PermissionOption `json:"options"`
-	}
-	if err := json.Unmarshal(params, &req); err != nil {
-		return buildDeclinedPermissionResponse(req.Options)
-	}
-	if !hasHandler {
-		return buildDeclinedPermissionResponse(req.Options)
-	}
-
-	permCtx, cancel := context.WithTimeout(ctx, defaultPermissionTimeout)
-	defer cancel()
-
-	resp, err := handler(permCtx, agents.PermissionRequest{
-		Approval: strings.TrimSpace(req.ToolCall["title"]),
-		Command:  strings.TrimSpace(req.ToolCall["kind"]),
-		RawParams: map[string]any{
-			"sessionId": strings.TrimSpace(req.SessionID),
-		},
-	})
-	if err != nil {
-		return buildDeclinedPermissionResponse(req.Options)
-	}
-
-	switch resp.Outcome {
-	case agents.PermissionOutcomeApproved:
-		return buildApprovedPermissionResponse(req.Options)
-	case agents.PermissionOutcomeCancelled:
-		return acpcli.BuildCancelledPermissionResponse()
-	default:
-		return buildDeclinedPermissionResponse(req.Options)
-	}
-}
-
-func buildApprovedPermissionResponse(options []acpcli.PermissionOption) (json.RawMessage, error) {
-	optionID := acpcli.PickPermissionOptionID(options, "allow_once", "allow_always")
-	if optionID == "" {
-		return buildDeclinedPermissionResponse(options)
-	}
-	return acpcli.BuildSelectedPermissionResponse(optionID)
-}
-
-func buildDeclinedPermissionResponse(options []acpcli.PermissionOption) (json.RawMessage, error) {
-	optionID := acpcli.PickPermissionOptionID(options, "reject_once", "reject_always")
-	if optionID == "" {
-		return acpcli.BuildCancelledPermissionResponse()
-	}
-	return acpcli.BuildSelectedPermissionResponse(optionID)
 }
 
 func commandCandidates() []commandSpec {

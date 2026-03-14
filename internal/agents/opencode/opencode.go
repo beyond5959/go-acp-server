@@ -15,6 +15,10 @@ import (
 	"github.com/beyond5959/ngent/internal/agents/agentutil"
 )
 
+const defaultPermissionTimeout = 15 * time.Second
+
+var handlePermissionRequest = acpcli.StructuredPermissionRequestHandler(defaultPermissionTimeout)
+
 // Config configures the OpenCode ACP stdio provider.
 type Config = agentutil.Config
 
@@ -32,14 +36,15 @@ var _ agents.SlashCommandsProvider = (*Client)(nil)
 // New constructs an OpenCode ACP client.
 func New(cfg Config) (*Client, error) {
 	base, err := acpcli.New("opencode", cfg, acpcli.Hooks{
-		OpenConn:             openConn(cfg.Dir),
-		SessionNewParams:     sessionNewParams(cfg.Dir),
-		SessionLoadParams:    sessionLoadParams(cfg.Dir),
-		SessionListParams:    sessionListParams(cfg.Dir),
-		PromptParams:         promptParams,
-		DiscoverModelsParams: discoverModelsParams(cfg.Dir),
-		PrepareConfigSession: prepareConfigSession,
-		Cancel:               cancelWithCall,
+		OpenConn:                openConn(cfg.Dir),
+		SessionNewParams:        sessionNewParams(cfg.Dir),
+		SessionLoadParams:       sessionLoadParams(cfg.Dir),
+		SessionListParams:       sessionListParams(cfg.Dir),
+		PromptParams:            promptParams,
+		DiscoverModelsParams:    discoverModelsParams(cfg.Dir),
+		PrepareConfigSession:    prepareConfigSession,
+		HandlePermissionRequest: handlePermissionRequest,
+		Cancel:                  cancelWithCall,
 	})
 	if err != nil {
 		return nil, err
@@ -65,7 +70,7 @@ func openConn(dir string) func(context.Context, acpcli.OpenConnRequest) (*acpstd
 			Command: "opencode",
 			Args:    args,
 			Dir:     strings.TrimSpace(dir),
-			Env:     withLoopbackNoProxy(os.Environ()),
+			Env:     os.Environ(),
 			ConnOptions: acpstdio.ConnOptions{
 				Prefix: "opencode",
 			},
@@ -241,77 +246,6 @@ func configOptionsWithSelection(options []agents.ConfigOption, configID, value s
 		return options
 	}
 	return acpmodel.NormalizeConfigOptions(cloned)
-}
-
-func withLoopbackNoProxy(env []string) []string {
-	values := make(map[string]string, len(env)+2)
-	order := make([]string, 0, len(env)+2)
-	rawEntries := make([]string, 0, len(env))
-	hadUpper := false
-	hadLower := false
-	for _, entry := range env {
-		key, value, ok := strings.Cut(entry, "=")
-		if !ok {
-			rawEntries = append(rawEntries, entry)
-			continue
-		}
-		if key == "NO_PROXY" {
-			hadUpper = true
-		}
-		if key == "no_proxy" {
-			hadLower = true
-		}
-		if _, seen := values[key]; !seen {
-			order = append(order, key)
-		}
-		values[key] = value
-	}
-
-	mergedNoProxy := mergeNoProxy(values["NO_PROXY"], values["no_proxy"])
-	values["NO_PROXY"] = mergedNoProxy
-	values["no_proxy"] = mergedNoProxy
-	if !hadUpper {
-		order = append(order, "NO_PROXY")
-	}
-	if !hadLower {
-		order = append(order, "no_proxy")
-	}
-
-	out := make([]string, 0, len(rawEntries)+len(order))
-	out = append(out, rawEntries...)
-	for _, key := range order {
-		value, ok := values[key]
-		if !ok {
-			continue
-		}
-		out = append(out, key+"="+value)
-	}
-	return out
-}
-
-func mergeNoProxy(values ...string) string {
-	seen := make(map[string]struct{}, 4)
-	out := make([]string, 0, 4)
-	appendValue := func(value string) {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return
-		}
-		if _, exists := seen[value]; exists {
-			return
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-
-	for _, raw := range values {
-		for _, part := range strings.Split(raw, ",") {
-			appendValue(part)
-		}
-	}
-	appendValue("127.0.0.1")
-	appendValue("localhost")
-	return strings.Join(out, ",")
 }
 
 // Name returns the provider identifier.

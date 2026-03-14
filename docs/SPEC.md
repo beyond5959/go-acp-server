@@ -527,3 +527,33 @@ and upstream ACP schema:
   - `Enter` inserts the highlighted command.
   - `Escape` closes the picker.
   - clicking a command inserts `/<name>` and appends a trailing space when the command advertises an input hint.
+
+## 17. Rich ACP Permission Requests and Streaming Placeholder (2026-03-14)
+
+### 17.1 Provider Permission Bridging
+
+- Direct ACP providers must treat `session/request_permission.toolCall` as a structured object, not a flat string map.
+- Real payloads may include:
+  - `title`
+  - `toolCallId`
+  - `content[]` entries such as diff previews or embedded text blocks
+  - `locations[]` entries with explicit `path` fields
+  - `rawInput` keys such as `path`, `filepath`, or `parentDir` when the provider does not emit a richer content preview
+- Permission-bridge normalization rules:
+  - every direct ACP stdio provider that supports permissions must install a `HandlePermissionRequest` hook; otherwise ACP request handling falls back to JSON-RPC `method not found`
+  - preserve `sessionId` and `toolCallId` in `PermissionRequest.RawParams`
+  - preserve the first path-like preview when available
+  - derive the Web UI badge class from the tool preview:
+    - file edits/diffs -> `file`
+    - directory/path previews -> `file`
+    - MCP requests -> `mcp`
+    - network-style requests -> `network`
+    - fallback -> `command`
+  - use the tool title as the primary display string in the permission card when it is specific enough; otherwise fall back to the resolved path preview
+- Malformed payloads or missing handlers still fail closed, but only after structured decode is attempted.
+
+### 17.2 Web UI Streaming State
+
+- Before the first visible assistant delta arrives, the live streaming bubble keeps its text region empty and only shows the typing indicator.
+- The first real delta populates the existing bubble without changing any other streaming semantics.
+- Hidden `agent_thought_chunk` content still remains non-user-visible while the assistant is waiting on a visible delta.

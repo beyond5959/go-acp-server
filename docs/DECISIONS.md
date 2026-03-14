@@ -45,6 +45,28 @@
 - ADR-041: Treat Web UI "New session" as provider-cache reset for the empty session scope. (Accepted)
 - ADR-042: Treat explicit Web UI "New session" as a fresh turn with no injected thread context. (Accepted)
 - ADR-043: Share one ACP CLI driver across Kimi/Qwen/OpenCode/Gemini. (Accepted)
+- ADR-044: Normalize path-like ACP permission previews across direct ACP providers. (Accepted)
+
+## ADR-044: Normalize Path-Like ACP Permission Previews Across Direct ACP Providers
+
+- Status: Accepted
+- Date: 2026-03-14
+- Context:
+  - after the shared ACP CLI refactor, direct ACP providers only bridge `session/request_permission` when they explicitly install a `HandlePermissionRequest` hook.
+  - OpenCode did not install that hook, so real permission-gated turns still returned JSON-RPC `method not found` even though Kimi/Qwen had already been fixed.
+  - real OpenCode permission payloads can represent file-like access without `content[]` diffs, using `toolCall.locations[]` or `toolCall.rawInput.filepath` and generic titles such as `external_directory`.
+- Decision:
+  - require every direct ACP stdio provider that advertises permissions to install a request-permission hook in the shared ACP CLI driver.
+  - extend the shared permission parser to extract a first path-like preview from `content[]`, `locations[]`, or `rawInput` keys such as `filepath`, `path`, and `parentDir`.
+  - treat directory/path-oriented permission requests as `file` approvals in the Web UI, and prefer the resolved path over generic provider titles when building the user-facing command label.
+  - reuse the same shared normalization path for OpenCode instead of adding another provider-local decoder.
+- Consequences:
+  - real OpenCode file-creation requests now surface through the normal ngent permission card flow instead of failing invisibly.
+  - the Web UI gets a stable path preview like `/Users/niuniu/.config/opencode/opencode.json` even when the upstream provider only reports `external_directory` or another generic title.
+  - future ACP providers can attach path previews in multiple shapes without forcing another adapter-specific parser.
+- Alternatives considered:
+  - leave OpenCode on provider-default RPC handling and only fix Kimi/Qwen (rejected: direct ACP providers would keep drifting on identical permission semantics).
+  - special-case OpenCode path extraction inside `internal/agents/opencode` (rejected: the shape difference belongs in shared ACP normalization, not a one-off adapter fork).
 
 ## ADR-043: Share One ACP CLI Driver Across Kimi/Qwen/OpenCode/Gemini
 
@@ -1044,3 +1066,24 @@ Use this template for new decisions.
   - keep slash commands in memory only (rejected: loses state on restart and leaves fresh threads without suggestions until another turn streams).
   - persist slash commands per thread (rejected: duplicates identical agent data and prevents reuse across threads).
   - append slash-command updates into `turns/events` only (rejected: complicates retrieval for the composer and mixes capability cache with transcript history).
+
+## ADR-040: Normalize rich ACP permission requests before bridging them into ngent
+
+- Status: Accepted
+- Date: 2026-03-14
+- Context:
+  - real ACP providers do not guarantee that `session/request_permission.toolCall` is a flat string map.
+  - Kimi CLI 1.22.0 sends structured previews containing diff/content arrays, `toolCallId`, and a human-readable `title`.
+  - ngent's direct ACP adapters for Kimi and Qwen previously decoded that payload as `map[string]string`, which caused JSON decode failure and an immediate fail-closed reject before HTTP/SSE could emit `permission_required`.
+- Decision:
+  - add one shared ACP permission-request parser that accepts structured `toolCall` payloads, preserves key metadata (`sessionId`, `toolCallId`, first `path`), and derives a normalized `PermissionRequest` for the rest of ngent.
+  - classify permission badges into the existing Web UI families (`file`, `command`, `network`, `mcp`) from the tool title/content instead of trusting provider-specific `kind` strings such as `execute`.
+  - use the tool title as the primary user-facing command label (for example `WriteFile: soul.md`) so the UI can display the same preview text the provider asked the user to approve.
+  - reuse this shared normalization in both Kimi and Qwen so direct ACP providers do not drift on permission bridging semantics.
+- Consequences:
+  - real Kimi file-write requests now surface through the normal ngent permission workflow instead of being auto-rejected invisibly.
+  - fail-closed behavior is preserved for malformed payloads or missing handlers, but only after attempting structured decode.
+  - future ACP providers can attach richer tool-call previews without forcing another provider-specific permission decoder.
+- Alternatives considered:
+  - keep provider-local bespoke permission decoding (rejected: already diverged across adapters and failed on a real payload shape).
+  - flatten structured tool-call previews into strings at the transport layer (rejected: hides provider metadata and makes badge classification/path extraction harder later).

@@ -294,3 +294,17 @@
 - Follow-up plan:
   - add richer diagnostics around stalled OpenCode `session/new` calls so auth/backend/readiness failures are distinguishable from protocol regressions.
   - keep rerunning the real smoke after local OpenCode environment fixes to confirm the shared ACP driver is not the blocking factor.
+
+- ID: KI-029
+- Title: Denied ACP permission turns currently collapse into an empty agent bubble
+- Status: Open
+- Severity: Low
+- Affects: Web UI turns where the user denies a provider permission request
+- Symptom:
+  - the Web UI now correctly renders the pending `Permission Required` card for direct ACP providers such as Kimi and OpenCode, but once the user clicks `Deny`, the subsequent completed turn still has empty `responseText`.
+  - after the final re-render, the ephemeral permission card disappears and the chat shows the existing empty-agent fallback (`…`) instead of a clearer provider rejection message.
+- Workaround:
+  - use the permission card itself as the source of truth for what was denied; the underlying tool action remains fail-closed and is not executed.
+  - inspect `/history?includeEvents=1` if you need to confirm that the turn did emit `permission_required` before completion.
+- Follow-up plan:
+  - decide whether denied-permission turns should persist a lightweight terminal message, or whether the Web UI should keep the resolved permission card visible after turn completion.

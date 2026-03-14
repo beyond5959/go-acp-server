@@ -16,6 +16,8 @@ const (
 	ACPUpdateTypeUserMessageChunk = "user_message_chunk"
 	// ACPUpdateTypeThoughtMessageChunk streams hidden reasoning deltas.
 	ACPUpdateTypeThoughtMessageChunk = "thought_message_chunk"
+	// acpUpdateTypeAgentThoughtChunk is the real kimi-cli thought chunk name.
+	acpUpdateTypeAgentThoughtChunk = "agent_thought_chunk"
 	// ACPUpdateTypePlan replaces the current agent plan entries.
 	ACPUpdateTypePlan = "plan"
 	// ACPUpdateTypeAvailableCommands replaces the current slash-command list.
@@ -87,23 +89,23 @@ func ParseACPUpdate(raw json.RawMessage) (ACPUpdate, error) {
 				acpUpdateMetaString(payload.Meta, "timestamp"),
 			),
 		}, nil
-	case ACPUpdateTypeAgentMessageChunk, ACPUpdateTypeUserMessageChunk, ACPUpdateTypeThoughtMessageChunk:
+	case ACPUpdateTypeAgentMessageChunk, ACPUpdateTypeUserMessageChunk, ACPUpdateTypeThoughtMessageChunk, acpUpdateTypeAgentThoughtChunk:
 		content, ok, err := parseACPUpdateTextContent(payload.Update.Content)
 		if err != nil {
 			return ACPUpdate{}, err
 		}
 		if !ok {
-			return ACPUpdate{Type: strings.TrimSpace(payload.Update.SessionUpdate)}, nil
+			return ACPUpdate{Type: normalizeACPUpdateType(payload.Update.SessionUpdate)}, nil
 		}
 		role := ""
-		switch strings.TrimSpace(payload.Update.SessionUpdate) {
+		switch normalizeACPUpdateType(payload.Update.SessionUpdate) {
 		case ACPUpdateTypeAgentMessageChunk:
 			role = "assistant"
 		case ACPUpdateTypeUserMessageChunk:
 			role = "user"
 		}
 		return ACPUpdate{
-			Type:  strings.TrimSpace(payload.Update.SessionUpdate),
+			Type:  normalizeACPUpdateType(payload.Update.SessionUpdate),
 			Role:  role,
 			Delta: content,
 			MessageID: normalizeACPUpdateString(
@@ -130,7 +132,7 @@ func ParseACPUpdate(raw json.RawMessage) (ACPUpdate, error) {
 			Commands: parseACPUpdateSlashCommands(payload.Update.AvailableCommands),
 		}, nil
 	default:
-		return ACPUpdate{Type: strings.TrimSpace(payload.Update.SessionUpdate)}, nil
+		return ACPUpdate{Type: normalizeACPUpdateType(payload.Update.SessionUpdate)}, nil
 	}
 }
 
@@ -216,6 +218,14 @@ func normalizeACPUpdateString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func normalizeACPUpdateType(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == acpUpdateTypeAgentThoughtChunk {
+		return ACPUpdateTypeThoughtMessageChunk
+	}
+	return raw
 }
 
 // ClonePlanEntries returns a trimmed deep copy of the provided entries.

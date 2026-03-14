@@ -128,6 +128,31 @@ func TestParseACPUpdateUserMessageChunk(t *testing.T) {
 	}
 }
 
+func TestParseACPUpdateAgentThoughtChunkAlias(t *testing.T) {
+	t.Parallel()
+
+	raw := json.RawMessage(`{
+		"update": {
+			"sessionUpdate": "agent_thought_chunk",
+			"content": {
+				"type": "text",
+				"text": "thinking"
+			}
+		}
+	}`)
+
+	update, err := ParseACPUpdate(raw)
+	if err != nil {
+		t.Fatalf("ParseACPUpdate() error = %v", err)
+	}
+	if update.Type != ACPUpdateTypeThoughtMessageChunk {
+		t.Fatalf("update.Type = %q, want %q", update.Type, ACPUpdateTypeThoughtMessageChunk)
+	}
+	if update.Delta != "thinking" {
+		t.Fatalf("update.Delta = %q, want %q", update.Delta, "thinking")
+	}
+}
+
 func TestParseACPUpdateIgnoresNonTextToolCallPayload(t *testing.T) {
 	t.Parallel()
 
