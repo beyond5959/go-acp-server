@@ -42,6 +42,7 @@ const (
 	stableSessionResolveRetries = 5
 	stableSessionResolveDelay   = 150 * time.Millisecond
 	initialSlashCommandsWait    = 250 * time.Millisecond
+	postPromptDrainTimeout      = 250 * time.Millisecond
 )
 
 // Config configures one embedded codex runtime provider instance.
@@ -467,14 +468,51 @@ func (c *Client) streamOnce(
 		promptDone <- promptResult{response: resp, err: reqErr}
 	}()
 
+	var (
+		finalStopReason agents.StopReason
+		promptFinished  bool
+		drainTimer      *time.Timer
+		drainCh         <-chan time.Time
+	)
+	stopDrainTimer := func() {
+		if drainTimer == nil {
+			return
+		}
+		if !drainTimer.Stop() {
+			select {
+			case <-drainTimer.C:
+			default:
+			}
+		}
+		drainCh = nil
+	}
+	resetDrainTimer := func() {
+		if drainTimer == nil {
+			drainTimer = time.NewTimer(postPromptDrainTimeout)
+			drainCh = drainTimer.C
+			return
+		}
+		if !drainTimer.Stop() {
+			select {
+			case <-drainTimer.C:
+			default:
+			}
+		}
+		drainTimer.Reset(postPromptDrainTimeout)
+		drainCh = drainTimer.C
+	}
+	defer stopDrainTimer()
+
 	for {
 		select {
 		case <-ctx.Done():
 			stopCancelWatcher()
+			stopDrainTimer()
 			return agents.StopReasonCancelled, nil
 		case result := <-promptDone:
-			stopCancelWatcher()
 			if result.err != nil {
+				stopCancelWatcher()
+				stopDrainTimer()
 				if errors.Is(result.err, context.Canceled) || errors.Is(result.err, context.DeadlineExceeded) || ctx.Err() != nil {
 					return agents.StopReasonCancelled, nil
 				}
@@ -483,15 +521,24 @@ func (c *Client) streamOnce(
 
 			stopReason, parseErr := parsePromptStopReason(result.response.Result)
 			if parseErr != nil {
+				stopCancelWatcher()
+				stopDrainTimer()
 				return agents.StopReasonEndTurn, parseErr
 			}
 			if stopReason == "cancelled" {
-				return agents.StopReasonCancelled, nil
+				finalStopReason = agents.StopReasonCancelled
+			} else {
+				finalStopReason = agents.StopReasonEndTurn
 			}
-			return agents.StopReasonEndTurn, nil
+			promptFinished = true
+			resetDrainTimer()
 		case msg, ok := <-updates:
 			if !ok {
 				stopCancelWatcher()
+				stopDrainTimer()
+				if promptFinished {
+					return finalStopReason, nil
+				}
 				if ctx.Err() != nil {
 					return agents.StopReasonCancelled, nil
 				}
@@ -500,7 +547,22 @@ func (c *Client) streamOnce(
 
 			if err := c.handleUpdate(ctx, runtime, msg, onDelta); err != nil {
 				stopCancelWatcher()
+				stopDrainTimer()
 				return agents.StopReasonEndTurn, err
+			}
+			if promptFinished {
+				if acpSessionUpdateIsTerminal(msg.Params) {
+					stopCancelWatcher()
+					stopDrainTimer()
+					return finalStopReason, nil
+				}
+				resetDrainTimer()
+			}
+		case <-drainCh:
+			stopCancelWatcher()
+			stopDrainTimer()
+			if promptFinished {
+				return finalStopReason, nil
 			}
 		}
 	}
@@ -548,6 +610,7 @@ func (c *Client) handleUpdate(
 	observability.LogACPMessage(c.Name(), "inbound", msg)
 
 	if msg.Method == methodSessionUpdate {
+		updateType := acpSessionUpdateTopLevelType(msg.Params)
 		update, err := agents.ParseACPUpdate(msg.Params)
 		if err != nil {
 			return fmt.Errorf("codex: %w", err)
@@ -558,6 +621,15 @@ func (c *Client) handleUpdate(
 				return nil
 			}
 			if err := onDelta(update.Delta); err != nil {
+				c.sendSessionCancel(runtime, c.currentSessionID())
+				return err
+			}
+			return nil
+		case agents.ACPUpdateTypeThoughtMessageChunk:
+			if updateType != "" && updateType != "reasoning" {
+				return nil
+			}
+			if err := agents.NotifyReasoningDelta(ctx, update.Delta); err != nil {
 				c.sendSessionCancel(runtime, c.currentSessionID())
 				return err
 			}
@@ -590,6 +662,41 @@ func (c *Client) handleUpdate(
 		return fmt.Errorf("codex: unsupported embedded request method %q", msg.Method)
 	}
 	return nil
+}
+
+func acpSessionUpdateTopLevelType(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var payload struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.Type)
+}
+
+func acpSessionUpdateIsTerminal(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var payload struct {
+		Type   string `json:"type"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return false
+	}
+	if strings.TrimSpace(payload.Type) != "status" {
+		return false
+	}
+	switch strings.TrimSpace(payload.Status) {
+	case "turn_completed", "turn_cancelled":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *Client) handlePermissionRequest(

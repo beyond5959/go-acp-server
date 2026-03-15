@@ -79,6 +79,69 @@ func TestStreamReplaysCachedSlashCommandsAfterConfigOptionsInit(t *testing.T) {
 	}
 }
 
+func TestStreamCapturesReasoningSummaryDeltas(t *testing.T) {
+	client := newFakeCodexClient(t)
+	defer func() {
+		_ = client.Close()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	var reasoning strings.Builder
+	ctx = agents.WithReasoningHandler(ctx, func(_ context.Context, delta string) error {
+		reasoning.WriteString(delta)
+		return nil
+	})
+
+	var answer strings.Builder
+	stopReason, err := client.Stream(ctx, "reasoning summary probe", func(delta string) error {
+		answer.WriteString(delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Stream(): %v", err)
+	}
+	if stopReason != agents.StopReasonEndTurn {
+		t.Fatalf("StopReason = %q, want %q", stopReason, agents.StopReasonEndTurn)
+	}
+
+	if got := answer.String(); !strings.Contains(got, "working") {
+		t.Fatalf("answer = %q, want it to include %q", got, "working")
+	}
+	if got, want := reasoning.String(), "Inspect repository state.\n\nConfirm reasoning plumbing."; got != want {
+		t.Fatalf("reasoning = %q, want %q", got, want)
+	}
+}
+
+func TestStreamCapturesReasoningTextDeltas(t *testing.T) {
+	client := newFakeCodexClient(t)
+	defer func() {
+		_ = client.Close()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	var reasoning strings.Builder
+	ctx = agents.WithReasoningHandler(ctx, func(_ context.Context, delta string) error {
+		reasoning.WriteString(delta)
+		return nil
+	})
+
+	stopReason, err := client.Stream(ctx, "reasoning raw probe", func(string) error { return nil })
+	if err != nil {
+		t.Fatalf("Stream(): %v", err)
+	}
+	if stopReason != agents.StopReasonEndTurn {
+		t.Fatalf("StopReason = %q, want %q", stopReason, agents.StopReasonEndTurn)
+	}
+
+	if got, want := reasoning.String(), "Raw reasoning step 1. Raw reasoning step 2."; got != want {
+		t.Fatalf("reasoning = %q, want %q", got, want)
+	}
+}
+
 func TestSlashCommandsAfterConfigOptionsInit(t *testing.T) {
 	client := newFakeCodexClient(t)
 	defer func() {
