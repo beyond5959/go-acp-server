@@ -219,7 +219,8 @@ This checklist defines executable acceptance checks for requirements 1-16.
 - Expected:
   - model selector data source is thread-level ACP `configOptions` (`category=model` / `id=model`).
   - reasoning selector data source is thread-level ACP `configOptions` (`category=reasoning`).
-  - selected model changes immediately via ACP `session/set_config_option`.
+  - selected model/reasoning changes are persisted immediately into sqlite thread state without an extra Apply button.
+  - if the cached session/provider is still using older model/reasoning selections, ngent applies the diff only on the next turn, before `session/prompt` is sent.
   - returned and persisted current values stay consistent:
     - `configOptions.model.currentValue` == thread `agentOptions.modelId`
     - non-model current values are mirrored into `thread.agentOptions.configOverrides`
@@ -313,9 +314,11 @@ This checklist defines executable acceptance checks for requirements 1-16.
     - first-page load on active thread selection.
     - `Show more` pagination when `nextCursor` is present.
   - `New session` action that clears the selected `sessionId`.
+  - repeated `New session` clicks while the thread is still unbound must still open a blank fresh-session view instead of reusing the prior anonymous buffer.
   - selecting an existing session requests provider-owned transcript replay before the next turn.
   - turn SSE emits `session_bound`, and the thread persists `agentOptions.sessionId`.
   - once a thread is session-bound, subsequent prompt building no longer injects prior local turns into the provider prompt.
+  - cancelled turns that never emitted `session_bound` and never produced visible response text do not reappear when the user opens a newer fresh session or reloads the thread.
 - Verification commands (executed 2026-03-13):
   - `go test ./internal/httpapi -run 'TestThreadSessionsListEndpoint|TestTurnSessionBoundPersistsSessionIDAndSkipsContextInjection|TestNewSessionResetSkipsContextInjection' -count=1`
   - `cd internal/webui/web && npm run build`
@@ -330,6 +333,11 @@ This checklist defines executable acceptance checks for requirements 1-16.
 - Additional verification commands (executed 2026-03-13):
   - `go test ./internal/storage ./internal/httpapi -run 'Test(SessionTranscriptCacheCRUD|ThreadSessionHistoryEndpoint|ThreadSessionHistoryEndpointUsesSQLiteCacheAcrossRestart)$' -count=1`
   - `go test ./...`
+- Additional verification commands (executed 2026-03-16 after fresh-session scope reset fix):
+  - `cd internal/webui/web && npm run build`
+  - `go test ./...`
+  - `go run ./cmd/ngent --port 8798 --db-path /tmp/ngent-session-bug.db --debug`
+  - reload the page, reopen the same thread, and confirm the empty cancelled placeholder still does not reappear
 
 ## Requirement 24: ACP Slash Commands Cache and Composer Picker
 
@@ -354,17 +362,14 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - `go test ./...`
 - Additional verification commands (executed 2026-03-13):
   - `go run ./cmd/ngent --port 8787 --db-path /tmp/ngent-kimi-real-3.db --debug`
-  - Playwright MCP: created a Kimi thread in the Web UI, confirmed no `/slash-commands` request on thread open, confirmed one `/slash-commands` request after typing `/`, and confirmed `/` sent to Kimi as a normal message without freezing the page.
 - Additional verification commands (executed 2026-03-13 after Kimi timing fix):
   - `go test ./internal/agents/kimi -run 'TestStream(CapturesSlashCommandsEmittedBeforePrompt|WithFakeProcess|WithFakeProcessModelID)$' -count=1`
   - `go run ./cmd/ngent --port 8788 --db-path /tmp/ngent-kimi-acp-trace.db --debug`
   - real local Kimi thread: confirmed `GET /v1/threads/{threadId}/slash-commands` returned the 8 persisted Kimi commands after the first turn
-  - Playwright MCP: created a fresh Kimi thread in the Web UI and confirmed typing `/` opened the slash-command picker showing `/init`, `/compact`, `/clear`, `/yolo`, `/plan`, `/add-dir`, `/export`, and `/import`
 - Additional verification commands (executed 2026-03-13 after slash-entry refresh fix):
   - `cd internal/webui/web && npm run build`
   - `go test ./...`
   - `go run ./cmd/ngent --port 8789 --db-path /tmp/ngent-slash-refresh.db --debug`
-  - Playwright MCP: opened that Kimi thread, confirmed no `/slash-commands` request occurred while merely loading the thread, confirmed typing `/` triggered `GET /v1/threads/{threadId}/slash-commands`, and confirmed clearing the input and typing `/` again triggered a second request while still opening the slash-command picker
 - Additional verification commands (executed 2026-03-13 after codex embedded timing fix):
   - `go test ./internal/agents/codex -run 'TestStream(CapturesSlashCommandsEmittedBeforePrompt|ReplaysCachedSlashCommandsAfterConfigOptionsInit)$' -count=1`
   - `go run ./cmd/ngent --port 8793 --db-path /tmp/ngent-codex-fix.db --debug`
@@ -388,14 +393,32 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - `go run ./cmd/ngent --port 8796 --db-path /tmp/ngent-codex-slash-fix.db --debug`
   - real local Codex thread: confirmed `GET /v1/threads/{threadId}/config-options` initialized the embedded provider and `GET /v1/threads/{threadId}/slash-commands` then returned the 7-command snapshot before any turn was sent
   - sqlite check: `select agent_id, commands_json from agent_slash_commands where agent_id = 'codex';` returned the persisted codex command list
-  - Playwright MCP: created a fresh Codex thread, confirmed the UI loaded `config-options`, then typed `/` and observed the slash-command picker open with `/review`, `/review-branch`, `/review-commit`, `/init`, `/compact`, `/logout`, and `/mcp`
 - Additional verification commands (executed 2026-03-13 after Qwen slash-command probe fallback):
   - `go test ./internal/agents/qwen ./internal/httpapi -run 'Test(StreamCapturesSlashCommandsEmittedBeforePrompt|SlashCommandsAfterConfigOptionsInit|ThreadConfigOptionsBackfillsSlashCommandsWhenCatalogAlreadyStored|ThreadSlashCommandsEndpointBackfillsMissingSnapshot)$' -count=1`
   - `go run ./cmd/ngent --port 8798 --db-path /tmp/ngent-qwen-slash-fix-v2.db --debug`
   - real local Qwen thread: confirmed the very first `GET /v1/threads/{threadId}/slash-commands` returned `/bug`, `/compress`, `/init`, and `/summary` before any turn was sent
   - sqlite check: `select agent_id, commands_json from agent_slash_commands where agent_id = 'qwen';` returned the persisted qwen command list
-  - Playwright MCP: created a fresh Qwen thread, typed `/`, and observed the slash-command picker open immediately with the 4 Qwen commands
 - Additional verification commands (executed 2026-03-13 after unifying direct ACP provider slash-command caches):
   - `go test ./internal/agents/kimi ./internal/agents/opencode ./internal/agents/gemini ./internal/agents/qwen -run 'Test(StreamCapturesSlashCommandsEmittedBeforePrompt|SlashCommandsAfterConfigOptionsInit|WithFakeProcess|WithFakeProcessModelID)$' -count=1`
   - `go test ./...`
   - Kimi, OpenCode, Gemini, and Qwen now all keep the latest `available_commands_update` snapshot in the same provider-local cache across both `Stream()` and `ConfigOptions()` probes, so `/slash-commands` backfill uses one consistent source for these direct ACP agents
+
+## Requirement 25: ACP Tool-Call Streaming and History
+
+- Operation:
+  - run a turn against an ACP-backed agent that emits `tool_call` followed by `tool_call_update` for the same `toolCallId`.
+  - observe the SSE stream from `POST /v1/threads/{threadId}/turns`.
+  - query `GET /v1/threads/{threadId}/history?includeEvents=true`.
+  - open the same thread in the Web UI during streaming and again after reload/history fetch.
+- Expected:
+  - shared ACP parsing accepts `tool_call` and `tool_call_update` without flattening them into plain text or dropping their structured payload.
+  - SSE emits `tool_call` / `tool_call_update` events with `turnId`, `toolCallId`, and the corresponding structured ACP fields (`status`, `content`, `locations`, `rawInput`, `rawOutput`) when present.
+  - turn history persists those same event types and payloads.
+  - the Web UI merges updates by `toolCallId`, so the same tool-call card progresses from its initial state to its updated/final state both live and after reload.
+  - tool-call cards remain separate from the main assistant text bubble.
+- Verification commands (executed 2026-03-16):
+  - `go test ./internal/agents -run 'TestParseACPUpdateToolCall|TestParseACPUpdateToolCallUpdateKeepsExplicitClears' -count=1`
+  - `go test ./internal/agents -run 'TestNewACPNotificationHandlerRoutesToolCallsToToolCallHandler' -count=1`
+  - `go test ./internal/httpapi -run 'TestTurnsSSEIncludesToolCallUpdatesAndPersistsHistory' -count=1`
+  - `cd internal/webui/web && npm run build`
+  - `go test ./...`

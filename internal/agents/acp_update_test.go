@@ -177,6 +177,104 @@ func TestParseACPUpdateIgnoresNonTextToolCallPayload(t *testing.T) {
 	}
 }
 
+func TestParseACPUpdateToolCall(t *testing.T) {
+	t.Parallel()
+
+	raw := json.RawMessage(`{
+		"update": {
+			"sessionUpdate": "tool_call",
+			"toolCallId": "call-1",
+			"title": "Read file",
+			"kind": "read_file",
+			"status": "running",
+			"content": [
+				{"type": "content", "content": {"type": "text", "text": "opening file"}}
+			],
+			"locations": [
+				{"path": "/tmp/demo.txt"}
+			],
+			"rawInput": {"path": "/tmp/demo.txt"}
+		}
+	}`)
+
+	update, err := ParseACPUpdate(raw)
+	if err != nil {
+		t.Fatalf("ParseACPUpdate() error = %v", err)
+	}
+	if update.Type != ACPUpdateTypeToolCall {
+		t.Fatalf("update.Type = %q, want %q", update.Type, ACPUpdateTypeToolCall)
+	}
+	if update.ToolCall == nil {
+		t.Fatal("update.ToolCall is nil, want populated tool call")
+	}
+	if got := update.ToolCall.ToolCallID; got != "call-1" {
+		t.Fatalf("update.ToolCall.ToolCallID = %q, want %q", got, "call-1")
+	}
+	if got := update.ToolCall.Title; got != "Read file" {
+		t.Fatalf("update.ToolCall.Title = %q, want %q", got, "Read file")
+	}
+	if got := update.ToolCall.Kind; got != "read_file" {
+		t.Fatalf("update.ToolCall.Kind = %q, want %q", got, "read_file")
+	}
+	if got := update.ToolCall.Status; got != "running" {
+		t.Fatalf("update.ToolCall.Status = %q, want %q", got, "running")
+	}
+	if !update.ToolCall.HasContent || string(update.ToolCall.Content) == "" {
+		t.Fatalf("update.ToolCall.Content = %q, want raw JSON content", string(update.ToolCall.Content))
+	}
+	if !update.ToolCall.HasLocations || string(update.ToolCall.Locations) == "" {
+		t.Fatalf("update.ToolCall.Locations = %q, want raw JSON locations", string(update.ToolCall.Locations))
+	}
+	if !update.ToolCall.HasRawInput || string(update.ToolCall.RawInput) == "" {
+		t.Fatalf("update.ToolCall.RawInput = %q, want raw JSON input", string(update.ToolCall.RawInput))
+	}
+}
+
+func TestParseACPUpdateToolCallUpdateKeepsExplicitClears(t *testing.T) {
+	t.Parallel()
+
+	raw := json.RawMessage(`{
+		"update": {
+			"sessionUpdate": "tool_call_update",
+			"toolCallId": "call-1",
+			"title": "",
+			"status": "completed",
+			"content": [],
+			"rawOutput": {"ok": true}
+		}
+	}`)
+
+	update, err := ParseACPUpdate(raw)
+	if err != nil {
+		t.Fatalf("ParseACPUpdate() error = %v", err)
+	}
+	if update.Type != ACPUpdateTypeToolCallUpdate {
+		t.Fatalf("update.Type = %q, want %q", update.Type, ACPUpdateTypeToolCallUpdate)
+	}
+	if update.ToolCall == nil {
+		t.Fatal("update.ToolCall is nil, want populated tool call update")
+	}
+	if !update.ToolCall.HasTitle {
+		t.Fatal("update.ToolCall.HasTitle = false, want true for explicit empty title")
+	}
+	if got := update.ToolCall.Title; got != "" {
+		t.Fatalf("update.ToolCall.Title = %q, want empty explicit clear", got)
+	}
+	if !update.ToolCall.HasContent || string(update.ToolCall.Content) != "[]" {
+		t.Fatalf("update.ToolCall.Content = %q, want %q", string(update.ToolCall.Content), "[]")
+	}
+	if !update.ToolCall.HasRawOutput {
+		t.Fatal("update.ToolCall.HasRawOutput = false, want true")
+	}
+	var rawOutput map[string]bool
+	if err := json.Unmarshal(update.ToolCall.RawOutput, &rawOutput); err != nil {
+		t.Fatalf("json.Unmarshal(update.ToolCall.RawOutput): %v", err)
+	}
+	if !rawOutput["ok"] {
+		t.Fatalf("rawOutput = %#v, want ok=true", rawOutput)
+	}
+}
+
 func TestParseACPUpdateAvailableCommands(t *testing.T) {
 	t.Parallel()
 

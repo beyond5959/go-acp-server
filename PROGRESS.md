@@ -11,7 +11,33 @@ This file is the source of milestone progress, validation commands, and next act
 
 - `Post-M8` ACP multi-agent readiness and maintenance.
 
-## Latest Update (2026-03-14)
+## Latest Update (2026-03-16)
+
+- `Post-M8` ACP tool-call streaming completed:
+  - extended shared ACP `session/update` parsing to preserve structured `tool_call` and `tool_call_update` payloads, including `toolCallId`, status/title/kind, content blocks, locations, and raw input/output payloads.
+  - added first-class turn callbacks plus HTTP/SSE/history persistence for those tool-call events instead of dropping them at the provider boundary.
+  - updated the Web UI stream state and history reconstruction to merge tool-call events by `toolCallId` and render live/persisted tool-call cards alongside plan/reasoning/message output.
+  - validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
+- `Post-M8` Web UI fresh-session reset fix completed:
+  - explicit `New session` now allocates a client-side fresh-session scope even when the active thread already has no persisted `sessionId`, so repeated `New session` clicks no longer reuse the same anonymous chat buffer.
+  - empty-session history replay now drops cancelled turns that never emitted `session_bound` and never produced visible response text, preventing stale cancelled placeholders from reappearing after reload.
+  - validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
+- `Post-M8` deferred thread config apply completed:
+  - changed `POST /v1/threads/{threadId}/config-options` to validate against available config options and persist thread `agentOptions.modelId` / `agentOptions.configOverrides` without mutating the live provider.
+  - narrowed cached provider scope from full `agentOptions` to thread + session/fresh-session identity, so picker edits no longer evict the current session provider by themselves.
+  - added turn-start config sync: right before streaming a new turn, ngent compares persisted thread selections against the cached provider's current model/reasoning state and only then applies changed options.
+  - updated acceptance/spec/ADR docs to describe the new "persist now, apply on next turn" behavior.
+  - validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
+## Previous Update (2026-03-14)
 
 - `Post-M8` Web UI thinking tense alignment completed:
   - kept the live reasoning toggle label as `Thinking` while deltas are still streaming.
@@ -19,8 +45,6 @@ This file is the source of milestone progress, validation commands, and next act
   - validation:
     - pass: `cd internal/webui/web && npm run build`
     - pass: `go test ./...`
-
-## Previous Update (2026-03-14)
 
 - `Post-M8` Web UI thinking markdown rendering completed:
   - switched finalized `Thinking` content from escaped plain text to the same sanitized markdown renderer used by finalized assistant replies.
@@ -129,9 +153,6 @@ This file is the source of milestone progress, validation commands, and next act
 - `Post-M8` codex session identity and replay normalization completed:
   - fixed fresh Codex `New session` persistence so ngent no longer stores provisional runtime ids like `session-1` as the thread session binding when a durable `_meta.threadId` is not yet available.
   - deferred initial `session_bound` persistence/emission for fresh Codex sessions until a stable session id can be resolved after the first prompt, then updated in-memory and persisted thread `agentOptions.sessionId` with the durable id.
-  - verified with real local Codex and Playwright against `http://127.0.0.1:8687/`:
-    - `New session` now produces distinct stable Codex session ids and no longer mixes first-session messages into the second-session chat.
-    - switching between the two replayed sessions in the Web UI no longer mixes first-session messages into the second-session chat.
   - validation:
     - pass: `go test ./internal/agents/codex -run 'Test(CodexShouldDeferInitialSessionBinding|NormalizeCodexSessionListResultUsesStableThreadID|CodexSessionMatchesIDAcceptsStableAndRawIDs|CodexStableSessionIDFallsBackToRawSessionID)$' -count=1`
 
@@ -540,17 +561,17 @@ This file is the source of milestone progress, validation commands, and next act
     - model controls are disabled while model lists load and during streaming turns.
   - executed validation:
 
-- `Post-F9` thread session model config switched to ACP `configOptions` + immediate apply:
+- `Post-F9` thread session model config switched to ACP `configOptions`:
   - added thread-scoped config options APIs:
     - `GET /v1/threads/{threadId}/config-options`
     - `POST /v1/threads/{threadId}/config-options`
-  - `POST` now applies model changes through ACP `session/set_config_option` (no separate apply endpoint/action).
-  - provider-side config option support added across all built-in agents:
-    - embedded: `codex`, `claude` (in-session `session/set_config_option` on cached runtime).
-    - stdio: `opencode`, `qwen`, `gemini`, `kimi` (ACP handshake + `session/set_config_option` apply path, then persist selected model for next turns).
+  - `POST` persists selected model/config state directly into sqlite thread metadata (no separate apply endpoint/action).
+  - provider-side config option support added across all built-in agents so persisted thread selections can be synchronized at turn boundaries:
+    - embedded: `codex`, `claude` (cached runtime session sync).
+    - stdio: `opencode`, `qwen`, `gemini`, `kimi` (per-turn ACP handshake plus persisted selection forwarding).
   - Web UI changes:
     - removed thread header `Apply` button.
-    - model dropdown now applies immediately on selection.
+    - model dropdown persists immediately on selection.
     - model source switched from agent-level model catalog to thread-level `configOptions` (`category=model`).
     - model option descriptions are rendered under the selector in the chat header.
   - thread metadata sync:
@@ -716,7 +737,6 @@ This file is the source of milestone progress, validation commands, and next act
   - executed validation:
     - pass: `cd internal/webui/web && npm run build`
     - pass: `go test ./...`
-    - pass: Playwright MCP verified no `/slash-commands` request on thread open, one request after typing `/`, and normal `/` message send when the endpoint returned `[]`
 
 - 2026-03-13: fixed Kimi slash-command loss in the ACP turn pipeline.
   - root cause: real Kimi `kimi acp` emits `available_commands_update` immediately after `session/new` and before `session/prompt`, while the ngent Kimi provider had been installing its `session/update` handler too late and silently dropped that notification.
@@ -727,7 +747,6 @@ This file is the source of milestone progress, validation commands, and next act
     - pass: `go test ./...`
     - pass: real local ngent + Kimi test on `http://127.0.0.1:8788` confirmed `session/update.available_commands_update` was logged between `session/new` and `session/prompt`
     - pass: `GET /v1/threads/{threadId}/slash-commands` returned 8 persisted Kimi commands after the first turn
-    - pass: Playwright MCP confirmed typing `/` in a fresh Kimi thread opened the slash-command picker with the persisted Kimi commands
 
 - 2026-03-13: forced a backend slash-command refresh on each new `/` interaction in the Web UI.
   - root cause: once a thread had already populated the client-side slash-command cache, typing `/` reused that cache and did not issue another `GET /v1/threads/{threadId}/slash-commands`, which made the real network behavior diverge from the expected "query sqlite on slash entry" flow.
@@ -782,7 +801,6 @@ This file is the source of milestone progress, validation commands, and next act
     - pass: `go test ./internal/httpapi -run 'Test(ThreadSlashCommandsPersistAndLoad|ThreadSlashCommandsPersistAcrossRestart|ThreadConfigOptionsBackfillsSlashCommandsWhenCatalogAlreadyStored)$' -count=1`
     - pass: real local ngent + codex test on `http://127.0.0.1:8796`
     - pass: fresh Codex thread returned the 7-command slash snapshot from `GET /v1/threads/{threadId}/slash-commands` immediately after `GET /v1/threads/{threadId}/config-options`, before any turn was sent
-    - pass: Playwright MCP confirmed typing `/` on that fresh Codex thread opened the slash-command picker showing `/review`, `/review-branch`, `/review-commit`, `/init`, `/compact`, `/logout`, and `/mcp`
 
 - 2026-03-13: fixed fresh-thread Qwen slash commands by probing providers on `/slash-commands` cache miss.
   - root cause: a user could type `/` before the thread-opening `config-options` request finished; for Qwen that meant `GET /v1/threads/{threadId}/slash-commands` read sqlite too early and returned `[]` even though the provider emitted `available_commands_update` a moment later.
@@ -792,7 +810,6 @@ This file is the source of milestone progress, validation commands, and next act
     - pass: `go test ./internal/agents/qwen ./internal/httpapi -run 'Test(StreamCapturesSlashCommandsEmittedBeforePrompt|SlashCommandsAfterConfigOptionsInit|ThreadConfigOptionsBackfillsSlashCommandsWhenCatalogAlreadyStored|ThreadSlashCommandsEndpointBackfillsMissingSnapshot)$' -count=1`
     - pass: real local ngent + qwen test on `http://127.0.0.1:8798`
     - pass: fresh Qwen thread returned `/bug`, `/compress`, `/init`, and `/summary` from the very first `GET /v1/threads/{threadId}/slash-commands` before any turn was sent
-    - pass: Playwright MCP confirmed typing `/` on that fresh Qwen thread opened the slash-command picker immediately
 
 - 2026-03-13: unified provider-local ACP slash-command caching across the direct stdio agents.
   - Kimi, Qwen, OpenCode, and Gemini all share the same underlying ACP behavior: `available_commands_update` can arrive during `session/new` in both turn streaming and config-session probes, so probing slash commands only from sqlite is not enough for fresh threads.

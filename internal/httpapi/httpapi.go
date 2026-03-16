@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -123,6 +124,8 @@ const (
 
 	threadAgentOptionFreshSessionKey = "_ngentFreshSession"
 	eventTypeReasoningDelta          = "reasoning_delta"
+	eventTypeToolCall                = "tool_call"
+	eventTypeToolCallUpdate          = "tool_call_update"
 )
 
 const (
@@ -758,6 +761,13 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 		cancelTurn()
 		s.turns.Release(thread.ThreadID, turnSessionID, turnID)
 	}()
+	if err := s.syncThreadConfigSelections(r.Context(), thread, streamAgent); err != nil {
+		writeError(w, http.StatusServiceUnavailable, codeUpstreamUnavailable, "failed to sync thread config options", map[string]any{
+			"threadId": thread.ThreadID,
+			"reason":   err.Error(),
+		})
+		return
+	}
 
 	if _, err := s.store.CreateTurn(r.Context(), storage.CreateTurnParams{
 		TurnID:      turnID,
@@ -828,6 +838,16 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 			"turnId": turnID,
 			"delta":  delta,
 		})
+	})
+	turnCtx = agents.WithToolCallHandler(turnCtx, func(toolCallCtx context.Context, event agents.ACPToolCall) error {
+		_ = toolCallCtx
+		eventType := strings.TrimSpace(event.Type)
+		switch eventType {
+		case eventTypeToolCall, eventTypeToolCallUpdate:
+		default:
+			return nil
+		}
+		return emit(eventType, event.EventPayload(turnID))
 	})
 	turnCtx = agents.WithSlashCommandsHandler(turnCtx, func(commandsCtx context.Context, commands []agents.SlashCommand) error {
 		_ = commandsCtx
@@ -1042,6 +1062,16 @@ func (s *Server) handleCompactThread(w http.ResponseWriter, r *http.Request, cli
 			"turnId": turnID,
 			"delta":  delta,
 		})
+	})
+	turnCtx = agents.WithToolCallHandler(turnCtx, func(toolCallCtx context.Context, event agents.ACPToolCall) error {
+		_ = toolCallCtx
+		eventType := strings.TrimSpace(event.Type)
+		switch eventType {
+		case eventTypeToolCall, eventTypeToolCallUpdate:
+		default:
+			return nil
+		}
+		return appendOnlyEvent(eventType, event.EventPayload(turnID))
 	})
 	stopReason, streamErr := streamAgent.Stream(turnCtx, compactPrompt, func(delta string) error {
 		aggregated.WriteString(delta)
@@ -1531,6 +1561,7 @@ func (s *Server) handleThreadConfigOptions(w http.ResponseWriter, r *http.Reques
 	switch r.Method {
 	case http.MethodGet:
 		var provider any
+		modelID, overrides := threadConfigSelections(thread.AgentOptionsJSON)
 		options, found, err := s.loadStoredThreadConfigOptions(r.Context(), thread)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, codeInternal, "failed to load stored thread config options", map[string]any{
@@ -1557,14 +1588,15 @@ func (s *Server) handleThreadConfigOptions(w http.ResponseWriter, r *http.Reques
 				})
 				return
 			}
-			options = acpmodel.NormalizeConfigOptions(options)
-			if persistErr := s.persistAgentConfigCatalog(r.Context(), thread.AgentID, thread.AgentOptionsJSON, options); persistErr != nil {
+			liveOptions := acpmodel.NormalizeConfigOptions(options)
+			if persistErr := s.persistAgentConfigCatalog(r.Context(), thread.AgentID, thread.AgentOptionsJSON, liveOptions); persistErr != nil {
 				s.logger.Warn("config_catalog.persist_failed",
 					"threadId", thread.ThreadID,
 					"agent", thread.AgentID,
 					"reason", persistErr.Error(),
 				)
 			}
+			options = applyThreadConfigSelections(liveOptions, modelID, overrides)
 		}
 		s.persistThreadSlashCommandsBestEffort(r.Context(), thread, provider)
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -1596,29 +1628,33 @@ func (s *Server) handleThreadConfigOptions(w http.ResponseWriter, r *http.Reques
 			return
 		}
 
-		manager, err := s.resolveThreadConfigOptionManager(thread)
+		currentOptions, err := s.loadThreadConfigOptionsForUpdate(r.Context(), thread)
 		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, codeUpstreamUnavailable, "failed to resolve config options manager", map[string]any{
-				"agent":  thread.AgentID,
-				"reason": err.Error(),
-			})
-			return
-		}
-		options, err := manager.SetConfigOption(r.Context(), req.ConfigID, req.Value)
-		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, codeUpstreamUnavailable, "failed to update thread config option", map[string]any{
+			writeError(w, http.StatusServiceUnavailable, codeUpstreamUnavailable, "failed to load thread config options", map[string]any{
 				"threadId": thread.ThreadID,
-				"configId": req.ConfigID,
 				"reason":   err.Error(),
 			})
 			return
 		}
-		options = acpmodel.NormalizeConfigOptions(options)
+		if err := validateThreadConfigSelection(currentOptions, req.ConfigID, req.Value); err != nil {
+			writeError(w, http.StatusBadRequest, codeInvalidArgument, err.Error(), map[string]any{
+				"threadId": thread.ThreadID,
+				"configId": req.ConfigID,
+				"value":    req.Value,
+			})
+			return
+		}
+
+		options, err := s.updatedThreadConfigOptions(r.Context(), thread, currentOptions, req.ConfigID, req.Value)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, codeInternal, "failed to update thread config options", map[string]any{
+				"threadId": thread.ThreadID,
+				"reason":   err.Error(),
+			})
+			return
+		}
 
 		currentModel := acpmodel.CurrentValueForConfig(options, "model")
-		if currentModel == "" && strings.EqualFold(req.ConfigID, "model") {
-			currentModel = req.Value
-		}
 		agentOptionsJSON, err := withThreadConfigState(thread.AgentOptionsJSON, currentModel, options)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, codeInternal, "failed to normalize thread agent options", map[string]any{
@@ -1635,16 +1671,6 @@ func (s *Server) handleThreadConfigOptions(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusInternalServerError, codeInternal, "failed to update thread", map[string]any{"reason": err.Error()})
 			return
 		}
-		if persistErr := s.persistAgentConfigCatalog(r.Context(), thread.AgentID, agentOptionsJSON, options); persistErr != nil {
-			s.logger.Warn("config_catalog.persist_failed",
-				"threadId", thread.ThreadID,
-				"agent", thread.AgentID,
-				"configId", req.ConfigID,
-				"reason", persistErr.Error(),
-			)
-		}
-		s.persistThreadSlashCommandsBestEffort(r.Context(), thread, manager)
-		s.closeThreadAgents(thread.ThreadID, "thread_config_updated")
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"threadId":      thread.ThreadID,
@@ -1708,11 +1734,18 @@ func (s *Server) finalizeTurnWithBestEffort(ctx context.Context, turnID, status,
 }
 
 func normalizeThreadAgentOptionsForScope(agentOptionsJSON string) string {
-	normalized, err := normalizeAgentOptions(json.RawMessage(agentOptionsJSON))
-	if err != nil {
-		return strings.TrimSpace(agentOptionsJSON)
+	scopeOptions := map[string]any{}
+	if sessionID := threadSessionID(agentOptionsJSON); sessionID != "" {
+		scopeOptions["sessionId"] = sessionID
 	}
-	return normalized
+	if threadFreshSessionRequested(agentOptionsJSON) {
+		scopeOptions[threadAgentOptionFreshSessionKey] = true
+	}
+	normalized, err := json.Marshal(scopeOptions)
+	if err != nil {
+		return "{}"
+	}
+	return string(normalized)
 }
 
 func threadAgentScopeKey(thread storage.Thread) string {
@@ -2242,6 +2275,11 @@ type managedAgent struct {
 	lastUsed  time.Time
 }
 
+type threadConfigSelectionState interface {
+	CurrentModelID() string
+	CurrentConfigOverrides() map[string]string
+}
+
 func newPendingPermission(clientID string) *pendingPermission {
 	return &pendingPermission{
 		clientID: clientID,
@@ -2506,6 +2544,54 @@ func (s *Server) loadStoredThreadConfigOptions(ctx context.Context, thread stora
 	return applyThreadConfigSelections(options, modelID, overrides), true, nil
 }
 
+func (s *Server) loadStoredAgentConfigOptions(
+	ctx context.Context,
+	agentID, modelID string,
+) ([]agents.ConfigOption, bool, error) {
+	lookupModelID := strings.TrimSpace(modelID)
+	if lookupModelID == "" {
+		lookupModelID = storage.DefaultAgentConfigCatalogModelID
+	}
+
+	catalog, err := s.store.GetAgentConfigCatalog(ctx, agentID, lookupModelID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+
+	options, err := decodeStoredConfigOptions(catalog.ConfigOptionsJSON)
+	if err != nil {
+		return nil, false, err
+	}
+	return options, true, nil
+}
+
+func (s *Server) loadThreadConfigOptionsForUpdate(
+	ctx context.Context,
+	thread storage.Thread,
+) ([]agents.ConfigOption, error) {
+	options, found, err := s.loadStoredThreadConfigOptions(ctx, thread)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		return options, nil
+	}
+
+	manager, err := s.resolveThreadConfigOptionManager(thread)
+	if err != nil {
+		return nil, err
+	}
+	options, err = manager.ConfigOptions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	modelID, overrides := threadConfigSelections(thread.AgentOptionsJSON)
+	return applyThreadConfigSelections(acpmodel.NormalizeConfigOptions(options), modelID, overrides), nil
+}
+
 func (s *Server) loadStoredAgentSlashCommands(ctx context.Context, agentID string) ([]agents.SlashCommand, bool, error) {
 	stored, err := s.store.GetAgentSlashCommands(ctx, agentID)
 	if errors.Is(err, storage.ErrNotFound) {
@@ -2592,6 +2678,106 @@ func (s *Server) persistAgentConfigCatalog(
 	})
 }
 
+func (s *Server) updatedThreadConfigOptions(
+	ctx context.Context,
+	thread storage.Thread,
+	currentOptions []agents.ConfigOption,
+	configID, value string,
+) ([]agents.ConfigOption, error) {
+	modelID, overrides := threadConfigSelections(thread.AgentOptionsJSON)
+	nextModelID := modelID
+	nextOverrides := cloneThreadConfigOverrides(overrides)
+
+	if strings.EqualFold(strings.TrimSpace(configID), "model") {
+		nextModelID = strings.TrimSpace(value)
+	} else {
+		if nextOverrides == nil {
+			nextOverrides = make(map[string]string)
+		}
+		nextOverrides[strings.TrimSpace(configID)] = strings.TrimSpace(value)
+	}
+
+	baseOptions := currentOptions
+	if strings.EqualFold(strings.TrimSpace(configID), "model") {
+		storedOptions, found, err := s.loadStoredAgentConfigOptions(ctx, thread.AgentID, nextModelID)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			baseOptions = storedOptions
+		}
+	}
+
+	return applyThreadConfigSelections(baseOptions, nextModelID, nextOverrides), nil
+}
+
+func (s *Server) syncThreadConfigSelections(
+	ctx context.Context,
+	thread storage.Thread,
+	provider agents.Streamer,
+) error {
+	manager, ok := provider.(agents.ConfigOptionManager)
+	if !ok {
+		return nil
+	}
+	state, ok := provider.(threadConfigSelectionState)
+	if !ok {
+		return nil
+	}
+
+	desiredModelID, desiredOverrides := threadConfigSelections(thread.AgentOptionsJSON)
+	currentModelID := strings.TrimSpace(state.CurrentModelID())
+	if desiredModelID != "" && desiredModelID != currentModelID {
+		options, err := manager.SetConfigOption(ctx, "model", desiredModelID)
+		if err != nil {
+			return fmt.Errorf("apply model config before turn: %w", err)
+		}
+		s.persistAgentConfigCatalogBestEffort(ctx, thread, options)
+	}
+
+	currentOverrides := state.CurrentConfigOverrides()
+	if desiredModelID != "" && desiredModelID != currentModelID {
+		currentOverrides = state.CurrentConfigOverrides()
+	}
+	configIDs := make([]string, 0, len(desiredOverrides))
+	for configID := range desiredOverrides {
+		configIDs = append(configIDs, configID)
+	}
+	sort.Strings(configIDs)
+
+	for _, configID := range configIDs {
+		value := strings.TrimSpace(desiredOverrides[configID])
+		if value == "" || value == strings.TrimSpace(currentOverrides[configID]) {
+			continue
+		}
+		options, err := manager.SetConfigOption(ctx, configID, value)
+		if err != nil {
+			return fmt.Errorf("apply %s config before turn: %w", configID, err)
+		}
+		s.persistAgentConfigCatalogBestEffort(ctx, thread, options)
+	}
+
+	return nil
+}
+
+func (s *Server) persistAgentConfigCatalogBestEffort(
+	ctx context.Context,
+	thread storage.Thread,
+	options []agents.ConfigOption,
+) {
+	normalized := acpmodel.NormalizeConfigOptions(options)
+	if len(normalized) == 0 {
+		return
+	}
+	if err := s.persistAgentConfigCatalog(ctx, thread.AgentID, thread.AgentOptionsJSON, normalized); err != nil {
+		s.logger.Warn("config_catalog.persist_failed",
+			"threadId", thread.ThreadID,
+			"agent", thread.AgentID,
+			"reason", err.Error(),
+		)
+	}
+}
+
 func (s *Server) persistAgentSlashCommands(
 	ctx context.Context,
 	agentID string,
@@ -2673,6 +2859,54 @@ func configOverridesFromOptions(options []agents.ConfigOption) map[string]string
 		return nil
 	}
 	return overrides
+}
+
+func cloneThreadConfigOverrides(input map[string]string) map[string]string {
+	if len(input) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(input))
+	for configID, value := range input {
+		cloned[configID] = value
+	}
+	return cloned
+}
+
+func validateThreadConfigSelection(options []agents.ConfigOption, configID, value string) error {
+	configID = strings.TrimSpace(configID)
+	value = strings.TrimSpace(value)
+	if configID == "" {
+		return errors.New("configId is required")
+	}
+	if value == "" {
+		return errors.New("value is required")
+	}
+
+	var option *agents.ConfigOption
+	for i := range options {
+		candidateID := strings.TrimSpace(options[i].ID)
+		category := strings.TrimSpace(options[i].Category)
+		if strings.EqualFold(candidateID, configID) {
+			option = &options[i]
+			break
+		}
+		if strings.EqualFold(configID, "model") && strings.EqualFold(category, "model") {
+			option = &options[i]
+			break
+		}
+	}
+	if option == nil {
+		return fmt.Errorf("config option %q is not available", configID)
+	}
+	if len(option.Options) == 0 {
+		return nil
+	}
+	for _, candidate := range option.Options {
+		if strings.EqualFold(strings.TrimSpace(candidate.Value), value) {
+			return nil
+		}
+	}
+	return fmt.Errorf("value %q is not available for config option %q", value, configID)
 }
 
 func decodeStoredConfigOptions(raw string) ([]agents.ConfigOption, error) {

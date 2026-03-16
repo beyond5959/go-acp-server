@@ -169,6 +169,10 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 			}
 		case agents.ACPUpdateTypeAvailableCommands:
 			return agents.NotifySlashCommands(ctx, update.Commands)
+		case agents.ACPUpdateTypeToolCall, agents.ACPUpdateTypeToolCallUpdate:
+			if update.ToolCall != nil {
+				return agents.NotifyToolCall(ctx, *update.ToolCall)
+			}
 		}
 		return nil
 	})

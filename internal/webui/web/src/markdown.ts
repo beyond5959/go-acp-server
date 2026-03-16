@@ -107,6 +107,28 @@ export function bindMarkdownControls(container: HTMLElement): void {
       })
     })
 
+  // Tool-call content expand buttons
+  container
+    .querySelectorAll<HTMLButtonElement>('.message-tool-call__expand-btn:not([data-bound])')
+    .forEach(btn => {
+      btn.dataset.bound = '1'
+      const preEl = document.getElementById(btn.dataset.target ?? '')
+      if (!(preEl instanceof HTMLElement)) {
+        btn.remove()
+        return
+      }
+      if (preEl.scrollHeight <= preEl.clientHeight + 1) {
+        preEl.classList.remove('message-tool-call__pre--collapsed')
+        btn.remove()
+        return
+      }
+      btn.hidden = false
+      btn.addEventListener('click', () => {
+        preEl.classList.remove('message-tool-call__pre--collapsed')
+        btn.remove()
+      })
+    })
+
   // Message copy buttons
   container
     .querySelectorAll<HTMLButtonElement>('.msg-copy-btn:not([data-bound])')

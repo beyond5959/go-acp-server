@@ -40,6 +40,7 @@ type ACPUpdate struct {
 	Timestamp   string
 	PlanEntries []PlanEntry
 	Commands    []SlashCommand
+	ToolCall    *ACPToolCall
 }
 
 // ParseACPUpdate normalizes provider-specific session/update payloads.
@@ -58,7 +59,14 @@ func ParseACPUpdate(raw json.RawMessage) (ACPUpdate, error) {
 			MessageID         string            `json:"messageId"`
 			Timestamp         string            `json:"timestamp"`
 			Meta              map[string]any    `json:"_meta"`
+			ToolCallID        string            `json:"toolCallId"`
+			Title             *string           `json:"title"`
+			Kind              *string           `json:"kind"`
+			Status            *string           `json:"status"`
 			Content           json.RawMessage   `json:"content"`
+			Locations         json.RawMessage   `json:"locations"`
+			RawInput          json.RawMessage   `json:"rawInput"`
+			RawOutput         json.RawMessage   `json:"rawOutput"`
 			Entries           []PlanEntry       `json:"entries"`
 			AvailableCommands []json.RawMessage `json:"availableCommands"`
 		} `json:"update"`
@@ -130,6 +138,32 @@ func ParseACPUpdate(raw json.RawMessage) (ACPUpdate, error) {
 		return ACPUpdate{
 			Type:     ACPUpdateTypeAvailableCommands,
 			Commands: parseACPUpdateSlashCommands(payload.Update.AvailableCommands),
+		}, nil
+	case ACPUpdateTypeToolCall, ACPUpdateTypeToolCallUpdate:
+		title, hasTitle := normalizeACPOptionalString(payload.Update.Title)
+		kind, hasKind := normalizeACPOptionalString(payload.Update.Kind)
+		status, hasStatus := normalizeACPOptionalString(payload.Update.Status)
+		toolCall := ACPToolCall{
+			Type:         normalizeACPUpdateType(payload.Update.SessionUpdate),
+			ToolCallID:   strings.TrimSpace(payload.Update.ToolCallID),
+			Title:        title,
+			Kind:         kind,
+			Status:       status,
+			Content:      cloneACPUpdateJSON(payload.Update.Content),
+			Locations:    cloneACPUpdateJSON(payload.Update.Locations),
+			RawInput:     cloneACPUpdateJSON(payload.Update.RawInput),
+			RawOutput:    cloneACPUpdateJSON(payload.Update.RawOutput),
+			HasTitle:     hasTitle,
+			HasKind:      hasKind,
+			HasStatus:    hasStatus,
+			HasContent:   hasACPUpdateJSON(payload.Update.Content),
+			HasLocations: hasACPUpdateJSON(payload.Update.Locations),
+			HasRawInput:  hasACPUpdateJSON(payload.Update.RawInput),
+			HasRawOutput: hasACPUpdateJSON(payload.Update.RawOutput),
+		}
+		return ACPUpdate{
+			Type:     toolCall.Type,
+			ToolCall: &toolCall,
 		}, nil
 	default:
 		return ACPUpdate{Type: normalizeACPUpdateType(payload.Update.SessionUpdate)}, nil
@@ -218,6 +252,26 @@ func normalizeACPUpdateString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func normalizeACPOptionalString(value *string) (string, bool) {
+	if value == nil {
+		return "", false
+	}
+	return strings.TrimSpace(*value), true
+}
+
+func hasACPUpdateJSON(raw json.RawMessage) bool {
+	raw = json.RawMessage(strings.TrimSpace(string(raw)))
+	return len(raw) != 0
+}
+
+func cloneACPUpdateJSON(raw json.RawMessage) json.RawMessage {
+	raw = json.RawMessage(strings.TrimSpace(string(raw)))
+	if len(raw) == 0 {
+		return nil
+	}
+	return append(json.RawMessage(nil), raw...)
 }
 
 func normalizeACPUpdateType(raw string) string {

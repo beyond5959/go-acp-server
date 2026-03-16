@@ -41,6 +41,10 @@ func NewACPNotificationHandler(
 			if handler, ok := PlanHandlerFromContext(ctx); ok {
 				return handler(ctx, update.PlanEntries)
 			}
+		case ACPUpdateTypeToolCall, ACPUpdateTypeToolCallUpdate:
+			if update.ToolCall != nil {
+				return NotifyToolCall(ctx, *update.ToolCall)
+			}
 		}
 		return nil
 	}

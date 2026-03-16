@@ -26,6 +26,18 @@ export interface PlanUpdatePayload {
   entries: PlanEntry[]
 }
 
+export interface ToolCallPayload {
+  turnId: string
+  toolCallId: string
+  title?: string
+  kind?: string
+  status?: string
+  content?: unknown
+  locations?: unknown
+  rawInput?: unknown
+  rawOutput?: unknown
+}
+
 export interface SessionBoundPayload {
   threadId: string
   sessionId: string
@@ -52,6 +64,8 @@ export interface TurnStreamCallbacks {
   onDelta?:              (e: MessageDeltaPayload) => void
   onReasoningDelta?:     (e: ReasoningDeltaPayload) => void
   onPlanUpdate?:         (e: PlanUpdatePayload) => void
+  onToolCall?:           (e: ToolCallPayload) => void
+  onToolCallUpdate?:     (e: ToolCallPayload) => void
   onSessionBound?:       (e: SessionBoundPayload) => void
   onCompleted?:          (e: TurnCompletedPayload) => void
   onError?:              (e: TurnErrorPayload) => void
@@ -176,6 +190,12 @@ export class TurnStream {
         break
       case 'plan_update':
         this.callbacks.onPlanUpdate?.(payload as unknown as PlanUpdatePayload)
+        break
+      case 'tool_call':
+        this.callbacks.onToolCall?.(payload as unknown as ToolCallPayload)
+        break
+      case 'tool_call_update':
+        this.callbacks.onToolCallUpdate?.(payload as unknown as ToolCallPayload)
         break
       case 'session_bound':
         this.callbacks.onSessionBound?.(payload as unknown as SessionBoundPayload)

@@ -27,7 +27,8 @@ Modules:
 
 ## 3. Concurrency Model
 
-- `(thread, sessionId)` is the turn-execution isolation unit; empty `sessionId` represents the provisional "new session" scope.
+- `(thread, sessionId)` is the turn-execution isolation unit; empty `sessionId` is the backend's provisional "new session" state.
+- the Web UI may further split one empty-session thread into client-only fresh-session scopes while the user is explicitly iterating on `New session` before ACP emits a real `session_bound`.
 - Each thread/session scope has at most one active turn.
 - New turn requests on an active scope return conflict error, while different sessions on the same thread may run concurrently.
 - Thread-level destructive or shared-state operations (for example delete/compact and thread-wide config changes) remain whole-thread guarded.
@@ -41,8 +42,9 @@ Modules:
 - On first turn execution for embedded-provider thread (currently `codex`): server creates the in-process runtime and initializes ACP session lazily.
 - Process-per-operation ACP CLI providers (`qwen`, `opencode`, `gemini`, `kimi`) reuse the shared `acpcli` driver; each provider opens a fresh ACP stdio process per stream/config/list/discovery/transcript operation while keeping provider-specific startup hooks.
 - Embedded runtime `session/new` is created with `cwd=thread.cwd` (validated as absolute path at thread creation).
-- If `thread.agent_options_json` contains `modelId`, providers apply it as model override during thread-level runtime/session initialization.
-- Provider instances are cached per thread/session/config scope and reclaimed by idle TTL (`--agent-idle-ttl`) when that scope has no active turn.
+- If `thread.agent_options_json` contains `modelId` / `configOverrides`, those values are the persisted desired session config for the thread.
+- Provider instances are cached per thread + session/fresh-session scope and reclaimed by idle TTL (`--agent-idle-ttl`) when that scope has no active turn.
+- Changing thread model/reasoning selection only updates persisted thread state; ngent applies any config diff to the cached provider when the next turn begins, immediately before `session/prompt`.
 - Clearing `thread.agent_options_json.sessionId` to represent Web UI `New session` also invalidates any idle cached provider under the provisional empty-session scope so the following turn must resolve a fresh ACP session.
 - Explicit Web UI `New session` also persists one internal fresh-session marker until the next `session_bound`; while that marker is set, ngent skips `[Conversation Summary]` / `[Recent Turns]` prompt injection and sends raw user input into the fresh ACP session.
 
@@ -473,7 +475,10 @@ and upstream ACP schema:
   - shows `Show more` when `nextCursor` is present.
   - highlights the currently selected `sessionId`.
   - offers `New session` to clear `sessionId`.
+  - when the active thread is already unbound, `New session` still rotates into a fresh client-side scope so the composer starts blank instead of reusing the previous anonymous buffer.
   - refreshes after turns complete so newly created/bound sessions appear in the list.
+  - skips server history hydration for that temporary fresh-session scope until a real ACP session id is bound back into the thread.
+  - filters empty cancelled placeholders from empty-session history replay so page reload does not resurrect abandoned pre-bind attempts.
 
 ## 16. ACP Slash Commands Cache and Composer Picker (2026-03-13)
 
@@ -566,3 +571,49 @@ and upstream ACP schema:
 - Before the first visible assistant delta arrives, the live streaming bubble keeps its text region empty and only shows the typing indicator.
 - The first real delta populates the existing bubble without changing any other streaming semantics.
 - Hidden `agent_thought_chunk` content still remains non-user-visible while the assistant is waiting on a visible delta.
+
+## 18. ACP Tool Calls in Streaming and History (2026-03-16)
+
+### 18.1 Backend Event Model
+
+- Shared ACP `session/update` parsing must recognize:
+  - `tool_call`
+  - `tool_call_update`
+- Parsed tool-call events keep the ACP field structure instead of flattening to text:
+  - `toolCallId`
+  - optional `title`
+  - optional `kind`
+  - optional `status`
+  - optional raw JSON `content`
+  - optional raw JSON `locations`
+  - optional raw JSON `rawInput`
+  - optional raw JSON `rawOutput`
+- Providers bridge those parsed events through one per-turn callback, just like plan/reasoning callbacks.
+- HTTP turn handling persists and streams the same event names (`tool_call`, `tool_call_update`) with:
+  - `turnId`
+  - the ACP tool-call fields listed above
+- Event persistence remains append-only at the turn-event layer; ngent does not store a second derived tool-call snapshot table.
+
+### 18.2 History Reconstruction
+
+- `GET /v1/threads/{threadId}/history?includeEvents=true` returns the persisted `tool_call` / `tool_call_update` events unchanged in turn event history.
+- Tool-call updates are partial replacements:
+  - clients must merge them by `toolCallId`
+  - omitted fields mean "leave previous value unchanged"
+  - explicitly present empty string / empty array / `null` payloads mean "clear or replace with empty value"
+- Session transcript replay stays separate from tool-call history:
+  - `session/load` replay collectors still ignore tool-call notifications because transcript replay only reconstructs user/assistant message content.
+
+### 18.3 Web UI
+
+- Stream state keeps one per-scope tool-call collection keyed by `toolCallId`.
+- Live SSE `tool_call` / `tool_call_update` events update that collection in place and render tool-call cards above the streaming assistant bubble.
+- Finalized message history rebuilds the same tool-call snapshot by replaying persisted turn events in order.
+- The Web UI renders:
+  - title / kind / status badges
+  - text content blocks
+  - command blocks
+  - diff before/after blocks
+  - path/location lists
+  - raw JSON input/output blocks
+- Unsupported non-text ACP tool-call payload shapes are still shown via generic JSON fallback so the information is visible even when no richer renderer exists yet.

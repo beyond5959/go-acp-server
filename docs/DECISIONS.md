@@ -28,6 +28,7 @@
 - ADR-024: Claude Code embedded provider via claudeacp runtime. (Accepted)
 - ADR-025: Hard-delete thread endpoint with active-turn lock. (Accepted)
 - ADR-026: Thread-level model override update API and provider reset. (Accepted)
+- ADR-048: Web UI fresh-session scopes for repeated `New session`. (Accepted)
 - ADR-027: ACP-backed agent model catalog endpoint and UI dropdown wiring. (Accepted)
 - ADR-028: Persist thread config overrides and surface reasoning control in Web UI. (Accepted)
 - ADR-029: Consolidate sidebar thread actions into a drawer and reuse thread patch for rename. (Accepted)
@@ -48,6 +49,28 @@
 - ADR-044: Normalize path-like ACP permission previews across direct ACP providers. (Accepted)
 - ADR-045: Surface hidden agent reasoning as first-class SSE/history events in the Web UI. (Accepted)
 - ADR-046: Collapse finalized Web UI thinking panels by default. (Accepted)
+- ADR-047: Defer thread config-option apply until the next turn boundary. (Accepted)
+
+## ADR-047: Defer Thread Config-Option Apply Until The Next Turn Boundary
+
+- Status: Accepted
+- Date: 2026-03-16
+- Context:
+  - the Web UI model/reasoning pickers had been calling `POST /v1/threads/{threadId}/config-options`, and that endpoint immediately pushed the selection into the cached provider via ACP `session/set_config_option`.
+  - this coupled a pure UI selection change to live provider mutation, even when the user had not sent another message yet.
+  - cached provider instances were also keyed by the full `agentOptions` blob, so changing `modelId` or `configOverrides` could unnecessarily rotate the provider cache instead of reusing the same thread/session runtime.
+- Decision:
+  - keep `POST /v1/threads/{threadId}/config-options` as a persistence-only API: validate against available config options, update sqlite thread state, and return the selected config view without mutating the live provider.
+  - narrow cached provider scope to thread + session/fresh-session identity, so model/reasoning edits do not evict the existing session provider on their own.
+  - when a new turn starts, compare the persisted thread selections against the cached provider's current selections and apply only the changed options immediately before `session/prompt`.
+- Consequences:
+  - Web UI config changes feel immediate in persisted thread state, but agent-side mutation is deferred until the user actually sends the next message.
+  - cached sessions survive picker edits, so session continuity is preserved and redundant provider churn is reduced.
+  - if a provider has no cached runtime yet, the next turn still starts from the persisted thread selections, so restart recovery behavior stays intact.
+- Alternatives considered:
+  - keep immediate apply on every picker change (rejected: mutates provider state without a user turn boundary).
+  - add a separate explicit Apply button (rejected: product requirement keeps no-button picker UX).
+  - persist both desired and applied config state in sqlite (rejected: the cached provider already holds current session state; the extra durable copy would add complexity without near-term product value).
 
 ## ADR-046: Collapse Finalized Web UI Thinking Panels by Default
 
@@ -158,7 +181,6 @@
 - Status: Accepted
 - Date: 2026-03-13
 - Context:
-  - after ADR-041, real Codex + Playwright validation on 2026-03-13 still reproduced the user-visible bug: selecting historical session `B`, clicking `New session`, then sending a prompt produced a new ACP `sessionId`, but the first prompt still contained `[Conversation Summary]` / `[Recent Turns]` from thread session `A`.
   - the root cause was `buildInjectedPrompt()`: ngent treats any empty `sessionId` as a local-context continuation and wraps the next prompt with prior thread turns.
   - disabling context injection for all empty-session turns would be too broad because brand-new no-session threads still benefit from local prompt continuation after earlier turns.
 - Decision:
@@ -1137,3 +1159,46 @@ Use this template for new decisions.
 - Alternatives considered:
   - keep provider-local bespoke permission decoding (rejected: already diverged across adapters and failed on a real payload shape).
   - flatten structured tool-call previews into strings at the transport layer (rejected: hides provider metadata and makes badge classification/path extraction harder later).
+
+## ADR-048: Web UI fresh-session scopes for repeated `New session`
+
+- Status: Accepted
+- Date: 2026-03-16
+- Context:
+  - the Web UI previously keyed every unbound thread view to the same empty-session scope `${threadId}::`.
+  - when a user started a fresh session, cancelled the turn before ACP emitted `session_bound`, and clicked `New session` again, the UI stayed on that same anonymous scope and kept showing the cancelled placeholder/content.
+  - fast-cancelled turns with no `session_bound` and no visible response text are transient UI artifacts, not durable conversation state the user expects to keep re-entering.
+- Decision:
+  - treat explicit `New session` in the Web UI as a client-side fresh-session scope with a temporary key `${threadId}::@fresh:<uuid>` until a real ACP session binds.
+  - allow `New session` even when the active thread already has no persisted `sessionId`; in that case, rotate to a new fresh-session scope locally instead of treating the action as a no-op.
+  - seed that fresh-session scope with an empty message cache and skip server history replay for it until the first turn binds to a real ACP session id.
+  - filter cancelled turns with no `session_bound` and no visible response text out of empty-session history replay so page reload does not resurrect those transient placeholders.
+- Consequences:
+  - `send -> cancel -> New session` now returns to a blank composer even when the cancelled turn never acquired a session id.
+  - late completion/cancel callbacks for the abandoned scope still land in their original scope and no longer leak into the newly opened fresh session.
+  - reopening the thread after reload no longer repaints empty cancelled placeholders from those abandoned pre-bind attempts.
+- Alternatives considered:
+  - keep using the single empty-session scope `${threadId}::` for all fresh-session attempts (rejected: this is the bug).
+  - persist a backend-generated fresh-session nonce in thread metadata (rejected for now: more invasive than needed for the Web UI reset bug).
+
+## ADR-049: Preserve ACP tool-call updates as first-class turn events
+
+- Status: Accepted
+- Date: 2026-03-16
+- Context:
+  - ACP tool execution progress is reported through `session/update` variants `tool_call` and `tool_call_update`, not through normal assistant text deltas.
+  - those payloads can carry structured fields such as `toolCallId`, `status`, `content[]`, `locations[]`, `rawInput`, and `rawOutput`.
+  - ngent previously tolerated non-text tool-call payloads during transcript replay, but live turn streaming still discarded them because only message/plan/reasoning updates were bridged into HTTP/SSE and the Web UI.
+- Decision:
+  - extend shared ACP update parsing to normalize `tool_call` and `tool_call_update` into one structured ngent event model without flattening the payload into plain text.
+  - preserve the raw structured JSON for `content`, `locations`, `rawInput`, and `rawOutput` so downstream clients can evolve their rendering without changing the transport contract again.
+  - add a per-turn tool-call callback in the agent layer, persist those updates into SQLite turn events, and emit them over SSE using the same event names (`tool_call`, `tool_call_update`).
+  - have the Web UI merge tool-call events by `toolCallId`, so live streaming and history reload reconstruct the same final tool state.
+- Consequences:
+  - clients can now observe structured tool activity during a turn and after reload/history fetch.
+  - ngent keeps ACP semantics intact instead of inventing a hub-specific flattened tool transcript format.
+  - the current Web UI renders common text/diff/command/path payloads directly and falls back to generic JSON blocks for unsupported tool-call content shapes.
+- Alternatives considered:
+  - continue ignoring tool-call updates outside transcript replay (rejected: loses important execution state in the UI).
+  - flatten tool-call payloads into `message_delta` text (rejected: destroys structure and makes incremental updates ambiguous).
+  - keep tool-call state only in browser memory (rejected: reload/history would still lose it).

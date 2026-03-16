@@ -459,6 +459,14 @@ func (c *Client) handleUpdate(
 				c.sendSessionCancel(runtime, c.currentSessionID())
 				return err
 			}
+		case agents.ACPUpdateTypeToolCall, agents.ACPUpdateTypeToolCallUpdate:
+			if update.ToolCall == nil {
+				return nil
+			}
+			if err := agents.NotifyToolCall(ctx, *update.ToolCall); err != nil {
+				c.sendSessionCancel(runtime, c.currentSessionID())
+				return err
+			}
 		}
 		return nil
 	}
