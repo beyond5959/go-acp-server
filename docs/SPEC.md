@@ -606,9 +606,28 @@ and upstream ACP schema:
 
 ### 18.3 Web UI
 
-- Stream state keeps one per-scope tool-call collection keyed by `toolCallId`.
-- Live SSE `tool_call` / `tool_call_update` events update that collection in place and render tool-call cards above the streaming assistant bubble.
-- Finalized message history rebuilds the same tool-call snapshot by replaying persisted turn events in order.
+- Assistant rendering is timeline-based:
+  - `message_delta` becomes visible assistant content segments
+  - `reasoning_delta` / `thought_delta` becomes thinking segments
+  - `tool_call` / `tool_call_update` becomes tool segments
+- Visible assistant content segments render as plain answer blocks, not agent chat bubbles.
+- The transcript pane is single-column:
+  - user prompts render as prompt blocks with a subtle background and border
+  - assistant timeline blocks render directly underneath
+  - the UI does not use IM-style right-aligned user bubbles or left-aligned agent bubbles
+- Stream state keeps one per-scope ordered segment list plus stable tool-call identity keyed by `toolCallId`.
+- Live SSE updates append or mutate those segments in place, so the chat pane can render `Thought -> Tool -> Thought -> Answer` instead of one concentrated reasoning/tool section.
+- While a turn is still streaming, only the active answer segment stays in plain-text typing mode; older answer segments switch to finalized markdown rendering immediately when the stream moves on.
+- While a turn is still streaming, only the active thought segment remains expanded; older thought segments collapse immediately once a later event switches the stream out of reasoning.
+- While a turn is still streaming, only the active tool-call segment remains expanded; older/finalized tool-call segments render as collapsed disclosure panels that can be reopened manually.
+- Finalized message history rebuilds the same ordered segment list by replaying persisted turn events in sequence order.
+- Finalized assistant content segments expose their own copy action and copy only that segment's raw text; the assistant message footer no longer copies the entire aggregated answer string.
+- Each finalized answer segment renders its own local meta row with timestamp first and then that segment's copy control; the control still copies only that segment's text.
+- Markdown tables in finalized answer/thought content use explicit transcript styles (borders, header background, zebra rows, horizontal overflow) rather than browser-default table rendering.
+- Finalized markdown tables are wrapped in a fit-content scroll container so the border hugs the table's natural width instead of stretching across the full message column.
+- `tool_call_update` mutates the first segment for the matching `toolCallId`; it does not append a second duplicate tool block.
+- Permission-request cards are not rendered as tool-call segments and do not participate in tool/thought collapse state.
+- `plan_update` remains a separate replace-style plan card above the ordered assistant segments.
 - The Web UI renders:
   - title / kind / status badges
   - text content blocks

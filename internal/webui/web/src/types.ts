@@ -87,6 +87,15 @@ export interface ToolCall {
   rawOutput?: unknown
 }
 
+export type MessageSegmentKind = 'content' | 'reasoning' | 'tool_call'
+
+export interface MessageSegment {
+  id: string
+  kind: MessageSegmentKind
+  content?: string
+  toolCall?: ToolCall
+}
+
 export interface Turn {
   turnId: string
   requestText: string
@@ -111,6 +120,7 @@ export interface Message {
   id: string
   role: MessageRole
   content: string
+  segments?: MessageSegment[]
   reasoning?: string
   /** ISO-8601 string */
   timestamp: string

@@ -310,18 +310,18 @@
   - decide whether denied-permission turns should persist a lightweight terminal message, or whether the Web UI should keep the resolved permission card visible after turn completion.
 
 - ID: KI-030
-- Title: Provider-owned historical session replay still omits hidden reasoning
+- Title: Provider-owned historical session replay still omits hidden reasoning and tool timeline
 - Status: Open
 - Severity: Low
 - Affects: `GET /v1/threads/{threadId}/session-history` and Web UI session-sidebar replay for pre-existing provider sessions
 - Symptom:
-  - ngent now surfaces hidden reasoning for hub-created turns by persisting `reasoning_delta` events in normal turn history.
-  - provider-owned historical replay returned by `/session-history` still exposes only visible `user` / `assistant` transcript messages, so switching to an older external session in the Web UI does not reconstruct past hidden reasoning blocks.
+  - ngent now surfaces hidden reasoning and ordered tool/content/thought segments for hub-created turns by persisting turn events in normal history.
+  - provider-owned historical replay returned by `/session-history` still exposes only visible `user` / `assistant` transcript messages, so switching to an older external session in the Web UI does not reconstruct past hidden reasoning blocks or the tool-call timeline.
 - Workaround:
-  - use regular ngent turn history for turns created through ngent itself; those now preserve reasoning after reload.
+  - use regular ngent turn history for turns created through ngent itself; those now preserve reasoning and the ordered assistant segment timeline after reload.
   - treat provider-owned session replay as visible transcript-only until the replay contract is extended.
 - Follow-up plan:
-  - evaluate whether session-transcript schema should grow an optional reasoning field, or whether hidden reasoning should remain excluded from provider-owned replay for privacy/product reasons.
+  - evaluate whether session-transcript schema should grow optional reasoning/tool metadata, or whether provider-owned replay should intentionally remain visible-transcript-only for privacy/product reasons.
 
 - ID: KI-031
 - Title: Web UI thinking expand state is not persisted across page reload

@@ -71,7 +71,10 @@ marked.use({
 
 /** Render markdown text to sanitised HTML. Only call for finalised agent messages. */
 export function renderMarkdown(text: string): string {
-  return marked.parse(text) as string
+  const html = marked.parse(text) as string
+  return html
+    .replace(/<table>/g, '<div class="md-table-wrap"><table>')
+    .replace(/<\/table>/g, '</table></div>')
 }
 
 /** Bind copy/expand/message-copy buttons within a container. Idempotent. */
@@ -111,6 +114,8 @@ export function bindMarkdownControls(container: HTMLElement): void {
   container
     .querySelectorAll<HTMLButtonElement>('.message-tool-call__expand-btn:not([data-bound])')
     .forEach(btn => {
+      const hiddenPanel = btn.closest<HTMLElement>('.message-tool-call__panel[hidden]')
+      if (hiddenPanel) return
       btn.dataset.bound = '1'
       const preEl = document.getElementById(btn.dataset.target ?? '')
       if (!(preEl instanceof HTMLElement)) {

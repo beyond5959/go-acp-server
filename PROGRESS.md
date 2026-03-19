@@ -832,3 +832,23 @@ This file is the source of milestone progress, validation commands, and next act
   - executed validation:
     - pass: `cd internal/webui/web && npm run build`
     - pass: `go test ./...`
+
+- 2026-03-19: changed Web UI assistant rendering from one aggregated bubble into an event-ordered segment timeline.
+  - root cause: the Web UI already persisted `reasoning_delta`, `tool_call`, and `tool_call_update`, but both live streaming and finalized history still rendered them as one concentrated reasoning/tool section plus one final assistant bubble, so the actual turn sequence was lost visually.
+  - extended the frontend message model with ordered `segments`, rebuilt finalized assistant messages from persisted turn events (`message_delta`, `reasoning_delta`, `tool_call`, `tool_call_update`), and tracked the same segment timeline during SSE streaming.
+  - tool-call updates now keep their original timeline position by merging later `tool_call_update` payloads into the first segment for that `toolCallId`, while message/reasoning deltas append new segments only when the stream actually switches modes.
+  - kept plan cards as a separate block, but assistant content / thought / tool activity now render in the same chronological order the agent emitted them.
+  - adjusted assistant content segments to render as flat answer blocks instead of agent chat bubbles, matching Kimi web's timeline style more closely when normal answer text alternates with thought/tool steps.
+  - removed the IM-style left/right chat alignment for the transcript pane; user prompts now render as the top line of a single-column turn flow and agent output follows directly underneath in the same reading column.
+  - during an in-flight turn, only the currently growing thought segment stays expanded; once a later answer/tool/plan event arrives, the completed thought segment immediately switches to the collapsed finalized-panel state instead of waiting for full turn completion.
+  - completed answer segments now switch to finalized markdown rendering as soon as the stream moves on, so tables and other block markdown render immediately instead of staying as raw text until the whole turn finishes.
+  - styled markdown tables in answer/thought blocks with borders, header background, zebra rows, and horizontal overflow so rendered tables are visually distinct instead of looking like loosely aligned text.
+  - moved markdown tables onto a fit-content wrapper with independent horizontal scrolling, so the outer border now hugs the actual table content instead of stretching to the full transcript width.
+  - changed tool-call segments from always-open cards into collapsible panels that follow the same interaction model as thought blocks: the currently updating tool call stays open during streaming, finalized tool calls default closed, and users can manually expand closed panels on demand.
+  - kept permission-request cards outside that new fold/unfold treatment so approval prompts still remain independently visible and actionable while a turn is running.
+  - delayed hidden tool-call detail `Show all` binding until the panel is actually opened, so nested command/JSON previews still compute their collapsed height correctly after the outer tool-call panel starts closed.
+  - moved assistant copy actions from the whole-message footer down to each finalized answer segment, so clicking copy now copies only that visible answer block instead of concatenating every answer segment in the turn.
+  - kept per-answer copy buttons under their own answer segments, but merged each segment's timestamp and copy control onto one small meta row so time appears first and copy follows on the same line.
+  - executed validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`

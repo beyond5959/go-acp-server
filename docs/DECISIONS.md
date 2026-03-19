@@ -1185,3 +1185,43 @@ Use this template for new decisions.
   - continue ignoring tool-call updates outside transcript replay (rejected: loses important execution state in the UI).
   - flatten tool-call payloads into `message_delta` text (rejected: destroys structure and makes incremental updates ambiguous).
   - keep tool-call state only in browser memory (rejected: reload/history would still lose it).
+
+## ADR-050: Render assistant turns as ordered UI segments instead of one aggregated bubble
+
+- Status: Accepted
+- Date: 2026-03-19
+- Context:
+  - ngent already persisted `message_delta`, `reasoning_delta`, `tool_call`, and `tool_call_update` turn events in order.
+  - the Web UI still collapsed those into one final assistant bubble plus aggregated reasoning/tool sections, which hid the actual execution sequence and felt noticeably worse than Kimi/Codex-style timelines during tool-heavy turns.
+  - tool-call updates can arrive after later reasoning or assistant text, so the UI needs stable per-tool identity without losing the first-seen ordering.
+- Decision:
+  - extend the frontend assistant-message model with ordered `segments` and rebuild those segments from persisted turn events for finalized history.
+  - treat `message_delta` and `reasoning_delta` as append-only text segments that coalesce only while the stream stays in the same mode.
+  - treat each `tool_call` / `tool_call_update` as a stable segment keyed by `toolCallId`; later updates mutate that segment in place instead of appending a second duplicate card.
+  - render assistant content segments as plain answer blocks rather than chat bubbles so visible answer text sits in the same timeline grammar as thought/tool blocks.
+  - drop the IM-style left/right transcript layout in the Web UI; both user prompts and agent output render in one left-aligned reading column so a user prompt can flow directly into the agent timeline below it.
+  - during streaming, keep only the currently active answer segment in the plain-text typing state; once the stream moves on, completed answer segments should immediately render through the finalized markdown pipeline so tables and lists appear without waiting for turn completion.
+  - during streaming, keep only the currently active thought segment in the expanded/plain-text state; once a later event arrives, the completed thought segment should immediately become a collapsed finalized panel even before the overall turn ends.
+  - apply the same panel model to tool-call segments: keep the currently updating tool call expanded during streaming, but render finalized tool calls as collapsed panels that can be manually reopened.
+  - keep permission-request cards out of the ordered segment collapse model because approval prompts are independent workflow interruptions and should remain immediately visible/actionable.
+  - attach copy actions to finalized assistant content segments instead of the whole assistant message footer, so copy semantics match the visible `Thought / Tool / Answer` segmentation.
+  - keep those per-segment copy actions attached to their own answer blocks, but render each block's timestamp and copy control together on one local meta row with time first, to avoid burning an extra line.
+  - style rendered markdown tables explicitly in answer/thought content instead of relying on browser defaults, so GFM tables remain visually recognizable inside the single-column transcript.
+  - wrap rendered markdown tables in a dedicated fit-content scroll container, so table borders track the natural table width while still allowing horizontal overflow for wide tables.
+  - keep plan updates outside the ordered segment list for now because `plan_update` is a replace-style progress snapshot rather than append-only assistant content.
+- Consequences:
+  - live streaming and history reload now show `Thought -> Tool -> Answer` in the order the agent actually emitted them.
+  - finalized assistant messages can contain multiple visible answer blocks when the model alternates between tool use and visible output.
+  - completed answer blocks can render markdown tables/lists during long-running turns instead of exposing raw markdown syntax until the final completion event.
+  - markdown tables now read as actual tabular UI with cell boundaries and scroll behavior, especially for wider technical summaries.
+  - narrow tables no longer show an oversized empty right gutter inside the table border.
+  - longer in-flight tool runs no longer keep every previous thought segment expanded; completed thoughts collapse as soon as the stream moves on.
+  - tool-call-heavy turns no longer leave large verbose tool cards permanently expanded in the transcript; users see a compact per-tool timeline and can reopen details selectively.
+  - permission prompts continue to render outside those collapsible tool panels, so approval state is not hidden behind a disclosure control.
+  - copying a multi-answer turn no longer merges unrelated answer fragments together; users can copy only the specific answer block they intend.
+  - each finalized answer block now owns its own compact `time + copy` meta row, so copy stays visually attached to that block without adding another stacked control line.
+  - provider-owned `/session-history` replay still falls back to transcript-only bubbles when no turn-event history exists.
+- Alternatives considered:
+  - keep the old single-bubble layout and only restyle the tool/reasoning sections (rejected: still loses chronological structure).
+  - flatten tool/thought events into one markdown transcript string (rejected: harder to update incrementally and loses structured tool metadata).
+  - move `plan_update` into the same segment list immediately (deferred: it is replace-style state and needs separate UX rules).

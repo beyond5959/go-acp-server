@@ -395,7 +395,6 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - sqlite check: `select agent_id, commands_json from agent_slash_commands where agent_id = 'codex';` returned the persisted codex command list
 - Additional verification commands (executed 2026-03-13 after Qwen slash-command probe fallback):
   - `go test ./internal/agents/qwen ./internal/httpapi -run 'Test(StreamCapturesSlashCommandsEmittedBeforePrompt|SlashCommandsAfterConfigOptionsInit|ThreadConfigOptionsBackfillsSlashCommandsWhenCatalogAlreadyStored|ThreadSlashCommandsEndpointBackfillsMissingSnapshot)$' -count=1`
-  - `go run ./cmd/ngent --port 8798 --db-path /tmp/ngent-qwen-slash-fix-v2.db --debug`
   - real local Qwen thread: confirmed the very first `GET /v1/threads/{threadId}/slash-commands` returned `/bug`, `/compress`, `/init`, and `/summary` before any turn was sent
   - sqlite check: `select agent_id, commands_json from agent_slash_commands where agent_id = 'qwen';` returned the persisted qwen command list
 - Additional verification commands (executed 2026-03-13 after unifying direct ACP provider slash-command caches):
@@ -415,7 +414,16 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - SSE emits `tool_call` / `tool_call_update` events with `turnId`, `toolCallId`, and the corresponding structured ACP fields (`status`, `content`, `locations`, `rawInput`, `rawOutput`) when present.
   - turn history persists those same event types and payloads.
   - the Web UI merges updates by `toolCallId`, so the same tool-call card progresses from its initial state to its updated/final state both live and after reload.
-  - tool-call cards remain separate from the main assistant text bubble.
+  - assistant content, thought blocks, and tool-call cards render in the order the events were emitted instead of being collapsed into one aggregated assistant bubble.
+  - tool-call cards remain separate from assistant text segments even when the assistant later emits more visible content.
+  - while the turn is still streaming, completed answer blocks already render through the markdown pipeline, so tables and similar block markdown no longer remain raw text until final completion.
+  - while the turn is still streaming, only the currently active thought block stays expanded; once a later answer/tool/plan event arrives, the completed thought block collapses immediately without waiting for final completion.
+  - while the turn is still streaming, only the currently active tool-call block stays expanded; once later answer/thought/plan activity takes over, the completed tool-call block collapses immediately but can still be reopened manually.
+  - each finalized answer block exposes its own copy action, and using it copies only that block's answer text rather than the full assistant turn content.
+  - each finalized answer block keeps its own timestamp and copy control on the same local row, with time first and copy second, rather than moving every copy control into one shared footer area.
+  - finalized markdown tables render with visible tabular styling rather than unstyled browser-default text alignment.
+  - finalized markdown table borders hug the table content width instead of leaving a large empty right gutter inside the border.
+  - permission-request cards still render independently and remain visible/actionable instead of being hidden inside tool-call disclosure panels.
 - Verification commands (executed 2026-03-16):
   - `go test ./internal/agents -run 'TestParseACPUpdateToolCall|TestParseACPUpdateToolCallUpdateKeepsExplicitClears' -count=1`
   - `go test ./internal/agents -run 'TestNewACPNotificationHandlerRoutesToolCallsToToolCallHandler' -count=1`

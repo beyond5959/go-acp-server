@@ -8,6 +8,7 @@ import { renderMarkdown, bindMarkdownControls } from './markdown.ts'
 import type {
   Thread,
   Message,
+  MessageSegment,
   ConfigOption,
   ConfigOptionValue,
   SlashCommand,
@@ -87,6 +88,11 @@ const iconSparkles = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none
   <path d="M20 2v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
   <path d="M22 4h-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
   <circle cx="4" cy="20" r="1.6" fill="currentColor"/>
+</svg>`
+
+const iconTool = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <path d="M14.7 6.3a4 4 0 0 0 3 5.96l-7.03 7.04a1.5 1.5 0 0 1-2.12 0l-1.85-1.85a1.5 1.5 0 0 1 0-2.12l7.04-7.03a4 4 0 0 0 5.96 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M18 6a2 2 0 0 0-2-2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
 </svg>`
 
 const iconChevronRight = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -239,6 +245,134 @@ function cloneToolCalls(toolCalls: ToolCall[] | null | undefined): ToolCall[] | 
   return cloned.length ? cloned : undefined
 }
 
+function nextMessageSegmentID(prefix: string, kind: MessageSegment['kind'], index: number): string {
+  return `${prefix}-${kind}-${index}`
+}
+
+function cloneMessageSegments(segments: MessageSegment[] | null | undefined): MessageSegment[] | undefined {
+  if (!segments?.length) return undefined
+
+  const cloned: MessageSegment[] = []
+  for (const segment of segments) {
+    const id = segment.id?.trim() ?? ''
+    if (!id) continue
+    if (segment.kind === 'tool_call') {
+      const toolCall = cloneToolCalls(segment.toolCall ? [segment.toolCall] : undefined)?.[0]
+      if (!toolCall) continue
+      cloned.push({
+        id,
+        kind: 'tool_call',
+        toolCall,
+      })
+      continue
+    }
+
+    cloned.push({
+      id,
+      kind: segment.kind,
+      content: segment.content ?? '',
+    })
+  }
+  return cloned.length ? cloned : undefined
+}
+
+function appendTextSegment(
+  segments: MessageSegment[] | null | undefined,
+  kind: 'content' | 'reasoning',
+  delta: string,
+  idPrefix: string,
+): MessageSegment[] {
+  if (!delta) return cloneMessageSegments(segments) ?? []
+
+  const next = cloneMessageSegments(segments) ?? []
+  const last = next[next.length - 1]
+  if (last?.kind === kind) {
+    next[next.length - 1] = {
+      ...last,
+      content: (last.content ?? '') + delta,
+    }
+    return next
+  }
+
+  next.push({
+    id: nextMessageSegmentID(idPrefix, kind, next.length + 1),
+    kind,
+    content: delta,
+  })
+  return next
+}
+
+function applyToolCallSegmentEvent(
+  segments: MessageSegment[] | null | undefined,
+  payload: Record<string, unknown>,
+  idPrefix: string,
+): MessageSegment[] {
+  const toolCallId = typeof payload.toolCallId === 'string' ? payload.toolCallId.trim() : ''
+  if (!toolCallId) return cloneMessageSegments(segments) ?? []
+
+  const next = cloneMessageSegments(segments) ?? []
+  const existingIndex = next.findIndex(segment => (
+    segment.kind === 'tool_call' && segment.toolCall?.toolCallId === toolCallId
+  ))
+  const current = existingIndex >= 0 && next[existingIndex].toolCall
+    ? [next[existingIndex].toolCall]
+    : []
+  const merged = applyToolCallEvent(current, payload)[0]
+  if (!merged) return next
+
+  if (existingIndex >= 0) {
+    next[existingIndex] = {
+      ...next[existingIndex],
+      toolCall: merged,
+    }
+  } else {
+    next.push({
+      id: nextMessageSegmentID(idPrefix, 'tool_call', next.length + 1),
+      kind: 'tool_call',
+      toolCall: merged,
+    })
+  }
+
+  return next
+}
+
+function findToolCallSegmentID(
+  segments: MessageSegment[] | null | undefined,
+  toolCallId: string | undefined,
+): string | null {
+  const normalizedToolCallID = toolCallId?.trim() ?? ''
+  if (!normalizedToolCallID) return null
+  return (segments ?? []).find(segment => (
+    segment.kind === 'tool_call' && segment.toolCall?.toolCallId === normalizedToolCallID
+  ))?.id ?? null
+}
+
+function messageSegmentsContent(segments: MessageSegment[] | null | undefined): string {
+  return (cloneMessageSegments(segments) ?? [])
+    .filter(segment => segment.kind === 'content')
+    .map(segment => segment.content ?? '')
+    .join('')
+}
+
+function messageSegmentsReasoning(segments: MessageSegment[] | null | undefined): string {
+  return (cloneMessageSegments(segments) ?? [])
+    .filter(segment => segment.kind === 'reasoning')
+    .map(segment => segment.content ?? '')
+    .join('')
+}
+
+function messageSegmentsToolCalls(segments: MessageSegment[] | null | undefined): ToolCall[] | undefined {
+  const toolCalls = (cloneMessageSegments(segments) ?? [])
+    .filter(segment => segment.kind === 'tool_call')
+    .map(segment => segment.toolCall)
+    .filter((toolCall): toolCall is ToolCall => !!toolCall)
+  return cloneToolCalls(toolCalls)
+}
+
+function messageHasContentSegment(segments: MessageSegment[] | null | undefined): boolean {
+  return (segments ?? []).some(segment => segment.kind === 'content' && !!segment.content)
+}
+
 function applyToolCallEvent(toolCalls: ToolCall[], payload: Record<string, unknown>): ToolCall[] {
   const toolCallId = typeof payload.toolCallId === 'string' ? payload.toolCallId.trim() : ''
   if (!toolCallId) return cloneToolCalls(toolCalls) ?? []
@@ -377,6 +511,84 @@ function extractTurnReasoning(events: TurnEvent[] | undefined): string {
     reasoning += event.data.delta
   }
   return reasoning
+}
+
+function sortTurnEvents(events: TurnEvent[] | undefined): TurnEvent[] {
+  return [...(events ?? [])].sort((left, right) => {
+    if (left.seq !== right.seq) return left.seq - right.seq
+    return left.eventId - right.eventId
+  })
+}
+
+function buildMessageSegmentsFromTurn(
+  turnId: string,
+  events: TurnEvent[] | undefined,
+  responseText: string,
+): MessageSegment[] | undefined {
+  let segments: MessageSegment[] = []
+  const idPrefix = `${turnId}-segment`
+
+  for (const event of sortTurnEvents(events)) {
+    switch (event.type) {
+      case 'message_delta': {
+        if (typeof event.data.delta !== 'string' || !event.data.delta) continue
+        segments = appendTextSegment(segments, 'content', event.data.delta, idPrefix)
+        break
+      }
+      case 'reasoning_delta':
+      case 'thought_delta': {
+        if (typeof event.data.delta !== 'string' || !event.data.delta) continue
+        segments = appendTextSegment(segments, 'reasoning', event.data.delta, idPrefix)
+        break
+      }
+      case 'tool_call':
+      case 'tool_call_update':
+        segments = applyToolCallSegmentEvent(segments, event.data, idPrefix)
+        break
+      default:
+        break
+    }
+  }
+
+  if (!messageHasContentSegment(segments) && responseText) {
+    segments = appendTextSegment(segments, 'content', responseText, idPrefix)
+  }
+
+  return cloneMessageSegments(segments)
+}
+
+function fallbackMessageSegments(msg: Message): MessageSegment[] | undefined {
+  const segments: MessageSegment[] = []
+
+  if (hasReasoningText(msg.reasoning)) {
+    segments.push({
+      id: nextMessageSegmentID(msg.id, 'reasoning', segments.length + 1),
+      kind: 'reasoning',
+      content: msg.reasoning,
+    })
+  }
+
+  for (const toolCall of cloneToolCalls(msg.toolCalls) ?? []) {
+    segments.push({
+      id: nextMessageSegmentID(msg.id, 'tool_call', segments.length + 1),
+      kind: 'tool_call',
+      toolCall,
+    })
+  }
+
+  if (msg.content) {
+    segments.push({
+      id: nextMessageSegmentID(msg.id, 'content', segments.length + 1),
+      kind: 'content',
+      content: msg.content,
+    })
+  }
+
+  return cloneMessageSegments(segments)
+}
+
+function resolveMessageSegments(msg: Message): MessageSegment[] | undefined {
+  return cloneMessageSegments(msg.segments) ?? fallbackMessageSegments(msg)
 }
 
 function hasAgentConfigCatalog(agentId: string, modelId = ''): boolean {
@@ -545,8 +757,10 @@ let activeStreamScopeKey = ''
 const streamsByScope = new Map<string, TurnStream>()
 const streamBufferByScope = new Map<string, string>()
 const streamPlanByScope = new Map<string, PlanEntry[]>()
-const streamToolCallsByScope = new Map<string, ToolCall[]>()
-const streamReasoningByScope = new Map<string, string>()
+const streamSegmentsByScope = new Map<string, MessageSegment[]>()
+const activeContentSegmentIdByScope = new Map<string, string>()
+const activeReasoningSegmentIdByScope = new Map<string, string>()
+const activeToolCallSegmentIdByScope = new Map<string, string>()
 const streamStartedAtByScope = new Map<string, string>()
 type PendingPermission = PermissionRequiredPayload & { deadlineMs: number }
 const pendingPermissionsByScope = new Map<string, Map<string, PendingPermission>>()
@@ -558,8 +772,10 @@ let lastRenderThreadId: string | null = null
 let lastRenderChatScopeKey = ''
 /** Chat scope keys whose filtered history was loaded. */
 const loadedHistoryScopeKeys = new Set<string>()
-/** Message ids whose final Thinking panel is currently expanded in the UI. */
-const expandedReasoningMessageIds = new Set<string>()
+/** Segment ids whose final Thinking panel is currently expanded in the UI. */
+const expandedReasoningSegmentIds = new Set<string>()
+/** Segment ids whose final tool-call panel is currently expanded in the UI. */
+const expandedToolCallSegmentIds = new Set<string>()
 let openThreadActionMenuId: string | null = null
 let renamingThreadId: string | null = null
 let renamingThreadDraft = ''
@@ -576,6 +792,48 @@ function isNearBottom(el: HTMLElement): boolean {
 function addMessageToStore(scopeKey: string, msg: Message): void {
   const { messages } = store.get()
   store.set({ messages: { ...messages, [scopeKey]: [...(messages[scopeKey] ?? []), msg] } })
+}
+
+function activeContentSegmentID(scopeKey: string): string | null {
+  return activeContentSegmentIdByScope.get(scopeKey) ?? null
+}
+
+function setActiveContentSegmentID(scopeKey: string, segmentID: string | null | undefined): void {
+  if (!scopeKey) return
+  const nextID = segmentID?.trim() ?? ''
+  if (nextID) {
+    activeContentSegmentIdByScope.set(scopeKey, nextID)
+    return
+  }
+  activeContentSegmentIdByScope.delete(scopeKey)
+}
+
+function activeReasoningSegmentID(scopeKey: string): string | null {
+  return activeReasoningSegmentIdByScope.get(scopeKey) ?? null
+}
+
+function setActiveReasoningSegmentID(scopeKey: string, segmentID: string | null | undefined): void {
+  if (!scopeKey) return
+  const nextID = segmentID?.trim() ?? ''
+  if (nextID) {
+    activeReasoningSegmentIdByScope.set(scopeKey, nextID)
+    return
+  }
+  activeReasoningSegmentIdByScope.delete(scopeKey)
+}
+
+function activeToolCallSegmentID(scopeKey: string): string | null {
+  return activeToolCallSegmentIdByScope.get(scopeKey) ?? null
+}
+
+function setActiveToolCallSegmentID(scopeKey: string, segmentID: string | null | undefined): void {
+  if (!scopeKey) return
+  const nextID = segmentID?.trim() ?? ''
+  if (nextID) {
+    activeToolCallSegmentIdByScope.set(scopeKey, nextID)
+    return
+  }
+  activeToolCallSegmentIdByScope.delete(scopeKey)
 }
 
 function omitThreadCompletionBadge(
@@ -878,17 +1136,21 @@ function appendOrRestoreStreamingBubble(thread: Thread): void {
   listEl.querySelector('.empty-state')?.remove()
   listEl.querySelector('.message-list-loading')?.remove()
   const startedAt = streamStartedAtByScope.get(scopeKey) ?? new Date().toISOString()
-  const avatar = renderAgentAvatar(thread.agent ?? '', 'message')
   const div = document.createElement('div')
   div.className = 'message message--agent'
   div.dataset.msgId = streamState.messageId
   const livePlanEntries = streamPlanByScope.get(scopeKey)
-  const liveToolCalls = streamToolCallsByScope.get(scopeKey)
-  const liveReasoning = streamReasoningByScope.get(scopeKey) ?? ''
+  const liveSegments = streamSegmentsByScope.get(scopeKey)
   div.innerHTML = `
-    <div class="message-avatar">${avatar}</div>
     <div class="message-group">
-      ${renderStreamingBubbleHTML(streamState.messageId, '', livePlanEntries, liveToolCalls, liveReasoning)}
+      ${renderStreamingBubbleHTML(
+        streamState.messageId,
+        liveSegments,
+        livePlanEntries,
+        activeContentSegmentID(scopeKey),
+        activeReasoningSegmentID(scopeKey),
+        activeToolCallSegmentID(scopeKey),
+      )}
       <div class="message-meta">
         <span class="message-time">${formatTimestamp(startedAt)}</span>
       </div>
@@ -899,13 +1161,14 @@ function appendOrRestoreStreamingBubble(thread: Thread): void {
   activeStreamMsgId = streamState.messageId
   activeStreamScopeKey = scopeKey
 
-  const buffered = streamBufferByScope.get(scopeKey) ?? ''
-  if (buffered) {
-    updateStreamingBubbleContent(streamState.messageId, buffered)
-  }
-  updateStreamingBubbleToolCalls(streamState.messageId, liveToolCalls)
-  updateStreamingBubbleReasoning(streamState.messageId, liveReasoning)
   updateStreamingBubblePlan(streamState.messageId, livePlanEntries)
+  updateStreamingBubbleSegments(
+    streamState.messageId,
+    liveSegments,
+    activeContentSegmentID(scopeKey),
+    activeReasoningSegmentID(scopeKey),
+    activeToolCallSegmentID(scopeKey),
+  )
   listEl.scrollTop = listEl.scrollHeight
 }
 
@@ -913,8 +1176,10 @@ function clearScopeStreamRuntime(scopeKey: string): void {
   streamsByScope.delete(scopeKey)
   streamBufferByScope.delete(scopeKey)
   streamPlanByScope.delete(scopeKey)
-  streamToolCallsByScope.delete(scopeKey)
-  streamReasoningByScope.delete(scopeKey)
+  streamSegmentsByScope.delete(scopeKey)
+  activeContentSegmentIdByScope.delete(scopeKey)
+  activeReasoningSegmentIdByScope.delete(scopeKey)
+  activeToolCallSegmentIdByScope.delete(scopeKey)
   streamStartedAtByScope.delete(scopeKey)
   setScopeStreamState(scopeKey, null)
   if (activeChatScopeKey() === scopeKey) {
@@ -944,15 +1209,25 @@ function rebindScopeRuntime(oldScopeKey: string, nextScopeKey: string, nextSessi
     streamPlanByScope.delete(oldScopeKey)
     streamPlanByScope.set(nextScopeKey, plans)
   }
-  if (streamToolCallsByScope.has(oldScopeKey)) {
-    const toolCalls = streamToolCallsByScope.get(oldScopeKey) ?? []
-    streamToolCallsByScope.delete(oldScopeKey)
-    streamToolCallsByScope.set(nextScopeKey, toolCalls)
+  if (streamSegmentsByScope.has(oldScopeKey)) {
+    const segments = streamSegmentsByScope.get(oldScopeKey) ?? []
+    streamSegmentsByScope.delete(oldScopeKey)
+    streamSegmentsByScope.set(nextScopeKey, segments)
   }
-  if (streamReasoningByScope.has(oldScopeKey)) {
-    const reasoning = streamReasoningByScope.get(oldScopeKey) ?? ''
-    streamReasoningByScope.delete(oldScopeKey)
-    streamReasoningByScope.set(nextScopeKey, reasoning)
+  if (activeContentSegmentIdByScope.has(oldScopeKey)) {
+    const segmentID = activeContentSegmentIdByScope.get(oldScopeKey) ?? ''
+    activeContentSegmentIdByScope.delete(oldScopeKey)
+    if (segmentID) activeContentSegmentIdByScope.set(nextScopeKey, segmentID)
+  }
+  if (activeReasoningSegmentIdByScope.has(oldScopeKey)) {
+    const segmentID = activeReasoningSegmentIdByScope.get(oldScopeKey) ?? ''
+    activeReasoningSegmentIdByScope.delete(oldScopeKey)
+    if (segmentID) activeReasoningSegmentIdByScope.set(nextScopeKey, segmentID)
+  }
+  if (activeToolCallSegmentIdByScope.has(oldScopeKey)) {
+    const segmentID = activeToolCallSegmentIdByScope.get(oldScopeKey) ?? ''
+    activeToolCallSegmentIdByScope.delete(oldScopeKey)
+    if (segmentID) activeToolCallSegmentIdByScope.set(nextScopeKey, segmentID)
   }
   if (streamStartedAtByScope.has(oldScopeKey)) {
     const startedAt = streamStartedAtByScope.get(oldScopeKey) ?? ''
@@ -1916,6 +2191,7 @@ function turnsToMessages(turns: Turn[]): Message[] {
       const planEntries = extractTurnPlanEntries(t.events)
       const reasoning = extractTurnReasoning(t.events)
       const toolCalls = extractTurnToolCalls(t.events)
+      const segments = buildMessageSegmentsFromTurn(t.turnId, t.events, t.responseText)
       const agentStatus: Message['status'] =
         t.status === 'cancelled' ? 'cancelled' :
         t.status === 'error'     ? 'error'     :
@@ -1930,6 +2206,7 @@ function turnsToMessages(turns: Turn[]): Message[] {
         turnId:       t.turnId,
         stopReason:   t.stopReason   || undefined,
         errorMessage: t.errorMessage || undefined,
+        segments,
         planEntries,
         toolCalls,
         reasoning: hasReasoningText(reasoning) ? reasoning : undefined,
@@ -2277,15 +2554,51 @@ function renderToolCallCardHTML(toolCall: ToolCall): string {
     </article>`
 }
 
-function renderToolCallSectionHTML(toolCalls: ToolCall[] | undefined, extraClass = ''): string {
-  const normalized = cloneToolCalls(toolCalls)
-  if (!normalized?.length) return ''
+function toolCallContentID(segmentID: string): string {
+  return `tool-call-content-${segmentID}`
+}
+
+function renderToolCallPanelHTML(
+  segmentID: string,
+  toolCall: ToolCall,
+  expanded = false,
+  streaming = false,
+): string {
+  const state = reasoningPanelState(expanded)
+  const contentID = toolCallContentID(segmentID)
+  const title = toolCall.title?.trim() || toolCall.kind?.trim() || toolCall.toolCallId
+  const kind = formatToolCallLabel(toolCall.kind)
+  const status = formatToolCallLabel(toolCall.status)
   return `
-    <div class="message-tool-calls${extraClass}">
-      <div class="message-tool-calls__header">Tool Calls</div>
-      <div class="message-tool-calls__list">
-        ${normalized.map(renderToolCallCardHTML).join('')}
-      </div>
+    <div
+      class="message-tool-call${streaming ? ' message-tool-call--streaming' : ''}"
+      data-segment-id="${escHtml(segmentID)}"
+      data-state="${state}"
+    >
+      <button
+        class="message-tool-call__toggle"
+        type="button"
+        data-segment-id="${escHtml(segmentID)}"
+        data-state="${state}"
+        aria-expanded="${expanded ? 'true' : 'false'}"
+        aria-controls="${escHtml(contentID)}"
+      >
+        <span class="message-tool-call__toggle-main">
+          <span class="message-tool-call__toggle-icon" aria-hidden="true">${iconTool}</span>
+          <span class="message-tool-call__toggle-title">${escHtml(title)}</span>
+        </span>
+        <span class="message-tool-call__toggle-meta">
+          ${kind ? `<span class="message-tool-call__tag">${escHtml(kind)}</span>` : ''}
+          ${status ? `<span class="message-tool-call__tag message-tool-call__tag--status">${escHtml(status)}</span>` : ''}
+          <span class="message-tool-call__chevron" aria-hidden="true">${iconChevronRight}</span>
+        </span>
+      </button>
+      <div
+        class="message-tool-call__panel"
+        id="${escHtml(contentID)}"
+        data-state="${state}"
+        ${expanded ? '' : 'hidden'}
+      >${renderToolCallCardHTML(toolCall)}</div>
     </div>`
 }
 
@@ -2293,12 +2606,12 @@ function reasoningPanelState(expanded: boolean): 'open' | 'closed' {
   return expanded ? 'open' : 'closed'
 }
 
-function reasoningContentID(messageID: string): string {
-  return `reasoning-content-${messageID}`
+function reasoningContentID(segmentID: string): string {
+  return `reasoning-content-${segmentID}`
 }
 
 function renderReasoningSectionHTML(
-  messageID: string,
+  segmentID: string,
   reasoning: string | undefined,
   extraClass = '',
   expanded = false,
@@ -2307,7 +2620,7 @@ function renderReasoningSectionHTML(
 ): string {
   if (!hasReasoningText(reasoning)) return ''
   const state = reasoningPanelState(expanded)
-  const contentID = reasoningContentID(messageID)
+  const contentID = reasoningContentID(segmentID)
   const contentClass = renderMarkdownContent
     ? 'message-reasoning__content message-reasoning__content--md'
     : 'message-reasoning__content'
@@ -2315,13 +2628,13 @@ function renderReasoningSectionHTML(
   return `
     <div
       class="message-reasoning${extraClass}"
-      data-message-id="${escHtml(messageID)}"
+      data-segment-id="${escHtml(segmentID)}"
       data-state="${state}"
     >
       <button
         class="message-reasoning__toggle"
         type="button"
-        data-message-id="${escHtml(messageID)}"
+        data-segment-id="${escHtml(segmentID)}"
         data-state="${state}"
         aria-expanded="${expanded ? 'true' : 'false'}"
         aria-controls="${escHtml(contentID)}"
@@ -2339,7 +2652,155 @@ function renderReasoningSectionHTML(
     </div>`
 }
 
-function renderMessage(msg: Message, agentAvatar: string): string {
+function renderMessageSegmentContentHTML(
+  segment: MessageSegment,
+  status: Message['status'],
+  streaming: boolean,
+  showTypingIndicator: boolean,
+  timestamp: string,
+): string {
+  const content = segment.content ?? ''
+  if (!streaming && !content) return ''
+
+  let blockClass = 'message-answer'
+  let blockContent = ''
+
+  if (streaming) {
+    blockClass += ' message-answer--streaming'
+    blockContent = `<div class="message-answer__text">${escHtml(content)}</div>`
+    if (showTypingIndicator) {
+      blockContent += `<div class="typing-indicator" aria-hidden="true"><span></span><span></span><span></span></div>`
+    }
+  } else if (status === 'done' || status === 'streaming') {
+    blockClass += ' message-answer--md'
+    blockContent = renderMarkdown(content)
+  } else if (status === 'cancelled') {
+    blockClass += ' message-answer--cancelled'
+    blockContent = escHtml(content)
+  } else {
+    blockContent = escHtml(content)
+  }
+
+  const metaHTML = !streaming && content
+    ? `
+      <div class="message-segment__meta">
+        <span class="message-time">${formatTimestamp(timestamp)}</span>
+        <button
+          class="msg-copy-btn msg-copy-btn--segment"
+          data-copy-text="${encodeURIComponent(content)}"
+          type="button"
+          title="Copy segment"
+          aria-label="Copy segment"
+        >⎘</button>
+      </div>`
+    : ''
+
+  return `
+    <div class="message-segment message-segment--content">
+      <div class="${blockClass}">${blockContent}</div>
+      ${metaHTML}
+    </div>`
+}
+
+function renderMessageSegmentToolCallHTML(segment: MessageSegment, streaming: boolean): string {
+  if (!segment.toolCall) return ''
+  const isActiveStreamingSegment = streaming
+  const isExpanded = isActiveStreamingSegment || expandedToolCallSegmentIds.has(segment.id)
+  return `
+    <div class="message-segment message-segment--tool">
+      ${renderToolCallPanelHTML(segment.id, segment.toolCall, isExpanded, isActiveStreamingSegment)}
+    </div>`
+}
+
+function renderMessageSegmentReasoningHTML(segment: MessageSegment, streaming: boolean): string {
+  const isActiveStreamingSegment = streaming
+  const isExpanded = isActiveStreamingSegment || expandedReasoningSegmentIds.has(segment.id)
+  return `
+    <div class="message-segment message-segment--reasoning">
+      ${renderReasoningSectionHTML(
+        segment.id,
+        segment.content,
+        isActiveStreamingSegment ? ' message-reasoning--streaming' : '',
+        isExpanded,
+        !isActiveStreamingSegment,
+        'Thought',
+      )}
+    </div>`
+}
+
+function renderMessageSegmentsHTML(
+  messageID: string,
+  segments: MessageSegment[] | undefined,
+  status: Message['status'],
+  streaming = false,
+  activeStreamingContentSegmentID: string | null = null,
+  activeStreamingReasoningSegmentID: string | null = null,
+  activeStreamingToolCallSegmentID: string | null = null,
+  timestamp = '',
+): string {
+  const normalized = cloneMessageSegments(segments) ?? []
+  const displaySegments = normalized.length || !streaming
+    ? normalized
+    : [{
+        id: nextMessageSegmentID(messageID, 'content', 1),
+        kind: 'content' as const,
+        content: '',
+      }]
+  const showStreamingTail = streaming && !activeStreamingContentSegmentID
+
+  const content = displaySegments.map((segment, index) => {
+    switch (segment.kind) {
+      case 'reasoning':
+        return renderMessageSegmentReasoningHTML(
+          segment,
+          streaming && segment.id === activeStreamingReasoningSegmentID,
+        )
+      case 'tool_call':
+        return renderMessageSegmentToolCallHTML(
+          segment,
+          streaming && segment.id === activeStreamingToolCallSegmentID,
+        )
+      case 'content':
+        return renderMessageSegmentContentHTML(
+          segment,
+          status,
+          streaming && segment.id === activeStreamingContentSegmentID,
+          streaming && segment.id === activeStreamingContentSegmentID && index === displaySegments.length - 1,
+          timestamp,
+        )
+      default:
+        return ''
+    }
+  }).join('')
+
+  const tail = showStreamingTail
+    ? `
+      <div class="message-segment message-segment--tail">
+        <div class="message-stream-tail">
+          <div class="typing-indicator" aria-hidden="true"><span></span><span></span><span></span></div>
+        </div>
+      </div>`
+    : ''
+
+  return `<div class="message-segments">${content}${tail}</div>`
+}
+
+function renderMessageStatusBubble(msg: Message): string {
+  if (msg.status === 'error') {
+    const bodyText = (msg.errorCode ? `[${msg.errorCode}] ` : '') + (msg.errorMessage ?? 'Unknown error')
+    return `<div class="message-segment message-segment--status">
+      <div class="message-bubble message-bubble--error">${escHtml(bodyText)}</div>
+    </div>`
+  }
+  if (msg.status === 'cancelled' && !msg.content) {
+    return `<div class="message-segment message-segment--status">
+      <div class="message-bubble message-bubble--cancelled">…</div>
+    </div>`
+  }
+  return ''
+}
+
+function renderMessage(msg: Message): string {
   const renderMessageCopyBtn = (text: string): string => `
     <button
       class="msg-copy-btn"
@@ -2354,7 +2815,7 @@ function renderMessage(msg: Message, agentAvatar: string): string {
     return `
       <div class="message message--user" data-msg-id="${escHtml(msg.id)}">
         <div class="message-group">
-          <div class="message-bubble">${escHtml(msg.content)}</div>
+          <div class="message-prompt">${escHtml(msg.content)}</div>
           <div class="message-meta">
             <span class="message-time">${formatTimestamp(msg.timestamp)}</span>
             ${copyBtn}
@@ -2364,116 +2825,79 @@ function renderMessage(msg: Message, agentAvatar: string): string {
   }
 
   const isCancelled = msg.status === 'cancelled'
-  const isError     = msg.status === 'error'
-  const isDone      = msg.status === 'done'
 
-  const bodyText = isError
-    ? (msg.errorCode ? `[${msg.errorCode}] ` : '') + (msg.errorMessage ?? 'Unknown error')
-    : (msg.content || '…')
   const planHTML = renderPlanSectionHTML(msg.planEntries)
-  const toolCallsHTML = renderToolCallSectionHTML(msg.toolCalls)
-  const reasoningHTML = renderReasoningSectionHTML(
-    msg.id,
-    msg.reasoning,
-    '',
-    expandedReasoningMessageIds.has(msg.id),
-    true,
-    'Thought',
-  )
-  const hasSupplementarySections = !!msg.planEntries?.length || !!msg.toolCalls?.length || hasReasoningText(msg.reasoning)
-  const shouldRenderBubble = !(isDone && !msg.content && hasSupplementarySections)
-
-  // Render markdown only for finalised done messages
-  let bubbleExtra = ''
-  let bubbleContent: string
-  if (isDone) {
-    bubbleExtra   = ' message-bubble--md'
-    bubbleContent = renderMarkdown(bodyText)
-  } else if (isError) {
-    bubbleExtra   = ' message-bubble--error'
-    bubbleContent = escHtml(bodyText)
-  } else {
-    bubbleExtra   = ' message-bubble--cancelled'
-    bubbleContent = escHtml(bodyText)
-  }
+  const segments = resolveMessageSegments(msg)
+  const segmentsHTML = renderMessageSegmentsHTML(msg.id, segments, msg.status, false, null, null, null, msg.timestamp)
+  const statusHTML = renderMessageStatusBubble(msg)
+  const hasContent = messageHasContentSegment(segments)
 
   const stopTag  = isCancelled ? `<span class="message-stop-reason">Cancelled</span>` : ''
-  const copyBtn  = isDone && msg.content ? renderMessageCopyBtn(bodyText) : ''
-  const bubbleHTML = shouldRenderBubble
-    ? `<div class="message-bubble${bubbleExtra}">${bubbleContent}</div>`
+  const footerMeta = (!hasContent || stopTag)
+    ? `
+      <div class="message-meta">
+        ${!hasContent ? `<span class="message-time">${formatTimestamp(msg.timestamp)}</span>` : ''}
+        ${stopTag}
+      </div>`
     : ''
 
   return `
     <div class="message message--agent" data-msg-id="${escHtml(msg.id)}">
-      <div class="message-avatar">${agentAvatar}</div>
       <div class="message-group">
         ${planHTML}
-        ${toolCallsHTML}
-        ${reasoningHTML}
-        ${bubbleHTML}
-        <div class="message-meta">
-          <span class="message-time">${formatTimestamp(msg.timestamp)}</span>
-          ${stopTag}
-          ${copyBtn}
-        </div>
+        ${segmentsHTML}
+        ${statusHTML}
+        ${footerMeta}
       </div>
     </div>`
 }
 
 function renderStreamingBubbleHTML(
   messageID: string,
-  content = '',
+  segments: MessageSegment[] | undefined,
   planEntries?: PlanEntry[],
-  toolCalls?: ToolCall[],
-  reasoning?: string,
+  activeStreamingContentSegmentID: string | null = null,
+  activeStreamingReasoningSegmentID: string | null = null,
+  activeStreamingToolCallSegmentID: string | null = null,
 ): string {
   const normalizedPlanEntries = clonePlanEntries(planEntries)
-  const normalizedToolCalls = cloneToolCalls(toolCalls)
   const planHiddenAttr = normalizedPlanEntries?.length ? '' : ' hidden'
-  const toolCallsHiddenAttr = normalizedToolCalls?.length ? '' : ' hidden'
-  const reasoningHTML = renderReasoningSectionHTML(messageID, reasoning, ' message-reasoning--streaming', true)
-  const reasoningHiddenAttr = hasReasoningText(reasoning) ? '' : ' hidden'
   return `
     <div class="message-plan message-plan--streaming" id="plan-${escHtml(messageID)}"${planHiddenAttr}>${normalizedPlanEntries ? renderPlanInnerHTML(normalizedPlanEntries) : ''}</div>
-    <div id="tool-calls-${escHtml(messageID)}"${toolCallsHiddenAttr}>${normalizedToolCalls ? renderToolCallSectionHTML(normalizedToolCalls, ' message-tool-calls--streaming') : ''}</div>
-    <div id="reasoning-${escHtml(messageID)}"${reasoningHiddenAttr}>${reasoningHTML}</div>
-    <div class="message-bubble message-bubble--streaming" id="bubble-${escHtml(messageID)}">
-      <div class="message-bubble__text">${escHtml(content)}</div>
-      <div class="typing-indicator" aria-hidden="true"><span></span><span></span><span></span></div>
-    </div>`
+    <div id="segments-${escHtml(messageID)}">${renderMessageSegmentsHTML(
+      messageID,
+      segments,
+      'streaming',
+      true,
+      activeStreamingContentSegmentID,
+      activeStreamingReasoningSegmentID,
+      activeStreamingToolCallSegmentID,
+      '',
+    )}</div>`
 }
 
-function updateStreamingBubbleContent(messageID: string, content: string): void {
-  const bubbleEl = document.getElementById(`bubble-${messageID}`)
-  if (!bubbleEl) return
-  const contentEl = bubbleEl.querySelector('.message-bubble__text')
-  if (!contentEl) return
-  contentEl.textContent = content
-}
-
-function updateStreamingBubbleReasoning(messageID: string, reasoning: string): void {
-  const reasoningEl = document.getElementById(`reasoning-${messageID}`)
-  if (!reasoningEl) return
-  if (!hasReasoningText(reasoning)) {
-    reasoningEl.hidden = true
-    reasoningEl.innerHTML = ''
-    return
-  }
-  reasoningEl.hidden = false
-  reasoningEl.innerHTML = renderReasoningSectionHTML(messageID, reasoning, ' message-reasoning--streaming', true)
-}
-
-function updateStreamingBubbleToolCalls(messageID: string, toolCalls: ToolCall[] | undefined): void {
-  const toolCallsEl = document.getElementById(`tool-calls-${messageID}`)
-  if (!toolCallsEl) return
-  const normalized = cloneToolCalls(toolCalls)
-  toolCallsEl.hidden = !normalized?.length
-  if (!normalized?.length) {
-    toolCallsEl.innerHTML = ''
-    return
-  }
-  toolCallsEl.innerHTML = renderToolCallSectionHTML(normalized, ' message-tool-calls--streaming')
-  bindMarkdownControls(toolCallsEl)
+function updateStreamingBubbleSegments(
+  messageID: string,
+  segments: MessageSegment[] | undefined,
+  activeStreamingContentSegmentID: string | null,
+  activeStreamingReasoningSegmentID: string | null,
+  activeStreamingToolCallSegmentID: string | null,
+): void {
+  const segmentsEl = document.getElementById(`segments-${messageID}`)
+  if (!segmentsEl) return
+  segmentsEl.innerHTML = renderMessageSegmentsHTML(
+    messageID,
+    segments,
+    'streaming',
+    true,
+    activeStreamingContentSegmentID,
+    activeStreamingReasoningSegmentID,
+    activeStreamingToolCallSegmentID,
+    '',
+  )
+  bindMarkdownControls(segmentsEl)
+  bindReasoningPanels(segmentsEl)
+  bindToolCallPanels(segmentsEl)
 }
 
 function setReasoningPanelExpanded(panelEl: HTMLElement, expanded: boolean): void {
@@ -2494,19 +2918,55 @@ function setReasoningPanelExpanded(panelEl: HTMLElement, expanded: boolean): voi
 }
 
 function bindReasoningPanels(listEl: HTMLElement): void {
-  listEl.querySelectorAll<HTMLButtonElement>('.message-reasoning__toggle[data-message-id]').forEach(toggleEl => {
+  listEl.querySelectorAll<HTMLButtonElement>('.message-reasoning__toggle[data-segment-id]').forEach(toggleEl => {
     toggleEl.addEventListener('click', () => {
-      const messageID = toggleEl.dataset.messageId?.trim() ?? ''
+      const segmentID = toggleEl.dataset.segmentId?.trim() ?? ''
       const panelEl = toggleEl.closest<HTMLElement>('.message-reasoning')
-      if (!messageID || !panelEl || panelEl.classList.contains('message-reasoning--streaming')) return
+      if (!segmentID || !panelEl || panelEl.classList.contains('message-reasoning--streaming')) return
 
       const nextExpanded = toggleEl.getAttribute('aria-expanded') !== 'true'
       if (nextExpanded) {
-        expandedReasoningMessageIds.add(messageID)
+        expandedReasoningSegmentIds.add(segmentID)
       } else {
-        expandedReasoningMessageIds.delete(messageID)
+        expandedReasoningSegmentIds.delete(segmentID)
       }
       setReasoningPanelExpanded(panelEl, nextExpanded)
+    })
+  })
+}
+
+function setToolCallPanelExpanded(panelEl: HTMLElement, expanded: boolean): void {
+  const state = reasoningPanelState(expanded)
+  panelEl.dataset.state = state
+
+  const toggleEl = panelEl.querySelector<HTMLButtonElement>('.message-tool-call__toggle')
+  if (toggleEl) {
+    toggleEl.dataset.state = state
+    toggleEl.setAttribute('aria-expanded', expanded ? 'true' : 'false')
+  }
+
+  const contentEl = panelEl.querySelector<HTMLElement>('.message-tool-call__panel')
+  if (contentEl) {
+    contentEl.dataset.state = state
+    contentEl.hidden = !expanded
+    if (expanded) bindMarkdownControls(contentEl)
+  }
+}
+
+function bindToolCallPanels(listEl: HTMLElement): void {
+  listEl.querySelectorAll<HTMLButtonElement>('.message-tool-call__toggle[data-segment-id]').forEach(toggleEl => {
+    toggleEl.addEventListener('click', () => {
+      const segmentID = toggleEl.dataset.segmentId?.trim() ?? ''
+      const panelEl = toggleEl.closest<HTMLElement>('.message-tool-call')
+      if (!segmentID || !panelEl || panelEl.classList.contains('message-tool-call--streaming')) return
+
+      const nextExpanded = toggleEl.getAttribute('aria-expanded') !== 'true'
+      if (nextExpanded) {
+        expandedToolCallSegmentIds.add(segmentID)
+      } else {
+        expandedToolCallSegmentIds.delete(segmentID)
+      }
+      setToolCallPanelExpanded(panelEl, nextExpanded)
     })
   })
 }
@@ -2533,7 +2993,6 @@ function updateMessageList(): void {
   const thread   = threads.find(t => t.threadId === activeThreadId)
   const scopeKey = threadChatScopeKey(thread)
   const msgs     = messages[scopeKey] ?? []
-  const agentAvatar = renderAgentAvatar(thread?.agent ?? '', 'message')
 
   if (!msgs.length) {
     listEl.innerHTML = `
@@ -2545,9 +3004,10 @@ function updateMessageList(): void {
     return
   }
 
-  listEl.innerHTML = msgs.map(m => renderMessage(m, agentAvatar)).join('')
+  listEl.innerHTML = msgs.map(m => renderMessage(m)).join('')
   bindMarkdownControls(listEl)
   bindReasoningPanels(listEl)
+  bindToolCallPanels(listEl)
   listEl.scrollTop = listEl.scrollHeight
   // Sync scroll button (we just moved to the bottom)
   const scrollBtn = document.getElementById('scroll-bottom-btn')
@@ -3289,8 +3749,6 @@ function handleSend(): void {
   let capturedScopeKey = threadChatScopeKey(thread)
   if (getScopeStreamState(capturedScopeKey)) return
 
-  const agentAvatar  = renderAgentAvatar(thread?.agent ?? '', 'message')
-
   // Clear input immediately
   inputEl.value = ''
   inputEl.style.height = 'auto'
@@ -3316,8 +3774,10 @@ function handleSend(): void {
   activeStreamScopeKey = capturedScopeKey
   streamBufferByScope.set(capturedScopeKey, '')
   streamPlanByScope.delete(capturedScopeKey)
-  streamToolCallsByScope.delete(capturedScopeKey)
-  streamReasoningByScope.delete(capturedScopeKey)
+  streamSegmentsByScope.set(capturedScopeKey, [])
+  activeContentSegmentIdByScope.delete(capturedScopeKey)
+  activeReasoningSegmentIdByScope.delete(capturedScopeKey)
+  activeToolCallSegmentIdByScope.delete(capturedScopeKey)
   streamStartedAtByScope.set(capturedScopeKey, now)
   setScopeStreamState(capturedScopeKey, {
     turnId: '',
@@ -3335,9 +3795,15 @@ function handleSend(): void {
     div.className        = 'message message--agent'
     div.dataset.msgId    = agentMsgID
     div.innerHTML = `
-      <div class="message-avatar">${agentAvatar}</div>
       <div class="message-group">
-        ${renderStreamingBubbleHTML(agentMsgID, '', undefined, undefined, '')}
+        ${renderStreamingBubbleHTML(
+          agentMsgID,
+          streamSegmentsByScope.get(capturedScopeKey),
+          undefined,
+          activeContentSegmentID(capturedScopeKey),
+          activeReasoningSegmentID(capturedScopeKey),
+          activeToolCallSegmentID(capturedScopeKey),
+        )}
         <div class="message-meta">
           <span class="message-time">${formatTimestamp(now)}</span>
         </div>
@@ -3356,30 +3822,59 @@ function handleSend(): void {
     },
 
     onDelta({ delta }) {
+      setActiveContentSegmentID(capturedScopeKey, null)
+      setActiveReasoningSegmentID(capturedScopeKey, null)
+      setActiveToolCallSegmentID(capturedScopeKey, null)
       const previous = streamBufferByScope.get(capturedScopeKey) ?? ''
       const next = previous + delta
       streamBufferByScope.set(capturedScopeKey, next)
+      const nextSegments = appendTextSegment(streamSegmentsByScope.get(capturedScopeKey), 'content', delta, agentMsgID)
+      streamSegmentsByScope.set(capturedScopeKey, nextSegments)
+      const activeSegmentID = nextSegments[nextSegments.length - 1]?.kind === 'content'
+        ? nextSegments[nextSegments.length - 1].id
+        : null
+      setActiveContentSegmentID(capturedScopeKey, activeSegmentID)
 
       if (activeChatScopeKey() !== capturedScopeKey) return
       const list      = document.getElementById('message-list')
       const atBottom  = !list || isNearBottom(list)
-      updateStreamingBubbleContent(agentMsgID, next)
+      updateStreamingBubbleSegments(
+        agentMsgID,
+        nextSegments,
+        activeContentSegmentID(capturedScopeKey),
+        activeReasoningSegmentID(capturedScopeKey),
+        activeToolCallSegmentID(capturedScopeKey),
+      )
       if (atBottom && list) list.scrollTop = list.scrollHeight
     },
 
     onReasoningDelta({ delta }: ReasoningDeltaPayload) {
-      const previous = streamReasoningByScope.get(capturedScopeKey) ?? ''
-      const next = previous + delta
-      streamReasoningByScope.set(capturedScopeKey, next)
+      setActiveContentSegmentID(capturedScopeKey, null)
+      setActiveToolCallSegmentID(capturedScopeKey, null)
+      const nextSegments = appendTextSegment(streamSegmentsByScope.get(capturedScopeKey), 'reasoning', delta, agentMsgID)
+      streamSegmentsByScope.set(capturedScopeKey, nextSegments)
+      const activeSegmentID = nextSegments[nextSegments.length - 1]?.kind === 'reasoning'
+        ? nextSegments[nextSegments.length - 1].id
+        : null
+      setActiveReasoningSegmentID(capturedScopeKey, activeSegmentID)
 
       if (activeChatScopeKey() !== capturedScopeKey) return
       const list = document.getElementById('message-list')
       const atBottom = !list || isNearBottom(list)
-      updateStreamingBubbleReasoning(agentMsgID, next)
+      updateStreamingBubbleSegments(
+        agentMsgID,
+        nextSegments,
+        activeContentSegmentID(capturedScopeKey),
+        activeReasoningSegmentID(capturedScopeKey),
+        activeToolCallSegmentID(capturedScopeKey),
+      )
       if (atBottom && list) list.scrollTop = list.scrollHeight
     },
 
     onPlanUpdate({ entries }: PlanUpdatePayload) {
+      setActiveContentSegmentID(capturedScopeKey, null)
+      setActiveReasoningSegmentID(capturedScopeKey, null)
+      setActiveToolCallSegmentID(capturedScopeKey, null)
       const nextPlanEntries = clonePlanEntries(entries) ?? []
       streamPlanByScope.set(capturedScopeKey, nextPlanEntries)
 
@@ -3387,30 +3882,67 @@ function handleSend(): void {
       const list = document.getElementById('message-list')
       const atBottom = !list || isNearBottom(list)
       updateStreamingBubblePlan(agentMsgID, nextPlanEntries)
+      updateStreamingBubbleSegments(
+        agentMsgID,
+        streamSegmentsByScope.get(capturedScopeKey),
+        activeContentSegmentID(capturedScopeKey),
+        activeReasoningSegmentID(capturedScopeKey),
+        activeToolCallSegmentID(capturedScopeKey),
+      )
       if (atBottom && list) list.scrollTop = list.scrollHeight
     },
 
     onToolCall(event: ToolCallPayload) {
-      const current = streamToolCallsByScope.get(capturedScopeKey) ?? []
-      const nextToolCalls = applyToolCallEvent(current, event as unknown as Record<string, unknown>)
-      streamToolCallsByScope.set(capturedScopeKey, nextToolCalls)
+      setActiveContentSegmentID(capturedScopeKey, null)
+      setActiveReasoningSegmentID(capturedScopeKey, null)
+      const nextSegments = applyToolCallSegmentEvent(
+        streamSegmentsByScope.get(capturedScopeKey),
+        event as unknown as Record<string, unknown>,
+        agentMsgID,
+      )
+      streamSegmentsByScope.set(capturedScopeKey, nextSegments)
+      setActiveToolCallSegmentID(
+        capturedScopeKey,
+        findToolCallSegmentID(nextSegments, event.toolCallId),
+      )
 
       if (activeChatScopeKey() !== capturedScopeKey) return
       const list = document.getElementById('message-list')
       const atBottom = !list || isNearBottom(list)
-      updateStreamingBubbleToolCalls(agentMsgID, nextToolCalls)
+      updateStreamingBubbleSegments(
+        agentMsgID,
+        nextSegments,
+        activeContentSegmentID(capturedScopeKey),
+        activeReasoningSegmentID(capturedScopeKey),
+        activeToolCallSegmentID(capturedScopeKey),
+      )
       if (atBottom && list) list.scrollTop = list.scrollHeight
     },
 
     onToolCallUpdate(event: ToolCallPayload) {
-      const current = streamToolCallsByScope.get(capturedScopeKey) ?? []
-      const nextToolCalls = applyToolCallEvent(current, event as unknown as Record<string, unknown>)
-      streamToolCallsByScope.set(capturedScopeKey, nextToolCalls)
+      setActiveContentSegmentID(capturedScopeKey, null)
+      setActiveReasoningSegmentID(capturedScopeKey, null)
+      const nextSegments = applyToolCallSegmentEvent(
+        streamSegmentsByScope.get(capturedScopeKey),
+        event as unknown as Record<string, unknown>,
+        agentMsgID,
+      )
+      streamSegmentsByScope.set(capturedScopeKey, nextSegments)
+      setActiveToolCallSegmentID(
+        capturedScopeKey,
+        findToolCallSegmentID(nextSegments, event.toolCallId),
+      )
 
       if (activeChatScopeKey() !== capturedScopeKey) return
       const list = document.getElementById('message-list')
       const atBottom = !list || isNearBottom(list)
-      updateStreamingBubbleToolCalls(agentMsgID, nextToolCalls)
+      updateStreamingBubbleSegments(
+        agentMsgID,
+        nextSegments,
+        activeContentSegmentID(capturedScopeKey),
+        activeReasoningSegmentID(capturedScopeKey),
+        activeToolCallSegmentID(capturedScopeKey),
+      )
       if (atBottom && list) list.scrollTop = list.scrollHeight
     },
 
@@ -3431,10 +3963,11 @@ function handleSend(): void {
 
     onCompleted({ stopReason }) {
       // Clear stream tracking BEFORE addMessageToStore (so subscribe calls updateMessageList)
-      const finalContent = streamBufferByScope.get(capturedScopeKey) ?? ''
       const finalPlanEntries = clonePlanEntries(streamPlanByScope.get(capturedScopeKey))
-      const finalToolCalls = cloneToolCalls(streamToolCallsByScope.get(capturedScopeKey))
-      const finalReasoning = streamReasoningByScope.get(capturedScopeKey) ?? ''
+      const finalSegments = cloneMessageSegments(streamSegmentsByScope.get(capturedScopeKey))
+      const finalContent = messageSegmentsContent(finalSegments) || (streamBufferByScope.get(capturedScopeKey) ?? '')
+      const finalToolCalls = messageSegmentsToolCalls(finalSegments)
+      const finalReasoning = messageSegmentsReasoning(finalSegments)
       clearScopeStreamRuntime(capturedScopeKey)
       clearPendingPermissions(capturedScopeKey)
       markThreadCompletionBadge(capturedThreadID)
@@ -3448,6 +3981,7 @@ function handleSend(): void {
         timestamp:  now,
         status:     stopReason === 'cancelled' ? 'cancelled' : 'done',
         stopReason,
+        segments: finalSegments,
         planEntries: finalPlanEntries,
         toolCalls: finalToolCalls,
         reasoning: hasReasoningText(finalReasoning) ? finalReasoning : undefined,
@@ -3455,10 +3989,11 @@ function handleSend(): void {
     },
 
     onError({ code, message: msg }) {
-      const partialContent = streamBufferByScope.get(capturedScopeKey) ?? ''
       const finalPlanEntries = clonePlanEntries(streamPlanByScope.get(capturedScopeKey))
-      const finalToolCalls = cloneToolCalls(streamToolCallsByScope.get(capturedScopeKey))
-      const finalReasoning = streamReasoningByScope.get(capturedScopeKey) ?? ''
+      const finalSegments = cloneMessageSegments(streamSegmentsByScope.get(capturedScopeKey))
+      const partialContent = messageSegmentsContent(finalSegments) || (streamBufferByScope.get(capturedScopeKey) ?? '')
+      const finalToolCalls = messageSegmentsToolCalls(finalSegments)
+      const finalReasoning = messageSegmentsReasoning(finalSegments)
       clearScopeStreamRuntime(capturedScopeKey)
       clearPendingPermissions(capturedScopeKey)
       void loadThreadSessions(capturedThreadID)
@@ -3472,6 +4007,7 @@ function handleSend(): void {
         status:       'error',
         errorCode:    code,
         errorMessage: msg,
+        segments:     finalSegments,
         planEntries:  finalPlanEntries,
         toolCalls:    finalToolCalls,
         reasoning:    hasReasoningText(finalReasoning) ? finalReasoning : undefined,
@@ -3479,10 +4015,11 @@ function handleSend(): void {
     },
 
     onDisconnect() {
-      const partialContent = streamBufferByScope.get(capturedScopeKey) ?? ''
       const finalPlanEntries = clonePlanEntries(streamPlanByScope.get(capturedScopeKey))
-      const finalToolCalls = cloneToolCalls(streamToolCallsByScope.get(capturedScopeKey))
-      const finalReasoning = streamReasoningByScope.get(capturedScopeKey) ?? ''
+      const finalSegments = cloneMessageSegments(streamSegmentsByScope.get(capturedScopeKey))
+      const partialContent = messageSegmentsContent(finalSegments) || (streamBufferByScope.get(capturedScopeKey) ?? '')
+      const finalToolCalls = messageSegmentsToolCalls(finalSegments)
+      const finalReasoning = messageSegmentsReasoning(finalSegments)
       clearScopeStreamRuntime(capturedScopeKey)
       clearPendingPermissions(capturedScopeKey)
       void loadThreadSessions(capturedThreadID)
@@ -3495,6 +4032,7 @@ function handleSend(): void {
         timestamp:    now,
         status:       'error',
         errorMessage: 'Connection lost',
+        segments:     finalSegments,
         planEntries:  finalPlanEntries,
         toolCalls:    finalToolCalls,
         reasoning:    hasReasoningText(finalReasoning) ? finalReasoning : undefined,
