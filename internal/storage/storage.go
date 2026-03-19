@@ -1293,7 +1293,6 @@ func sqliteIntToBool(v int) bool {
 	return v != 0
 }
 
-
 // ListRecentDirectories returns the most recently used directories from threads.
 // Returns up to limit unique directories, ordered by most recent update time.
 func (s *Store) ListRecentDirectories(ctx context.Context, clientID string, limit int) ([]string, error) {
