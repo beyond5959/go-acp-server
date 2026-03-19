@@ -48,6 +48,7 @@
 
   /* Dimensions */
   --sidebar-w:      260px;
+  --session-sidebar-collapsed-w: 48px;
   --session-sidebar-w: 296px;
   --header-h:       54px;
 
@@ -157,17 +158,17 @@ body {
   flex-direction: column;
   position: relative;
   overflow: hidden;
-  transition: width var(--t-base), min-width var(--t-base);
 }
 
 .sidebar-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 12px;
+  padding: 0 10px;
   height: var(--header-h);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  gap: 8px;
 }
 
 .sidebar-brand {
@@ -178,6 +179,26 @@ body {
   font-size: var(--font-size-lg);
   color: var(--text-1);
   letter-spacing: -.2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.sidebar-brand-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-sidebar-toggle-btn {
+  flex-shrink: 0;
+}
+
+.session-sidebar-toggle-btn svg {
+  transition: transform var(--t-fast);
+}
+
+.session-sidebar.session-sidebar--expanded .session-sidebar-toggle-btn svg {
+  transform: rotate(180deg);
 }
 
 .sidebar-brand-icon {
@@ -195,42 +216,11 @@ body {
   user-select: none;
 }
 
-.sidebar-search {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.search-input {
-  width: 100%;
-  height: 30px;
-  background: var(--bg-3);
-  border: 1px solid transparent;
-  border-radius: var(--r-md);
-  padding: 0 10px 0 28px;
-  font-size: var(--font-size-sm);
-  color: var(--text-1);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='13' height='13' viewBox='0 0 16 16' fill='none'%3E%3Ccircle cx='6.5' cy='6.5' r='4.5' stroke='%238e8e93' stroke-width='1.5'/%3E%3Cpath d='M10 10l3 3' stroke='%238e8e93' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: 8px center;
-  outline: none;
-  transition: border-color var(--t-fast);
-}
-
-.search-input:focus {
-  border-color: var(--border-focus);
-  background-color: var(--bg);
-}
-
-.search-input::placeholder {
-  color: var(--text-3);
-}
-
 /* Thread list */
 .thread-list {
   flex: 1;
   overflow-y: auto;
-  padding: 4px 0;
+  padding: 8px 0;
 }
 
 .thread-list-empty {
@@ -495,9 +485,19 @@ body {
   margin-top: 5px;
 }
 
+.sidebar-primary-action {
+  padding: 0 10px 10px;
+  flex-shrink: 0;
+}
+
+.sidebar-new-btn {
+  width: 100%;
+  justify-content: flex-start;
+}
+
 /* Sidebar footer */
 .sidebar-footer {
-  padding: 8px 10px;
+  padding: 8px 10px 10px;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -523,27 +523,93 @@ body {
   width: var(--session-sidebar-w);
   min-width: var(--session-sidebar-w);
   background: var(--bg-2);
-  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  transition: width var(--t-base), min-width var(--t-base);
+}
+
+.session-sidebar[hidden] {
+  display: none;
+}
+
+.session-sidebar.session-sidebar--collapsed {
+  width: var(--session-sidebar-collapsed-w);
+  min-width: var(--session-sidebar-collapsed-w);
+  background: var(--sidebar-bg);
+}
+
+.session-panel-collapsed {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 6px;
+  gap: 12px;
+}
+
+.session-panel-collapsed-marker {
+  width: 32px;
+  height: 32px;
+  border-radius: 12px;
+  background: var(--bg-3);
+  color: var(--text-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  user-select: none;
 }
 
 .session-panel-header {
-  min-height: var(--header-h);
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border);
+  padding: 14px 14px 10px;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  background: var(--bg);
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  background: transparent;
 }
 
 .session-panel-title {
   font-size: var(--font-size-lg);
   font-weight: 600;
   color: var(--text-1);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-panel-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.session-panel-heading-copy {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.session-panel-section-label {
+  color: var(--text-3);
+  font-size: var(--font-size-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.session-panel-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .session-panel-actions {
@@ -554,17 +620,30 @@ body {
 }
 
 .session-panel-subtitle {
-  margin-top: 3px;
   color: var(--text-3);
   font-size: var(--font-size-xs);
   line-height: 1.45;
   word-break: break-word;
+  margin-top: 0;
+}
+
+.session-new-btn--full {
+  width: 100%;
+  justify-content: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-1);
+}
+
+.session-new-btn--full:hover:not(:disabled) {
+  background: var(--bg-3);
 }
 
 .session-panel-body {
   flex: 1;
   overflow-y: auto;
-  padding: 12px;
+  padding: 0 12px 12px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -573,7 +652,7 @@ body {
 .session-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .session-item {
@@ -581,28 +660,31 @@ body {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  padding: 11px 12px;
-  border: 1px solid var(--border);
+  justify-content: flex-start;
+  padding: 10px 12px;
+  border: 1px solid transparent;
   border-radius: var(--r-lg);
-  background: var(--bg);
+  background: transparent;
   color: var(--text-1);
   text-align: left;
-  box-shadow: var(--shadow-sm);
+  box-shadow: none;
 }
 
 .session-item:hover:not(:disabled) {
-  background: var(--bg-2);
+  background: var(--bg);
+  border-color: var(--border);
 }
 
 .session-item--active {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 7%, var(--bg));
+  box-shadow: var(--shadow-sm);
 }
 
 .session-item-title-row {
   width: 100%;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   min-width: 0;
 }
@@ -617,6 +699,12 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.session-item-meta {
+  margin-top: 4px;
+  color: var(--text-3);
+  font-size: var(--font-size-xs);
 }
 
 .session-status-indicator {

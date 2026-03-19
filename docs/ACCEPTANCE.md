@@ -310,9 +310,12 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - the backend proxies ACP `session/list` through `GET /v1/threads/{threadId}/sessions`.
   - response includes `supported`, `sessions`, and `nextCursor`.
   - for providers that replay transcript over ACP `session/load`, the first `GET /v1/threads/{threadId}/session-history?sessionId=...` warms sqlite `session_transcript_cache`, and later requests can return the same replayed `user` / `assistant` messages without calling the provider again.
-  - the Web UI renders a right-side session sidebar with:
-    - first-page load on active thread selection.
-    - `Show more` pagination when `nextCursor` is present.
+  - the Web UI renders a left-side collapsible session panel beside a permanently expanded agent rail.
+  - when no agent/thread is selected yet, the session panel stays hidden and does not reserve layout width.
+  - the expanded session panel shows the active agent/thread name, project path, and a `New session` entry above the session list.
+  - the agent rail exposes the thread list plus a `New agent` button below it.
+  - first-page session load happens when an active thread is selected and the session panel is expanded.
+  - `Show more` pagination appears when `nextCursor` is present.
   - `New session` action that clears the selected `sessionId`.
   - repeated `New session` clicks while the thread is still unbound must still open a blank fresh-session view instead of reusing the prior anonymous buffer.
   - selecting an existing session requests provider-owned transcript replay before the next turn.

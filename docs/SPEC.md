@@ -467,11 +467,15 @@ and upstream ACP schema:
 ### 15.5 Web UI
 
 - Layout:
-  - left sidebar: thread/agent list.
+  - left edge: permanently expanded agent/thread rail plus a collapsible session panel for the active thread.
   - center: chat.
-  - right sidebar: session list for the active thread.
-- Session sidebar behavior:
-  - loads the first page automatically when a thread becomes active.
+  - the agent/thread rail stays permanently expanded and always shows full thread rows and thread action controls; `New agent` sits below the list rather than in the header.
+- Session panel behavior:
+  - lives between the agent rail and the chat area instead of on the right edge.
+  - stays hidden until an active thread is selected, so the initial empty state does not reserve session-panel width.
+  - when expanded, shows the active thread title, provider badge, project path, and a full-width `New session` action before the session list.
+  - can collapse independently into a slim strip with an expand affordance.
+  - loads the first page automatically when a thread becomes active and the session panel is expanded.
   - shows `Show more` when `nextCursor` is present.
   - highlights the currently selected `sessionId`.
   - offers `New session` to clear `sessionId`.

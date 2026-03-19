@@ -189,5 +189,4 @@ export interface AppState {
   // — UI flags —
   settingsOpen: boolean
   newThreadOpen: boolean
-  searchQuery: string
 }

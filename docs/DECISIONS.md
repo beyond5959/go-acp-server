@@ -49,6 +49,54 @@
 - ADR-045: Surface hidden agent reasoning as first-class SSE/history events in the Web UI. (Accepted)
 - ADR-046: Collapse finalized Web UI thinking panels by default. (Accepted)
 - ADR-047: Defer thread config-option apply until the next turn boundary. (Accepted)
+- ADR-049: Align Web UI navigation with a left agent rail and left session panel. (Accepted)
+- ADR-050: Keep the left agent rail permanently expanded. (Accepted)
+
+## ADR-050: Keep The Left Agent Rail Permanently Expanded
+
+- Status: Accepted
+- Date: 2026-03-19
+- Context:
+  - ADR-049 introduced a collapsible compact agent rail to mimic OpenCode's left-most project strip more closely.
+  - in follow-up product review, that compact state was judged less useful than expected because the ngent left column represents full agent/thread items rather than tiny project icons, and collapsing it hid search plus thread metadata too aggressively.
+  - the session panel still benefits from collapsibility because it is secondary context and can be hidden to reclaim chat width.
+- Decision:
+  - keep the left agent rail permanently expanded on desktop and mobile overlay states.
+  - remove the agent-rail collapse/expand trigger and compact monogram-only rendering path.
+  - retain the left-side session panel collapse/expand control as the only navigation-width toggle.
+  - keep the session panel contextual to the current selection: if no thread is active yet, do not render a placeholder session column.
+- Consequences:
+  - the main navigation always exposes thread metadata and thread actions without an extra click.
+  - layout stays simpler because only one left-side panel now owns collapse state.
+  - first-load navigation density improves because chat sits directly beside the agent rail until a thread is chosen.
+  - the left rail no longer mirrors OpenCode's narrow icon strip exactly, but preserves the more useful ngent-specific thread browsing surface.
+- Alternatives considered:
+  - keep both rails collapsible (rejected: too much state and weaker scanning ergonomics for ngent's denser thread rows).
+  - remove all collapse controls entirely (rejected: the session panel still benefits from being dismissible when chat width matters).
+
+## ADR-049: Align Web UI Navigation With A Left Agent Rail And Left Session Panel
+
+- Status: Accepted
+- Date: 2026-03-19
+- Context:
+  - the Web UI had been using a wide left thread list plus a separate right session sidebar.
+  - users wanted the navigation model to feel closer to OpenCode's web UI, where project/session browsing sits on the left side of the workspace and the first column can collapse into a compact rail.
+  - the old layout also forced session context away from the currently selected agent/thread, making it harder to see which project path and session set were active together.
+- Decision:
+  - render navigation as two left-side columns: a collapsible agent/thread rail and a collapsible session panel between that rail and the chat area.
+  - default the agent rail to its collapsed state; collapsed items use the displayed agent/thread title's first character, uppercasing ASCII letters and preserving non-Latin first characters directly.
+  - keep the full agent list, search box, and thread action menu available in the expanded rail.
+  - move `New agent` below the agent list instead of keeping it in the rail header.
+  - when the session panel is expanded, show the active agent/thread title, provider badge, project path, and a full-width `New session` action before the session list.
+- Consequences:
+  - desktop navigation matches the requested OpenCode-style mental model more closely and keeps both agent selection and session browsing on the same side of the workspace.
+  - the compact default rail saves horizontal space while still allowing quick switching between agents/threads.
+  - the session panel can still be collapsed independently when users want more room for chat content.
+  - mobile behavior stays conservative: the existing small-screen sidebar overlay path remains the fallback, and the dedicated session panel still hides below the narrower desktop breakpoint.
+- Alternatives considered:
+  - keep the old right-side session sidebar and only restyle it (rejected: does not satisfy the requested navigation model).
+  - move sessions left but keep the agent list permanently wide (rejected: wastes space and misses the requested compact rail).
+  - use provider logos for collapsed rail markers (rejected: product request explicitly prefers first-character monograms).
 
 ## ADR-047: Defer Thread Config-Option Apply Until The Next Turn Boundary
 

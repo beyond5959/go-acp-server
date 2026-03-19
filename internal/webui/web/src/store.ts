@@ -81,7 +81,6 @@ class AppStore {
       // UI flags
       settingsOpen: false,
       newThreadOpen: false,
-      searchQuery: '',
     }
   }
 

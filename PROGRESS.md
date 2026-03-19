@@ -11,7 +11,23 @@ This file is the source of milestone progress, validation commands, and next act
 
 - `Post-M8` ACP multi-agent readiness and maintenance.
 
-## Latest Update (2026-03-16)
+## Latest Update (2026-03-19)
+
+- `Post-M8` Web UI left-rail layout alignment completed:
+  - moved ACP session browsing from the right edge into a left-side session panel beside chat, following the same high-level navigation pattern as OpenCode's web UI.
+  - kept the agent/thread rail permanently expanded after follow-up product review; only the session panel now supports collapse/expand.
+  - removed the agent-list search box and its keyboard shortcut/filtering path; the left rail is now a straight thread list with actions only.
+  - moved `New agent` below the agent list and updated the expanded session header to show the active agent name, project path, and a full-width `New session` entry above the session list.
+  - removed the redundant uppercase `SESSIONS` section label above the session list after the new header/new-session block, keeping the panel header visually quieter.
+  - restored the left-top brand label from `Agents` to the product name `Ngent`.
+  - hid the session panel entirely until an agent/thread is selected, so first load no longer reserves a blank middle column.
+  - fixed the CSS visibility rule so the hidden session panel truly leaves the flex layout instead of still occupying width via `.session-sidebar { display:flex }`.
+  - flattened the expanded session panel surface so its header and list share the same background plane instead of reading as two differently colored sections.
+  - validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
+## Previous Update (2026-03-16)
 
 - `Post-M8` ACP tool-call streaming completed:
   - extended shared ACP `session/update` parsing to preserve structured `tool_call` and `tool_call_update` payloads, including `toolCallId`, status/title/kind, content blocks, locations, and raw input/output payloads.

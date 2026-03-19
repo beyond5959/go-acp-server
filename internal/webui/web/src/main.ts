@@ -779,6 +779,7 @@ const expandedToolCallSegmentIds = new Set<string>()
 let openThreadActionMenuId: string | null = null
 let renamingThreadId: string | null = null
 let renamingThreadDraft = ''
+let sessionPanelExpanded = true
 
 // ── Scroll helpers ────────────────────────────────────────────────────────
 
@@ -1472,17 +1473,20 @@ async function switchThreadSession(thread: Thread, nextSessionID: string): Promi
 
 function renderSessionItem(item: SessionInfo, active: boolean, loading: boolean): string {
   const title = item.title?.trim() || item.sessionId
+  const updatedLabel = item.updatedAt ? formatRelativeTime(item.updatedAt) : ''
   return `
     <button
       class="session-item ${active ? 'session-item--active' : ''}"
       type="button"
       data-session-id="${escHtml(item.sessionId)}"
       aria-pressed="${active ? 'true' : 'false'}"
+      title="${escHtml(title)}"
     >
       <div class="session-item-title-row">
         ${renderSessionStatusIndicator(loading)}
         <div class="session-item-title">${escHtml(title)}</div>
       </div>
+      ${updatedLabel ? `<div class="session-item-meta">${escHtml(updatedLabel)}</div>` : ''}
     </button>`
 }
 
@@ -1490,11 +1494,17 @@ function renderSessionPanel(): string {
   const { activeThreadId, threads, streamStates } = store.get()
   const thread = activeThreadId ? threads.find(item => item.threadId === activeThreadId) : null
   if (!thread) {
+    return ''
+  }
+
+  if (!sessionPanelExpanded) {
     return `
-      <div class="session-panel-header">
-        <h3 class="session-panel-title">Sessions</h3>
-      </div>
-      <div class="session-panel-empty">Select an agent to browse ACP sessions.</div>`
+      <div class="session-panel-collapsed">
+        <button class="btn btn-icon session-sidebar-toggle-btn" type="button">
+          ${iconChevronRight}
+        </button>
+        <div class="session-panel-collapsed-marker" title="${escHtml(threadTitle(thread))}">${escHtml(threadMonogramLabel(thread))}</div>
+      </div>`
   }
 
   const state = sessionPanelState(thread.threadId)
@@ -1544,27 +1554,37 @@ function renderSessionPanel(): string {
 
   return `
     <div class="session-panel-header">
-      <div>
-        <h3 class="session-panel-title">Sessions</h3>
+      <div class="session-panel-heading-row">
+        <div class="session-panel-heading-copy">
+          <div class="session-panel-title-row">
+            <h3 class="session-panel-title" title="${escHtml(threadTitle(thread))}">${escHtml(threadTitle(thread))}</h3>
+            <span class="badge badge--agent">${escHtml(thread.agent ?? '')}</span>
+          </div>
+          <div class="session-panel-subtitle" title="${escHtml(thread.cwd)}">${escHtml(thread.cwd)}</div>
+        </div>
+        <div class="session-panel-actions">
+          <button
+            class="btn btn-icon session-refresh-btn ${state.loading ? 'session-refresh-btn--loading' : ''}"
+            type="button"
+            title="${state.loading ? 'Refreshing sessions' : 'Refresh sessions'}"
+            aria-label="${state.loading ? 'Refreshing sessions' : 'Refresh sessions'}"
+            ${refreshDisabled ? 'disabled' : ''}>
+            ${iconRefresh}
+          </button>
+          <button class="btn btn-icon session-sidebar-toggle-btn" type="button">
+            ${iconChevronRight}
+          </button>
+        </div>
       </div>
-      <div class="session-panel-actions">
-        <button
-          class="btn btn-icon session-refresh-btn ${state.loading ? 'session-refresh-btn--loading' : ''}"
-          type="button"
-          title="${state.loading ? 'Refreshing sessions' : 'Refresh sessions'}"
-          aria-label="${state.loading ? 'Refreshing sessions' : 'Refresh sessions'}"
-          ${refreshDisabled ? 'disabled' : ''}>
-          ${iconRefresh}
-        </button>
-        <button
-          class="btn btn-icon session-new-btn"
-          type="button"
-          title="New session"
-          aria-label="New session"
-          ${disabled ? 'disabled' : ''}>
-          ${iconPlus}
-        </button>
-      </div>
+      <button
+        class="btn btn-ghost session-new-btn session-new-btn--full"
+        type="button"
+        title="New session"
+        aria-label="New session"
+        ${disabled ? 'disabled' : ''}>
+        ${iconPlus}
+        <span>New session</span>
+      </button>
     </div>
     <div class="session-panel-body">
       ${bodyHTML}
@@ -1582,8 +1602,16 @@ function updateSessionPanel(): void {
   }
 
   el.innerHTML = renderSessionPanel()
+  syncSidebarChrome()
   const { activeThreadId, threads } = store.get()
   const thread = activeThreadId ? threads.find(item => item.threadId === activeThreadId) : null
+
+  el.querySelectorAll<HTMLButtonElement>('.session-sidebar-toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      setSessionPanelExpanded(!sessionPanelExpanded)
+    })
+  })
+
   if (!thread) {
     delete el.dataset.threadId
     return
@@ -1596,7 +1624,7 @@ function updateSessionPanel(): void {
   }
 
   const state = sessionPanelState(thread.threadId)
-  if (state.supported === null && !state.loading && !state.loadingMore && !state.error) {
+  if (sessionPanelExpanded && state.supported === null && !state.loading && !state.loadingMore && !state.error) {
     void loadThreadSessions(thread.threadId)
   }
 
@@ -1637,6 +1665,51 @@ function skeletonItems(): string {
 function threadTitle(t: Thread): string {
   if (t.title) return t.title
   return t.cwd.split('/').filter(Boolean).pop() ?? t.cwd
+}
+
+function monogramLabel(value: string): string {
+  const firstChar = Array.from(value.trim())[0] ?? 'A'
+  return /^[A-Za-z]$/.test(firstChar) ? firstChar.toUpperCase() : firstChar
+}
+
+function threadMonogramLabel(thread: Thread): string {
+  const label = threadTitle(thread) || thread.agent || 'A'
+  return monogramLabel(label)
+}
+
+function syncSidebarChrome(): void {
+  const sidebar = document.getElementById('sidebar')
+  if (sidebar) {
+    sidebar.classList.add('sidebar--expanded')
+  }
+
+  const { activeThreadId, threads } = store.get()
+  const hasActiveThread = !!(activeThreadId && threads.some(thread => thread.threadId === activeThreadId))
+  const sessionSidebar = document.getElementById('session-sidebar')
+  if (sessionSidebar) {
+    sessionSidebar.hidden = !hasActiveThread
+    sessionSidebar.classList.toggle('session-sidebar--expanded', hasActiveThread && sessionPanelExpanded)
+    sessionSidebar.classList.toggle('session-sidebar--collapsed', hasActiveThread && !sessionPanelExpanded)
+  }
+
+  document.querySelectorAll<HTMLButtonElement>('.session-sidebar-toggle-btn').forEach(btn => {
+    const label = sessionPanelExpanded ? 'Collapse session list' : 'Expand session list'
+    btn.setAttribute('aria-label', label)
+    btn.setAttribute('title', label)
+    btn.setAttribute('aria-expanded', sessionPanelExpanded ? 'true' : 'false')
+  })
+}
+
+function setSessionPanelExpanded(expanded: boolean): void {
+  const next = !!expanded
+  if (sessionPanelExpanded === next) {
+    syncSidebarChrome()
+    return
+  }
+
+  sessionPanelExpanded = next
+  syncSidebarChrome()
+  updateSessionPanel()
 }
 
 type ConfigPickerState = 'loading' | 'empty' | 'ready'
@@ -1971,7 +2044,6 @@ function renderSessionStatusIndicator(loading: boolean): string {
 function renderThreadItem(
   t: Thread,
   activeId: string | null,
-  query: string,
   activityIndicator: ThreadActivityIndicator,
 ): string {
   const isActive = t.threadId === activeId
@@ -1979,13 +2051,6 @@ function renderThreadItem(
   const avatar = renderAgentAvatar(t.agent ?? '', 'thread')
   const displayTitle = threadTitle(t)
   const relTime = t.updatedAt ? formatRelativeTime(t.updatedAt) : ''
-
-  const titleHtml = query
-    ? escHtml(displayTitle).replace(
-        new RegExp(`(${escHtml(query)})`, 'gi'),
-        '<mark>$1</mark>',
-      )
-    : escHtml(displayTitle)
 
   return `
     <div class="thread-item ${isActive ? 'thread-item--active' : ''} ${isMenuOpen ? 'thread-item--menu-open' : ''}"
@@ -1995,7 +2060,7 @@ function renderThreadItem(
          aria-label="${escHtml(displayTitle)}">
       <div class="thread-item-avatar ${isActive ? '' : 'thread-item-avatar--inactive'}">${avatar}</div>
       <div class="thread-item-body">
-        <div class="thread-item-title">${titleHtml}</div>
+        <div class="thread-item-title">${escHtml(displayTitle)}</div>
         <div class="thread-item-preview">${escHtml(t.cwd)}</div>
         <div class="thread-item-foot">
           <span class="badge badge--agent">${escHtml(t.agent ?? '')}</span>
@@ -2018,18 +2083,13 @@ function updateThreadList(): void {
   const el = document.getElementById('thread-list')
   if (!el) return
 
-  const { threads, activeThreadId, searchQuery, streamStates, threadCompletionBadges } = store.get()
-  const q        = searchQuery.trim().toLowerCase()
-  const filtered = q
-    ? threads.filter(t =>
-        (t.title || t.cwd).toLowerCase().includes(q) || threadTitle(t).toLowerCase().includes(q) || t.cwd.toLowerCase().includes(q),
-      )
-    : threads
+  const { threads, activeThreadId, streamStates, threadCompletionBadges } = store.get()
+  const filtered = threads
 
   if (!filtered.length) {
     el.innerHTML = `
       <div class="thread-list-empty">
-        ${q ? `No agents matching "<strong>${escHtml(q)}</strong>"` : 'No agents yet.<br>Click <strong>+</strong> to start one.'}
+        No agents yet.<br>Click <strong>+</strong> to start one.
       </div>`
     renderThreadActionLayer()
     return
@@ -2041,7 +2101,7 @@ function updateThreadList(): void {
       const activityIndicator: ThreadActivityIndicator = Object.values(streamStates).some(streamState => streamState.threadId === t.threadId)
         ? 'loading'
         : (!isActive && threadCompletionBadges[t.threadId] ? 'done' : null)
-      return renderThreadItem(t, activeThreadId, q, activityIndicator)
+      return renderThreadItem(t, activeThreadId, activityIndicator)
     })
     .join('')
 
@@ -4073,6 +4133,8 @@ function openNewThread(): void {
 function renderShell(): void {
   const root = document.getElementById('app')
   if (!root) return
+  const { activeThreadId, threads } = store.get()
+  const activeThread = activeThreadId ? threads.find(thread => thread.threadId === activeThreadId) ?? null : null
 
   root.innerHTML = `
     <div class="layout">
@@ -4080,76 +4142,51 @@ function renderShell(): void {
         <div class="sidebar-header">
           <div class="sidebar-brand">
             <div class="sidebar-brand-icon">N</div>
-            <span>Ngent</span>
+            <span class="sidebar-brand-text">Ngent</span>
           </div>
-          <button class="btn btn-icon" id="new-thread-btn" title="New agent" aria-label="New agent">
-            ${iconPlus}
-          </button>
-        </div>
-
-        <div class="sidebar-search">
-          <input
-            id="search-input"
-            class="search-input"
-            type="search"
-            placeholder="Search agents…"
-            aria-label="Search agents"
-          />
         </div>
 
         <div class="thread-list" id="thread-list">
           ${skeletonItems()}
         </div>
 
+        <div class="sidebar-primary-action">
+          <button class="btn btn-primary sidebar-new-btn" id="new-thread-btn" title="New agent" aria-label="New agent">
+            ${iconPlus}
+            <span class="btn-label">New agent</span>
+          </button>
+        </div>
+
         <div class="sidebar-footer">
           <button class="btn btn-ghost sidebar-settings-btn" id="settings-btn">
-            ${iconSettings} Settings
+            ${iconSettings}
+            <span class="btn-label">Settings</span>
           </button>
         </div>
 
         <div class="thread-action-layer" id="thread-action-layer" hidden></div>
       </aside>
 
+      <aside class="session-sidebar" id="session-sidebar" ${activeThread ? '' : 'hidden'}>
+        ${activeThread ? renderSessionPanel() : ''}
+      </aside>
+
       <main class="chat" id="chat">
         ${renderChatEmpty()}
       </main>
-
-      <aside class="session-sidebar" id="session-sidebar">
-        <div class="session-panel-header">
-          <h3 class="session-panel-title">Sessions</h3>
-        </div>
-        <div class="session-panel-empty">Select an agent to browse ACP sessions.</div>
-      </aside>
     </div>`
 
   document.getElementById('settings-btn')?.addEventListener('click', () => settingsPanel.open())
   document.getElementById('new-thread-btn')?.addEventListener('click', openNewThread)
   document.getElementById('new-thread-empty-btn')?.addEventListener('click', openNewThread)
 
-  const searchEl = document.getElementById('search-input') as HTMLInputElement | null
-  searchEl?.addEventListener('input', () => {
-    store.set({ searchQuery: searchEl.value })
-    updateThreadList()
-  })
+  syncSidebarChrome()
 }
 
 // ── Global keyboard shortcuts ─────────────────────────────────────────────
 
 function bindGlobalShortcuts(): void {
   document.addEventListener('keydown', e => {
-    const active = document.activeElement as HTMLElement | null
-    const inInput = active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA'
-
-    // '/' — focus search input
-    if (e.key === '/' && !inInput && !e.metaKey && !e.ctrlKey) {
-      const searchEl = document.getElementById('search-input')
-      if (searchEl) {
-        e.preventDefault()
-        searchEl.focus()
-      }
-      return
-    }
-
     // Cmd+N / Ctrl+N — open new thread modal
     if (e.key === 'n' && (e.metaKey || e.ctrlKey) && !e.shiftKey) {
       e.preventDefault()
@@ -4186,15 +4223,7 @@ function bindGlobalShortcuts(): void {
         closeSessionInfoPopover()
         return
       }
-      // (5) clear search if focused
-      const searchEl = document.getElementById('search-input') as HTMLInputElement | null
-      if (searchEl && document.activeElement === searchEl) {
-        searchEl.value = ''
-        store.set({ searchQuery: '' })
-        searchEl.blur()
-        return
-      }
-      // (6) cancel active stream
+      // (5) cancel active stream
       const streamState = getActiveChatStreamState()
       if (streamState?.turnId) {
         void handleCancel()
