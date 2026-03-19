@@ -2905,6 +2905,17 @@ button:disabled, .btn:disabled {
   color: var(--accent-text);
 }
 
+.path-search-header {
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-3);
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 .path-search-loading {
   position: fixed;
   z-index: 10000;

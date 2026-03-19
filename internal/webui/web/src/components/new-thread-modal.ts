@@ -50,6 +50,8 @@ interface ModalState {
   pathSearchResults: string[]
   pathSearchLoading: boolean
   pathSearchSelectedIndex: number
+  recentDirectories: string[]
+  showRecentDirectories: boolean
 }
 
 // ── Render ─────────────────────────────────────────────────────────────────
@@ -111,7 +113,17 @@ function renderModal(s: ModalState, agents: AgentInfo[]): string {
                 autocomplete="off"
                 spellcheck="false"
               />
-              ${s.pathSearchResults.length > 0 ? `
+              ${s.showRecentDirectories && s.recentDirectories.length > 0 && !s.pathSearchQuery ? `
+                <div class="path-search-dropdown" id="path-search-dropdown">
+                  <div class="path-search-header">Recent directories</div>
+                  ${s.recentDirectories.map((path, idx) => `
+                    <div class="path-search-item ${idx === s.pathSearchSelectedIndex ? 'path-search-item--selected' : ''}" data-path="${escHtml(path)}">
+                      ${escHtml(path)}
+                    </div>
+                  `).join('')}
+                </div>
+              ` : ''}
+            ${s.pathSearchResults.length > 0 ? `
                 <div class="path-search-dropdown" id="path-search-dropdown">
                   ${s.pathSearchResults.map((path, idx) => `
                     <div class="path-search-item ${idx === s.pathSearchSelectedIndex ? 'path-search-item--selected' : ''}" data-path="${escHtml(path)}">
@@ -195,6 +207,8 @@ let modalState: ModalState = {
   pathSearchResults: [],
   pathSearchLoading: false,
   pathSearchSelectedIndex: -1,
+  recentDirectories: [],
+  showRecentDirectories: false,
 }
 
 function rerender(): void {
@@ -231,7 +245,12 @@ function mount(cb: (threadId: string) => void): void {
     pathSearchResults: [],
     pathSearchLoading: false,
     pathSearchSelectedIndex: -1,
+    recentDirectories: [],
+    showRecentDirectories: false,
   }
+
+  // Load recent directories
+  void loadRecentDirectories()
 
   container = document.createElement('div')
   container.innerHTML = renderModal(modalState, agents)
@@ -273,9 +292,16 @@ function bindEvents(): void {
     }
   })
 
+  container.querySelector<HTMLInputElement>('#cwd-input')?.addEventListener('focus', () => {
+    if (!modalState.cwd && modalState.recentDirectories.length > 0) {
+      modalState = { ...modalState, showRecentDirectories: true, pathSearchSelectedIndex: -1 }
+      refreshPathSearchDropdown()
+    }
+  })
+
   container.querySelector<HTMLInputElement>('#cwd-input')?.addEventListener('input', e => {
     const value = (e.target as HTMLInputElement).value.trim()
-    modalState = { ...modalState, cwd: value, error: '', pathSearchQuery: value, pathSearchSelectedIndex: -1 }
+    modalState = { ...modalState, cwd: value, error: '', pathSearchQuery: value, pathSearchSelectedIndex: -1, showRecentDirectories: false }
     refreshCwdHint()
     refreshSubmitButton()
     // Clear results immediately if input is less than 3 chars
@@ -287,14 +313,15 @@ function bindEvents(): void {
   })
 
   container.querySelector<HTMLInputElement>('#cwd-input')?.addEventListener('keydown', e => {
-    if (modalState.pathSearchResults.length === 0) return
+    const items = modalState.showRecentDirectories ? modalState.recentDirectories : modalState.pathSearchResults
+    if (items.length === 0) return
 
     switch (e.key) {
       case 'ArrowDown':
         e.preventDefault()
         modalState = {
           ...modalState,
-          pathSearchSelectedIndex: (modalState.pathSearchSelectedIndex + 1) % modalState.pathSearchResults.length
+          pathSearchSelectedIndex: (modalState.pathSearchSelectedIndex + 1) % items.length
         }
         refreshPathSearchDropdown()
         break
@@ -303,7 +330,7 @@ function bindEvents(): void {
         modalState = {
           ...modalState,
           pathSearchSelectedIndex: modalState.pathSearchSelectedIndex <= 0
-            ? modalState.pathSearchResults.length - 1
+            ? items.length - 1
             : modalState.pathSearchSelectedIndex - 1
         }
         refreshPathSearchDropdown()
@@ -311,11 +338,11 @@ function bindEvents(): void {
       case 'Enter':
         e.preventDefault()
         if (modalState.pathSearchSelectedIndex >= 0) {
-          selectPathSearchResult(modalState.pathSearchResults[modalState.pathSearchSelectedIndex])
+          selectPathSearchResult(items[modalState.pathSearchSelectedIndex])
         }
         break
       case 'Escape':
-        modalState = { ...modalState, pathSearchResults: [], pathSearchSelectedIndex: -1 }
+        modalState = { ...modalState, pathSearchResults: [], pathSearchSelectedIndex: -1, showRecentDirectories: false }
         refreshPathSearchDropdown()
         break
     }
@@ -441,7 +468,35 @@ function refreshPathSearchDropdown(): void {
     return
   }
 
-  // Add dropdown if there are results
+  // Show recent directories if enabled and no search query
+  if (modalState.showRecentDirectories && modalState.recentDirectories.length > 0 && !modalState.pathSearchQuery) {
+    const dropdown = document.createElement('div')
+    dropdown.id = 'path-search-dropdown'
+    dropdown.className = 'path-search-dropdown'
+    dropdown.style.top = `${dropdownTop}px`
+    dropdown.style.left = `${dropdownLeft}px`
+    dropdown.style.width = `${dropdownWidth}px`
+    dropdown.innerHTML = `
+      <div class="path-search-header">Recent directories</div>
+      ${modalState.recentDirectories.map((path, idx) => `
+        <div class="path-search-item ${idx === modalState.pathSearchSelectedIndex ? 'path-search-item--selected' : ''}" data-path="${escHtml(path)}">
+          ${escHtml(path)}
+        </div>
+      `).join('')}
+    `
+    document.body.appendChild(dropdown)
+
+    // Bind click events
+    dropdown.querySelectorAll('.path-search-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const path = (item as HTMLElement).dataset.path
+        if (path) selectPathSearchResult(path)
+      })
+    })
+    return
+  }
+
+  // Add dropdown if there are search results
   if (modalState.pathSearchResults.length > 0) {
     const dropdown = document.createElement('div')
     dropdown.id = 'path-search-dropdown'
@@ -466,13 +521,23 @@ function refreshPathSearchDropdown(): void {
   }
 }
 
+async function loadRecentDirectories(): Promise<void> {
+  try {
+    const dirs = await api.getRecentDirectories()
+    modalState = { ...modalState, recentDirectories: dirs }
+  } catch {
+    // Ignore errors, recent directories are optional
+  }
+}
+
 function selectPathSearchResult(path: string): void {
   modalState = {
     ...modalState,
     cwd: path,
     pathSearchResults: [],
     pathSearchSelectedIndex: -1,
-    pathSearchQuery: path
+    pathSearchQuery: path,
+    showRecentDirectories: false
   }
 
   const input = container?.querySelector<HTMLInputElement>('#cwd-input')

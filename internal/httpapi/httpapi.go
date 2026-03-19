@@ -58,6 +58,7 @@ type ThreadStore interface {
 	AppendEvent(ctx context.Context, turnID, eventType, dataJSON string) (storage.Event, error)
 	ListEventsByTurn(ctx context.Context, turnID string) ([]storage.Event, error)
 	FinalizeTurn(ctx context.Context, params storage.FinalizeTurnParams) error
+	ListRecentDirectories(ctx context.Context, clientID string, limit int) ([]string, error)
 }
 
 // TurnAgentFactory resolves a per-turn agent provider from thread metadata.
@@ -318,6 +319,11 @@ func (s *Server) routeV1(w http.ResponseWriter, r *http.Request, clientID string
 
 	if r.URL.Path == "/v1/path-search" {
 		s.handlePathSearch(w, r)
+		return
+	}
+
+	if r.URL.Path == "/v1/recent-directories" {
+		s.handleRecentDirectories(w, r, clientID)
 		return
 	}
 
@@ -3515,6 +3521,24 @@ func (s *Server) searchDirectories(homeDir, query string) []string {
 	return results
 }
 
+// handleRecentDirectories returns the most recently used directories for the client.
+func (s *Server) handleRecentDirectories(w http.ResponseWriter, r *http.Request, clientID string) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, r)
+		return
+	}
+
+	dirs, err := s.store.ListRecentDirectories(r.Context(), clientID, 5)
+	if err != nil {
+		s.logger.Warn("recent_directories.query_failed", "error", err.Error())
+		writeError(w, http.StatusInternalServerError, codeInternal, "failed to get recent directories", nil)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"directories": dirs,
+	})
+}
 
 // expandPath expands ~ to the user's home directory.
 // If the path starts with ~/, it replaces ~ with the home directory.

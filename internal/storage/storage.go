@@ -1292,3 +1292,35 @@ func boolToSQLiteInt(v bool) int {
 func sqliteIntToBool(v int) bool {
 	return v != 0
 }
+
+
+// ListRecentDirectories returns the most recently used directories from threads.
+// Returns up to limit unique directories, ordered by most recent update time.
+func (s *Store) ListRecentDirectories(ctx context.Context, clientID string, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT cwd
+		FROM threads
+		WHERE client_id = ?
+		ORDER BY updated_at DESC
+		LIMIT ?
+	`, clientID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query recent directories: %w", err)
+	}
+	defer rows.Close()
+
+	var dirs []string
+	for rows.Next() {
+		var cwd string
+		if err := rows.Scan(&cwd); err != nil {
+			return nil, fmt.Errorf("scan directory: %w", err)
+		}
+		dirs = append(dirs, cwd)
+	}
+
+	return dirs, rows.Err()
+}
