@@ -121,7 +121,7 @@ This checklist defines executable acceptance checks for requirements 1-16.
 ## Requirement 14: OpenCode Agent
 
 - Operation: verify opencode provider is listed and can complete a turn.
-- Expected: `GET /v1/agents` includes `{"id":"opencode","name":"OpenCode","status":"available"}` when `opencode` is in PATH; a full turn over SSE returns `message_delta` events.
+- Expected: `GET /v1/agents` includes `{"id":"opencode","name":"OpenCode","status":"available"}` when `opencode` is in PATH, and omits `opencode` entirely when the binary is unavailable; a full turn over SSE returns `message_delta` events.
 - Verification commands:
   - `go test ./internal/agents/opencode -run TestStreamWithFakeProcess -count=1`
   - `E2E_OPENCODE=1 go test ./internal/agents/opencode -run TestOpenCodeE2ESmoke -v -timeout 60s`
@@ -132,7 +132,7 @@ This checklist defines executable acceptance checks for requirements 1-16.
 ## Requirement 15: Gemini CLI Agent
 
 - Operation: verify Gemini CLI provider is listed and can complete a turn.
-- Expected: `GET /v1/agents` includes `{"id":"gemini","name":"Gemini CLI","status":"available"}` when `gemini` is in PATH and `GEMINI_API_KEY` is set; a full turn over SSE returns `message_delta` events.
+- Expected: `GET /v1/agents` includes `{"id":"gemini","name":"Gemini CLI","status":"available"}` when `gemini` is in PATH and `GEMINI_API_KEY` is set, and omits `gemini` entirely when startup preflight fails; a full turn over SSE returns `message_delta` events.
 - Verification commands:
   - `go test ./internal/agents/gemini -run TestStreamWithFakeProcess -count=1`
   - `E2E_GEMINI=1 go test ./internal/agents/gemini -run TestGeminiE2ESmoke -v -timeout 60s`
@@ -141,7 +141,7 @@ This checklist defines executable acceptance checks for requirements 1-16.
 
 - Operation: verify qwen provider is listed and can complete a turn over ACP.
 - Expected:
-  - `GET /v1/agents` includes `{"id":"qwen","name":"Qwen Code","status":"available"}` when `qwen` is in PATH.
+  - `GET /v1/agents` includes `{"id":"qwen","name":"Qwen Code","status":"available"}` when `qwen` is in PATH, and omits `qwen` entirely when the binary is unavailable.
   - thread creation accepts `agent=qwen`.
   - turn streaming emits `message_delta` and finishes with `turn_completed` (or explicit upstream error envelope).
   - permission flow remains fail-closed.
@@ -158,7 +158,7 @@ This checklist defines executable acceptance checks for requirements 1-16.
 
 - Operation: verify kimi provider is listed and can complete a turn over ACP.
 - Expected:
-  - `GET /v1/agents` includes `{"id":"kimi","name":"Kimi CLI","status":"available"}` when `kimi` is in PATH.
+  - `GET /v1/agents` includes `{"id":"kimi","name":"Kimi CLI","status":"available"}` when `kimi` is in PATH, and omits `kimi` entirely when the binary is unavailable.
   - thread creation accepts `agent=kimi`.
   - turn streaming emits `message_delta` and finishes with `turn_completed` (or explicit upstream error envelope).
   - provider tolerates current upstream ACP startup variants `kimi acp` and `kimi --acp`.

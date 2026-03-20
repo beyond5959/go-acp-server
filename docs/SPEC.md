@@ -117,6 +117,7 @@ See `docs/API.md` for endpoint and schema contracts.
 
 - default bind: `127.0.0.1:8686` (local-only).
 - public bind allowed when `--allow-public=true`.
+- startup preflight determines the runtime agent allowlist; agents that fail preflight are omitted from `/v1/agents`, rejected by create-thread validation, and skipped by startup catalog refresh.
 - strict input validation:
   - agent must be allowlisted.
   - cwd must be absolute.

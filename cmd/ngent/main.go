@@ -120,6 +120,7 @@ func main() {
 		logger.Info("startup.debug_enabled", "acpTrace", true)
 	}
 	agents := supportedAgents(codexAvailable, opencodeAvailable, geminiAvailable, kimiAvailable, qwenAvailable, claudeAvailable)
+	allowedAgentIDs := agentIDsFromInfos(agents)
 
 	listenAddr, port, err := resolveListenAddr(*portFlag, *allowPublic)
 	if err != nil {
@@ -153,7 +154,7 @@ func main() {
 	handler := httpapi.New(httpapi.Config{
 		AuthToken:       *authToken,
 		Agents:          agents,
-		AllowedAgentIDs: agentimpl.AllAgentIDs(),
+		AllowedAgentIDs: allowedAgentIDs,
 		AllowedRoots:    allowedRoots,
 		Store:           store,
 		TurnController:  turnController,
@@ -266,6 +267,7 @@ func main() {
 	startAgentConfigCatalogRefresh(refreshCtx, buildAgentConfigCatalogRefresher(
 		store,
 		logger,
+		allowedAgentIDs,
 		modelDiscoveryDir,
 		codexRuntimeConfig,
 		codexPreflightErr,
@@ -336,6 +338,7 @@ func startAgentConfigCatalogRefresh(ctx context.Context, refresher *agentConfigC
 func buildAgentConfigCatalogRefresher(
 	store *storage.Store,
 	logger *slog.Logger,
+	agentIDs []string,
 	modelDiscoveryDir string,
 	codexRuntimeConfig codexacp.RuntimeConfig,
 	codexPreflightErr error,
@@ -355,7 +358,7 @@ func buildAgentConfigCatalogRefresher(
 	return &agentConfigCatalogRefresher{
 		store:    store,
 		logger:   logger,
-		agentIDs: agentimpl.AllAgentIDs(),
+		agentIDs: append([]string(nil), agentIDs...),
 		fetchConfigOptions: func(ctx context.Context, agentID, modelID string) ([]agentimpl.ConfigOption, error) {
 			switch agentID {
 			case agentimpl.AgentIDCodex:
@@ -726,39 +729,38 @@ func extractConfigOverrides(agentOptionsJSON string) map[string]string {
 }
 
 func supportedAgents(codexAvailable, opencodeAvailable, geminiAvailable, kimiAvailable, qwenAvailable, claudeAvailable bool) []httpapi.AgentInfo {
-	codexStatus := "unavailable"
-	if codexAvailable {
-		codexStatus = "available"
-	}
-	opencodeStatus := "unavailable"
-	if opencodeAvailable {
-		opencodeStatus = "available"
-	}
-	geminiStatus := "unavailable"
-	if geminiAvailable {
-		geminiStatus = "available"
-	}
-	kimiStatus := "unavailable"
-	if kimiAvailable {
-		kimiStatus = "available"
-	}
-	qwenStatus := "unavailable"
-	if qwenAvailable {
-		qwenStatus = "available"
-	}
-	claudeStatus := "unavailable"
-	if claudeAvailable {
-		claudeStatus = "available"
+	agents := make([]httpapi.AgentInfo, 0, len(agentimpl.AllAgentIDs()))
+	appendIfAvailable := func(available bool, agentID, name string) {
+		if !available {
+			return
+		}
+		agents = append(agents, httpapi.AgentInfo{
+			ID:     agentID,
+			Name:   name,
+			Status: "available",
+		})
 	}
 
-	return []httpapi.AgentInfo{
-		{ID: agentimpl.AgentIDCodex, Name: "Codex", Status: codexStatus},
-		{ID: agentimpl.AgentIDClaude, Name: "Claude Code", Status: claudeStatus},
-		{ID: agentimpl.AgentIDGemini, Name: "Gemini CLI", Status: geminiStatus},
-		{ID: agentimpl.AgentIDKimi, Name: "Kimi CLI", Status: kimiStatus},
-		{ID: agentimpl.AgentIDQwen, Name: "Qwen Code", Status: qwenStatus},
-		{ID: agentimpl.AgentIDOpencode, Name: "OpenCode", Status: opencodeStatus},
+	appendIfAvailable(codexAvailable, agentimpl.AgentIDCodex, "Codex")
+	appendIfAvailable(claudeAvailable, agentimpl.AgentIDClaude, "Claude Code")
+	appendIfAvailable(geminiAvailable, agentimpl.AgentIDGemini, "Gemini CLI")
+	appendIfAvailable(kimiAvailable, agentimpl.AgentIDKimi, "Kimi CLI")
+	appendIfAvailable(qwenAvailable, agentimpl.AgentIDQwen, "Qwen Code")
+	appendIfAvailable(opencodeAvailable, agentimpl.AgentIDOpencode, "OpenCode")
+
+	return agents
+}
+
+func agentIDsFromInfos(agents []httpapi.AgentInfo) []string {
+	ids := make([]string, 0, len(agents))
+	for _, agent := range agents {
+		agentID := strings.TrimSpace(agent.ID)
+		if agentID == "" {
+			continue
+		}
+		ids = append(ids, agentID)
 	}
+	return ids
 }
 
 func resolveModelDiscoveryDir(allowedRoots []string) string {
@@ -960,6 +962,20 @@ func printStartupBanner(out io.Writer, port int, agents []httpapi.AgentInfo, lis
 
 	// Agents status
 	_, _ = fmt.Fprint(out, "Agents: ")
+	if len(agents) == 0 {
+		_, _ = fmt.Fprintln(out, "none detected")
+		_, _ = fmt.Fprintln(out)
+		if isLAN {
+			_, _ = fmt.Fprintln(out, "Scan QR code to connect from your phone:")
+			_, _ = fmt.Fprintln(out)
+			printQRCode(out, lanURL)
+			_, _ = fmt.Fprintln(out)
+		}
+
+		_, _ = fmt.Fprintln(out, "Ready. Press Ctrl+C to stop.")
+		_, _ = fmt.Fprintln(out)
+		return
+	}
 	for i, agent := range agents {
 		if i > 0 {
 			_, _ = fmt.Fprint(out, " • ")

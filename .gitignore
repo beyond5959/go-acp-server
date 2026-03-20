@@ -8,3 +8,4 @@ vendor/
 internal/webui/web/node_modules/
 internal/webui/web/dist/
 internal/webui/web/tsconfig.tsbuildinfo
+.codex

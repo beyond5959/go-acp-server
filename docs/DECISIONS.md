@@ -1273,3 +1273,23 @@ Use this template for new decisions.
   - keep the old single-bubble layout and only restyle the tool/reasoning sections (rejected: still loses chronological structure).
   - flatten tool/thought events into one markdown transcript string (rejected: harder to update incrementally and loses structured tool metadata).
   - move `plan_update` into the same segment list immediately (deferred: it is replace-style state and needs separate UX rules).
+
+## ADR-051: Derive the runtime agent list from startup preflight results
+
+- Status: Accepted
+- Date: 2026-03-20
+- Context:
+  - ngent supported multiple optional local agent CLIs, but startup wiring still treated the full static provider set as active.
+  - as a result, servers that only had a subset of binaries installed still attempted startup config-catalog refresh for missing agents and emitted repeated `config_catalog.refresh_failed` warnings.
+  - the Web UI also received unavailable agent rows even though those agents could never be used successfully in that environment.
+- Decision:
+  - compute the active agent set from startup `Preflight()` success only.
+  - use that same derived set for `/v1/agents`, request-time `AllowedAgentIDs` validation, and startup config-catalog refresh.
+  - continue logging provider-specific startup preflight diagnostics, but do not attempt model/config refresh for agents that are not runnable in the current environment.
+- Consequences:
+  - missing local binaries no longer trigger startup config-catalog refresh failures.
+  - the frontend only shows agents that are actually usable on the running server.
+  - thread creation now rejects agent ids that are unsupported in the current runtime, even if ngent knows about that provider type in other environments.
+- Alternatives considered:
+  - keep returning unavailable agents and suppress only refresh warnings (rejected: frontend/runtime behavior would still disagree about what is usable).
+  - make refresh failures silent while leaving the static allowlist intact (rejected: still permits users to create threads for agents that cannot start).

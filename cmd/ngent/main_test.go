@@ -267,75 +267,40 @@ func TestAgentConfigCatalogRefresherPartialKeepsExistingRows(t *testing.T) {
 	}
 }
 
-func TestSupportedAgentsCodexStatus(t *testing.T) {
+func TestSupportedAgentsOnlyIncludesAvailableAgents(t *testing.T) {
 	agentsUnavailable := supportedAgents(false, false, false, false, false, false)
-	if len(agentsUnavailable) == 0 {
-		t.Fatalf("supportedAgents returned empty list")
+	if got := len(agentsUnavailable); got != 0 {
+		t.Fatalf("len(agentsUnavailable) = %d, want 0", got)
 	}
-	if agentsUnavailable[0].ID != "codex" {
-		t.Fatalf("agents[0].ID = %q, want %q", agentsUnavailable[0].ID, "codex")
+
+	agentsSubset := supportedAgents(true, false, false, true, false, false)
+	if got, want := len(agentsSubset), 2; got != want {
+		t.Fatalf("len(agentsSubset) = %d, want %d", got, want)
 	}
-	if agentsUnavailable[0].Status != "unavailable" {
-		t.Fatalf("codex unavailable status = %q, want %q", agentsUnavailable[0].Status, "unavailable")
+	if agentsSubset[0].ID != "codex" {
+		t.Fatalf("agentsSubset[0].ID = %q, want %q", agentsSubset[0].ID, "codex")
 	}
-	if agentsUnavailable[1].ID != "claude" {
-		t.Fatalf("agents[1].ID = %q, want %q", agentsUnavailable[1].ID, "claude")
+	if agentsSubset[0].Status != "available" {
+		t.Fatalf("agentsSubset[0].Status = %q, want %q", agentsSubset[0].Status, "available")
 	}
-	if agentsUnavailable[1].Status != "unavailable" {
-		t.Fatalf("claude unavailable status = %q, want %q", agentsUnavailable[1].Status, "unavailable")
+	if agentsSubset[1].ID != "kimi" {
+		t.Fatalf("agentsSubset[1].ID = %q, want %q", agentsSubset[1].ID, "kimi")
 	}
-	if got, want := len(agentsUnavailable), 6; got != want {
-		t.Fatalf("len(agentsUnavailable) = %d, want %d", got, want)
-	}
-	if agentsUnavailable[3].ID != "kimi" {
-		t.Fatalf("agents[3].ID = %q, want %q", agentsUnavailable[3].ID, "kimi")
-	}
-	if agentsUnavailable[3].Status != "unavailable" {
-		t.Fatalf("kimi unavailable status = %q, want %q", agentsUnavailable[3].Status, "unavailable")
-	}
-	if agentsUnavailable[4].ID != "qwen" {
-		t.Fatalf("agents[4].ID = %q, want %q", agentsUnavailable[4].ID, "qwen")
-	}
-	if agentsUnavailable[4].Status != "unavailable" {
-		t.Fatalf("qwen unavailable status = %q, want %q", agentsUnavailable[4].Status, "unavailable")
-	}
-	if agentsUnavailable[5].ID != "opencode" {
-		t.Fatalf("agents[5].ID = %q, want %q", agentsUnavailable[5].ID, "opencode")
-	}
-	if agentsUnavailable[5].Status != "unavailable" {
-		t.Fatalf("opencode unavailable status = %q, want %q", agentsUnavailable[5].Status, "unavailable")
+	if agentsSubset[1].Status != "available" {
+		t.Fatalf("agentsSubset[1].Status = %q, want %q", agentsSubset[1].Status, "available")
 	}
 
 	agentsAvailable := supportedAgents(true, true, true, true, true, true)
-	if agentsAvailable[0].Status != "available" {
-		t.Fatalf("codex available status = %q, want %q", agentsAvailable[0].Status, "available")
-	}
-	if agentsAvailable[1].ID != "claude" {
-		t.Fatalf("agents[1].ID = %q, want %q", agentsAvailable[1].ID, "claude")
-	}
-	if agentsAvailable[1].Status != "available" {
-		t.Fatalf("claude available status = %q, want %q", agentsAvailable[1].Status, "available")
-	}
 	if got, want := len(agentsAvailable), 6; got != want {
 		t.Fatalf("len(agentsAvailable) = %d, want %d", got, want)
 	}
-	if agentsAvailable[3].ID != "kimi" {
-		t.Fatalf("agents[3].ID = %q, want %q", agentsAvailable[3].ID, "kimi")
-	}
-	if agentsAvailable[3].Status != "available" {
-		t.Fatalf("kimi available status = %q, want %q", agentsAvailable[3].Status, "available")
-	}
-	if agentsAvailable[4].ID != "qwen" {
-		t.Fatalf("agents[4].ID = %q, want %q", agentsAvailable[4].ID, "qwen")
-	}
-	if agentsAvailable[4].Status != "available" {
-		t.Fatalf("qwen available status = %q, want %q", agentsAvailable[4].Status, "available")
-	}
-	if agentsAvailable[5].ID != "opencode" {
-		t.Fatalf("agents[5].ID = %q, want %q", agentsAvailable[5].ID, "opencode")
-	}
-	if agentsAvailable[5].Status != "available" {
-		t.Fatalf("opencode available status = %q, want %q", agentsAvailable[5].Status, "available")
+	for i, wantID := range []string{"codex", "claude", "gemini", "kimi", "qwen", "opencode"} {
+		if agentsAvailable[i].ID != wantID {
+			t.Fatalf("agentsAvailable[%d].ID = %q, want %q", i, agentsAvailable[i].ID, wantID)
+		}
+		if agentsAvailable[i].Status != "available" {
+			t.Fatalf("agentsAvailable[%d].Status = %q, want %q", i, agentsAvailable[i].Status, "available")
+		}
 	}
 }
 

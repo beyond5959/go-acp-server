@@ -868,3 +868,11 @@ This file is the source of milestone progress, validation commands, and next act
   - executed validation:
     - pass: `cd internal/webui/web && npm run build`
     - pass: `go test ./...`
+
+- 2026-03-20: limited runtime agent handling to providers that actually pass startup preflight in the current environment.
+  - root cause: ngent still used the full static provider list for `/v1/agents`, create-thread allowlist validation, and startup config-catalog refresh, so hosts that only installed a subset of agent CLIs emitted noisy `config_catalog.refresh_failed` warnings for missing binaries and exposed unusable agents in the frontend.
+  - changed startup wiring to derive one active agent set from successful provider preflight checks and reuse that same set for frontend agent discovery, request validation, and config-catalog background refresh.
+  - `GET /v1/agents` now omits unavailable providers instead of returning `status:"unavailable"`, and startup no longer attempts config/model refresh for agents whose binaries are absent in the running environment.
+  - executed validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `env GOCACHE=/tmp/ngent-gocache GOFLAGS=-p=1 /usr/local/go/bin/go test ./...`

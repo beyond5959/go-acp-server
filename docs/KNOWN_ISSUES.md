@@ -358,6 +358,20 @@
 - Follow-up plan:
   - add richer renderers for additional ACP content block variants once real provider payloads stabilize.
 
+- ID: KI-035
+- Title: Full-suite `go test ./...` can flake when ACP-heavy agent packages run in parallel
+- Status: Open
+- Severity: Low
+- Affects: local validation runs that execute the whole Go test suite with default package parallelism
+- Symptom:
+  - on some hosts, `go test ./...` can intermittently hit startup timeouts in ACP-heavy fake-process packages such as `internal/agents/codex`, `internal/agents/opencode`, or `internal/agents/qwen`.
+  - the same packages pass when re-run individually, which points to host resource contention rather than a deterministic functional regression in those packages.
+- Workaround:
+  - rerun the full suite with serialized package scheduling, for example `GOFLAGS=-p=1 go test ./...`.
+  - if one package still fails, rerun that package directly to distinguish a transient host-timeout from a real regression.
+- Follow-up plan:
+  - reduce test startup latency and remove package-parallel sensitivity in the ACP-heavy fake-process suites so default `go test ./...` stays stable without extra flags.
+
 ## Recently Closed
 
 - ID: KI-033

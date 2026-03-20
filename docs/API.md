@@ -128,7 +128,7 @@ All errors use:
 ```
 
 - Validation:
-  - `agent` must be in allowlist (`codex|claude|gemini|qwen|opencode`).
+  - `agent` must be in the current runtime allowlist (derived from agents whose startup preflight succeeds in the running environment).
   - `cwd` must be absolute.
   - server default policy accepts any absolute `cwd`.
   - create thread only persists row; no agent process is started.
