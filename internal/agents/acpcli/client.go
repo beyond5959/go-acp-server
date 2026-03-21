@@ -63,6 +63,11 @@ type Client struct {
 	slashCommands agents.SlashCommandsCache
 }
 
+// ModelDiscoverer describes the client capability needed by shared DiscoverModels helpers.
+type ModelDiscoverer interface {
+	DiscoverModels(ctx context.Context) ([]agents.ModelOption, error)
+}
+
 // New constructs one shared ACP CLI client for a provider.
 func New(provider string, cfg agentutil.Config, hooks Hooks) (*Client, error) {
 	if hooks.OpenConn == nil {
@@ -90,6 +95,78 @@ func New(provider string, cfg agentutil.Config, hooks Hooks) (*Client, error) {
 		provider: strings.TrimSpace(provider),
 		hooks:    hooks,
 	}, nil
+}
+
+// DiscoverModelsWithClient constructs one provider client and returns its discovered model options.
+func DiscoverModelsWithClient[T ModelDiscoverer](
+	ctx context.Context,
+	newClient func() (T, error),
+) ([]agents.ModelOption, error) {
+	client, err := newClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.DiscoverModels(ctx)
+}
+
+// SessionNewParams returns ACP session/new params for providers that only need cwd and optional model selection.
+func SessionNewParams(dir string) func(string) map[string]any {
+	return func(modelID string) map[string]any {
+		params := map[string]any{
+			"cwd":        strings.TrimSpace(dir),
+			"mcpServers": []any{},
+		}
+		modelID = strings.TrimSpace(modelID)
+		if modelID != "" {
+			params["model"] = modelID
+			params["modelId"] = modelID
+		}
+		return params
+	}
+}
+
+// DiscoverModelsParams returns ACP session/new params for model discovery without forcing a model selection.
+func DiscoverModelsParams(dir string) func(string) map[string]any {
+	return func(string) map[string]any {
+		return map[string]any{
+			"cwd":        strings.TrimSpace(dir),
+			"mcpServers": []any{},
+		}
+	}
+}
+
+// SessionLoadParams returns ACP session/load params for providers that only need session id and cwd.
+func SessionLoadParams(dir string) func(string) map[string]any {
+	return func(sessionID string) map[string]any {
+		return map[string]any{
+			"sessionId":  strings.TrimSpace(sessionID),
+			"cwd":        strings.TrimSpace(dir),
+			"mcpServers": []any{},
+		}
+	}
+}
+
+// SessionListParams returns ACP session/list params for providers that only need cwd, optional cursor, and empty MCP servers.
+func SessionListParams(dir string) func(string, string) map[string]any {
+	return func(cwd, cursor string) map[string]any {
+		params := map[string]any{
+			"cwd":        SessionCWD(dir, cwd),
+			"mcpServers": []any{},
+		}
+		if cursor = strings.TrimSpace(cursor); cursor != "" {
+			params["cursor"] = cursor
+		}
+		return params
+	}
+}
+
+// SessionCWD chooses the explicit session cwd when present, otherwise falling back to the provider default dir.
+func SessionCWD(dir, cwd string) string {
+	cwd = strings.TrimSpace(cwd)
+	if cwd != "" {
+		return cwd
+	}
+	return strings.TrimSpace(dir)
 }
 
 // Name returns the provider identifier.

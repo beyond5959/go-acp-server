@@ -21,6 +21,7 @@ import (
 	"github.com/beyond5959/acp-adapter/pkg/codexacp"
 	agentimpl "github.com/beyond5959/ngent/internal/agents"
 	"github.com/beyond5959/ngent/internal/agents/acpmodel"
+	"github.com/beyond5959/ngent/internal/agents/agentutil"
 	claudeagent "github.com/beyond5959/ngent/internal/agents/claude"
 	codexagent "github.com/beyond5959/ngent/internal/agents/codex"
 	geminiagent "github.com/beyond5959/ngent/internal/agents/gemini"
@@ -98,24 +99,12 @@ func main() {
 	kimiAvailable := kimiPreflightErr == nil
 	qwenAvailable := qwenPreflightErr == nil
 	claudeAvailable := claudePreflightErr == nil
-	if codexPreflightErr != nil {
-		logger.Warn("startup.codex_embedded_unavailable", "error", codexPreflightErr.Error())
-	}
-	if opencodePreflightErr != nil {
-		logger.Warn("startup.opencode_unavailable", "error", opencodePreflightErr.Error())
-	}
-	if geminiPreflightErr != nil {
-		logger.Warn("startup.gemini_unavailable", "error", geminiPreflightErr.Error())
-	}
-	if kimiPreflightErr != nil {
-		logger.Warn("startup.kimi_unavailable", "error", kimiPreflightErr.Error())
-	}
-	if qwenPreflightErr != nil {
-		logger.Warn("startup.qwen_unavailable", "error", qwenPreflightErr.Error())
-	}
-	if claudePreflightErr != nil {
-		logger.Warn("startup.claude_unavailable", "error", claudePreflightErr.Error())
-	}
+	logStartupPreflight(logger, "startup.codex_embedded_unavailable", codexPreflightErr)
+	logStartupPreflight(logger, "startup.opencode_unavailable", opencodePreflightErr)
+	logStartupPreflight(logger, "startup.gemini_unavailable", geminiPreflightErr)
+	logStartupPreflight(logger, "startup.kimi_unavailable", kimiPreflightErr)
+	logStartupPreflight(logger, "startup.qwen_unavailable", qwenPreflightErr)
+	logStartupPreflight(logger, "startup.claude_unavailable", claudePreflightErr)
 	if *debugFlag {
 		logger.Info("startup.debug_enabled", "acpTrace", true)
 	}
@@ -795,6 +784,16 @@ func resolveListenAddr(port int, allowPublic bool) (string, int, error) {
 
 	listenAddr := net.JoinHostPort(host, strconv.Itoa(port))
 	return listenAddr, port, nil
+}
+
+func logStartupPreflight(logger *slog.Logger, event string, err error) {
+	if logger == nil || err == nil {
+		return
+	}
+	if agentutil.IsMissingBinaryError(err) {
+		return
+	}
+	logger.Warn(event, "error", err.Error())
 }
 
 func gracefulShutdown(

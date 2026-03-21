@@ -42,11 +42,11 @@ var _ agents.SlashCommandsProvider = (*Client)(nil)
 func New(cfg Config) (*Client, error) {
 	base, err := acpcli.New(agents.AgentIDKimi, cfg, acpcli.Hooks{
 		OpenConn:                openConn(cfg.Dir),
-		SessionNewParams:        sessionNewParams(cfg.Dir),
-		SessionLoadParams:       sessionLoadParams(cfg.Dir),
-		SessionListParams:       sessionListParams(cfg.Dir),
+		SessionNewParams:        acpcli.SessionNewParams(cfg.Dir),
+		SessionLoadParams:       acpcli.SessionLoadParams(cfg.Dir),
+		SessionListParams:       acpcli.SessionListParams(cfg.Dir),
 		PromptParams:            promptParams,
-		DiscoverModelsParams:    sessionNewParams(cfg.Dir),
+		DiscoverModelsParams:    acpcli.SessionNewParams(cfg.Dir),
 		PrepareConfigSession:    prepareConfigSession,
 		HandlePermissionRequest: handlePermissionRequest,
 		Cancel:                  cancelWithNotify,
@@ -153,44 +153,6 @@ func initializeParams() map[string]any {
 	}
 }
 
-func sessionNewParams(dir string) func(string) map[string]any {
-	return func(modelID string) map[string]any {
-		params := map[string]any{
-			"cwd":        strings.TrimSpace(dir),
-			"mcpServers": []any{},
-		}
-		modelID = strings.TrimSpace(modelID)
-		if modelID != "" {
-			params["model"] = modelID
-			params["modelId"] = modelID
-		}
-		return params
-	}
-}
-
-func sessionLoadParams(dir string) func(string) map[string]any {
-	return func(sessionID string) map[string]any {
-		return map[string]any{
-			"sessionId":  strings.TrimSpace(sessionID),
-			"cwd":        strings.TrimSpace(dir),
-			"mcpServers": []any{},
-		}
-	}
-}
-
-func sessionListParams(dir string) func(string, string) map[string]any {
-	return func(cwd, cursor string) map[string]any {
-		params := map[string]any{
-			"cwd":        sessionCWD(dir, cwd),
-			"mcpServers": []any{},
-		}
-		if cursor = strings.TrimSpace(cursor); cursor != "" {
-			params["cursor"] = cursor
-		}
-		return params
-	}
-}
-
 func promptParams(sessionID, input, modelID string) map[string]any {
 	params := map[string]any{
 		"sessionId": strings.TrimSpace(sessionID),
@@ -287,14 +249,6 @@ func (c *Client) setLocalConfigOption(cfg localConfig, configID, value string) (
 	default:
 		return nil, fmt.Errorf("kimi: config option %q is not supported without ACP session", configID)
 	}
-}
-
-func sessionCWD(dir, cwd string) string {
-	cwd = strings.TrimSpace(cwd)
-	if cwd != "" {
-		return cwd
-	}
-	return strings.TrimSpace(dir)
 }
 
 func shouldRetryACPStartup(err error) bool {

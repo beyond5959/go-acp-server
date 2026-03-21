@@ -876,3 +876,12 @@ This file is the source of milestone progress, validation commands, and next act
   - executed validation:
     - pass: `cd internal/webui/web && npm run build`
     - pass: `env GOCACHE=/tmp/ngent-gocache GOFLAGS=-p=1 /usr/local/go/bin/go test ./...`
+
+- 2026-03-21: deduplicated the built-in ACP provider `DiscoverModels` entrypoints.
+  - `gemini`, `qwen`, and `opencode` all carried the same package-level wrapper that only called `New(cfg)` and then `client.DiscoverModels(ctx)`, while `kimi` duplicated the same ACP fallback after its local-config shortcut.
+  - added `internal/agents/acpcli.DiscoverModelsWithClient` so that constructor-plus-delegate path lives in one shared helper.
+  - updated `internal/agents/gemini/models.go`, `internal/agents/qwen/models.go`, `internal/agents/opencode/models.go`, and the ACP fallback in `internal/agents/kimi/models.go` to reuse that helper while preserving Kimi's local-config override behavior.
+  - continued the same cleanup by moving the shared ACP `session/new`, `session/load`, `session/list`, and `sessionCWD` parameter builders into `internal/agents/acpcli`, then rewired `gemini`, `qwen`, `opencode`, and `kimi` to use those common helpers instead of carrying identical local functions.
+  - executed validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`

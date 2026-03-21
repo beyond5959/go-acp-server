@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -84,6 +86,37 @@ func TestResolveListenAddr(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLogStartupPreflight(t *testing.T) {
+	t.Run("skip missing binary warning", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewJSONHandler(&buf, nil))
+
+		logStartupPreflight(logger, "startup.qwen_unavailable", &exec.Error{Name: "qwen", Err: exec.ErrNotFound})
+
+		if got := strings.TrimSpace(buf.String()); got != "" {
+			t.Fatalf("logStartupPreflight() wrote %q, want empty output", got)
+		}
+	})
+
+	t.Run("warn on other preflight error", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewJSONHandler(&buf, nil))
+
+		logStartupPreflight(logger, "startup.qwen_unavailable", errors.New("permission denied"))
+
+		got := buf.String()
+		if !strings.Contains(got, `"level":"WARN"`) {
+			t.Fatalf("log output = %q, want WARN level", got)
+		}
+		if !strings.Contains(got, `"msg":"startup.qwen_unavailable"`) {
+			t.Fatalf("log output = %q, want startup event", got)
+		}
+		if !strings.Contains(got, `"error":"permission denied"`) {
+			t.Fatalf("log output = %q, want error payload", got)
+		}
+	})
 }
 
 func TestResolveAllowedRoots(t *testing.T) {

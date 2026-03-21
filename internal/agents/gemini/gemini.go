@@ -34,11 +34,11 @@ var _ agents.SlashCommandsProvider = (*Client)(nil)
 func New(cfg Config) (*Client, error) {
 	base, err := acpcli.New(agents.AgentIDGemini, cfg, acpcli.Hooks{
 		OpenConn:                openConn(cfg.Dir),
-		SessionNewParams:        sessionNewParams(cfg.Dir),
-		SessionLoadParams:       sessionLoadParams(cfg.Dir),
-		SessionListParams:       sessionListParams(cfg.Dir),
+		SessionNewParams:        acpcli.SessionNewParams(cfg.Dir),
+		SessionLoadParams:       acpcli.SessionLoadParams(cfg.Dir),
+		SessionListParams:       acpcli.SessionListParams(cfg.Dir),
 		PromptParams:            promptParams,
-		DiscoverModelsParams:    discoverModelsParams(cfg.Dir),
+		DiscoverModelsParams:    acpcli.DiscoverModelsParams(cfg.Dir),
 		HandlePermissionRequest: handlePermissionRequest,
 		Cancel:                  cancelWithCall,
 	})
@@ -94,53 +94,6 @@ func initializeParams() map[string]any {
 				"writeTextFile": false,
 			},
 		},
-	}
-}
-
-func sessionNewParams(dir string) func(string) map[string]any {
-	return func(modelID string) map[string]any {
-		params := map[string]any{
-			"cwd":        strings.TrimSpace(dir),
-			"mcpServers": []any{},
-		}
-		modelID = strings.TrimSpace(modelID)
-		if modelID != "" {
-			params["model"] = modelID
-			params["modelId"] = modelID
-		}
-		return params
-	}
-}
-
-func discoverModelsParams(dir string) func(string) map[string]any {
-	return func(string) map[string]any {
-		return map[string]any{
-			"cwd":        strings.TrimSpace(dir),
-			"mcpServers": []any{},
-		}
-	}
-}
-
-func sessionLoadParams(dir string) func(string) map[string]any {
-	return func(sessionID string) map[string]any {
-		return map[string]any{
-			"sessionId":  strings.TrimSpace(sessionID),
-			"cwd":        strings.TrimSpace(dir),
-			"mcpServers": []any{},
-		}
-	}
-}
-
-func sessionListParams(dir string) func(string, string) map[string]any {
-	return func(cwd, cursor string) map[string]any {
-		params := map[string]any{
-			"cwd":        sessionCWD(dir, cwd),
-			"mcpServers": []any{},
-		}
-		if cursor = strings.TrimSpace(cursor); cursor != "" {
-			params["cursor"] = cursor
-		}
-		return params
 	}
 }
 
@@ -218,14 +171,6 @@ func cancelWithCall(conn *acpstdio.Conn, sessionID string) {
 	_, _ = conn.Call(cancelCtx, "session/cancel", map[string]any{
 		"sessionId": strings.TrimSpace(sessionID),
 	})
-}
-
-func sessionCWD(dir, cwd string) string {
-	cwd = strings.TrimSpace(cwd)
-	if cwd != "" {
-		return cwd
-	}
-	return strings.TrimSpace(dir)
 }
 
 // Name returns the provider identifier.

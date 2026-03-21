@@ -1293,3 +1293,28 @@ Use this template for new decisions.
 - Alternatives considered:
   - keep returning unavailable agents and suppress only refresh warnings (rejected: frontend/runtime behavior would still disagree about what is usable).
   - make refresh failures silent while leaving the static allowlist intact (rejected: still permits users to create threads for agents that cannot start).
+
+## ADR-052: Share repeated ACP discovery and session-param helpers across built-in providers
+
+- Status: Accepted
+- Date: 2026-03-21
+- Context:
+  - `gemini`, `qwen`, and `opencode` each had an identical package-level `DiscoverModels(ctx, cfg)` implementation that only constructed the provider client and delegated to `client.DiscoverModels(ctx)`.
+  - `kimi` had the same tail path after its local-config short-circuit, so the repeated wrapper logic still existed there too.
+  - the shared behavior already lived in `internal/agents/acpcli.Client.DiscoverModels`; the duplication was only in package entrypoints.
+  - those same four providers also duplicated the ACP request parameter builders for `session/new`, `session/load`, `session/list`, and the `cwd` fallback helper used by `session/list`.
+- Decision:
+  - add `acpcli.DiscoverModelsWithClient`, a small shared helper that constructs a provider client and invokes its `DiscoverModels` method.
+  - add shared `acpcli.SessionNewParams`, `acpcli.DiscoverModelsParams`, `acpcli.SessionLoadParams`, `acpcli.SessionListParams`, and `acpcli.SessionCWD` helpers for the common ACP request shapes used by these providers.
+  - route `gemini`, `qwen`, and `opencode` package-level `DiscoverModels` through that helper.
+  - keep Kimi's local-config fast path in `internal/agents/kimi/models.go`, but use the same helper for its ACP fallback path.
+  - wire `gemini`, `qwen`, `opencode`, and `kimi` to those shared ACP param helpers, leaving only genuinely provider-specific hooks local.
+- Consequences:
+  - package-level model discovery entrypoints now share one implementation for the repeated constructor-plus-delegate pattern.
+  - the four ACP-backed providers no longer carry copy-pasted param-builder functions for the common `cwd + mcpServers + optional model/cursor/sessionId` request shapes.
+  - future ACP providers with the same shape can reuse the helper instead of adding another near-identical `models.go` body.
+  - Kimi still preserves its provider-specific local configuration behavior without forking the common ACP fallback.
+- Alternatives considered:
+  - leave the wrappers duplicated because they are small (rejected: unnecessary repetition across multiple providers).
+  - leave the param builders local because they are short (rejected: they were identical across four providers and changed together conceptually).
+  - move the local-config branch into `acpcli` as well (rejected: that behavior is provider-specific and should stay in `kimi`).

@@ -1,6 +1,7 @@
 package agentutil
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -31,4 +32,9 @@ func PreflightBinary(binary string) error {
 		return fmt.Errorf("%s binary not found in PATH: %w", normalizedBinary, err)
 	}
 	return nil
+}
+
+// IsMissingBinaryError reports whether err represents an expected missing local executable.
+func IsMissingBinaryError(err error) bool {
+	return errors.Is(err, exec.ErrNotFound)
 }

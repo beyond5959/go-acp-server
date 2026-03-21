@@ -1,6 +1,8 @@
 package agentutil_test
 
 import (
+	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -47,6 +49,30 @@ func TestPreflightBinary(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "binary not found in PATH") {
 			t.Fatalf("PreflightBinary() error = %q, want contains %q", err.Error(), "binary not found in PATH")
+		}
+	})
+}
+
+func TestIsMissingBinaryError(t *testing.T) {
+	t.Run("wrapped exec err not found", func(t *testing.T) {
+		err := errors.New("other error")
+		if agentutil.IsMissingBinaryError(err) {
+			t.Fatalf("IsMissingBinaryError(%v) = true, want false", err)
+		}
+
+		missingErr := agentutil.PreflightBinary("definitely-missing-binary-for-ngent-tests")
+		if missingErr == nil {
+			t.Fatalf("PreflightBinary() error = nil, want non-nil")
+		}
+		if !agentutil.IsMissingBinaryError(missingErr) {
+			t.Fatalf("IsMissingBinaryError(%v) = false, want true", missingErr)
+		}
+	})
+
+	t.Run("direct exec err not found", func(t *testing.T) {
+		err := &exec.Error{Name: "missing-bin", Err: exec.ErrNotFound}
+		if !agentutil.IsMissingBinaryError(err) {
+			t.Fatalf("IsMissingBinaryError(%v) = false, want true", err)
 		}
 	})
 }
