@@ -47,9 +47,9 @@
   --scrollbar-thumb: #d1d1d6;
 
   /* Dimensions */
-  --sidebar-w:      260px;
+  --sidebar-w:      228px;
   --session-sidebar-collapsed-w: 48px;
-  --session-sidebar-w: 296px;
+  --session-sidebar-w: 272px;
   --header-h:       54px;
 
   /* Radii */
@@ -312,16 +312,6 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  line-height: 1.4;
-}
-
-.thread-item-preview {
-  font-size: var(--font-size-sm);
-  color: var(--text-2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-top: 1px;
   line-height: 1.4;
 }
 

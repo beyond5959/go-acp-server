@@ -2063,7 +2063,6 @@ function renderThreadItem(
       <div class="thread-item-avatar ${isActive ? '' : 'thread-item-avatar--inactive'}">${avatar}</div>
       <div class="thread-item-body">
         <div class="thread-item-title">${escHtml(displayTitle)}</div>
-        <div class="thread-item-preview">${escHtml(t.cwd)}</div>
         <div class="thread-item-foot">
           <span class="badge badge--agent">${escHtml(t.agent ?? '')}</span>
           <span class="thread-item-time">${relTime}</span>
