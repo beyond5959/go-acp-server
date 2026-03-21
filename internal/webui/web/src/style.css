@@ -658,9 +658,7 @@ body {
 .session-item {
   width: 100%;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: flex-start;
+  align-items: stretch;
   padding: 10px 12px;
   border: 1px solid transparent;
   border-radius: var(--r-lg);
@@ -681,10 +679,19 @@ body {
   box-shadow: var(--shadow-sm);
 }
 
-.session-item-title-row {
+.session-item-main {
   width: 100%;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.session-item-title-row {
+  display: flex;
+  align-items: center;
+  flex: 1;
   gap: 8px;
   min-width: 0;
 }
@@ -702,9 +709,11 @@ body {
 }
 
 .session-item-meta {
-  margin-top: 4px;
   color: var(--text-3);
   font-size: var(--font-size-xs);
+  flex-shrink: 0;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .session-status-indicator {

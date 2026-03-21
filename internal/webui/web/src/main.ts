@@ -1482,11 +1482,13 @@ function renderSessionItem(item: SessionInfo, active: boolean, loading: boolean)
       aria-pressed="${active ? 'true' : 'false'}"
       title="${escHtml(title)}"
     >
-      <div class="session-item-title-row">
-        ${renderSessionStatusIndicator(loading)}
-        <div class="session-item-title">${escHtml(title)}</div>
+      <div class="session-item-main">
+        <div class="session-item-title-row">
+          ${renderSessionStatusIndicator(loading)}
+          <div class="session-item-title">${escHtml(title)}</div>
+        </div>
+        ${updatedLabel ? `<div class="session-item-meta">${escHtml(updatedLabel)}</div>` : ''}
       </div>
-      ${updatedLabel ? `<div class="session-item-meta">${escHtml(updatedLabel)}</div>` : ''}
     </button>`
 }
 
