@@ -488,6 +488,9 @@ func (s *Server) handleAgentSessions(w http.ResponseWriter, r *http.Request, age
 		return
 	}
 
+	if result.Sessions == nil {
+		result.Sessions = []agents.SessionInfo{}
+	}
 	writeJSON(w, http.StatusOK, result)
 }
 
