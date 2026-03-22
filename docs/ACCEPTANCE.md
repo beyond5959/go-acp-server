@@ -162,14 +162,14 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - thread creation accepts `agent=kimi`.
   - turn streaming emits `message_delta` and finishes with `turn_completed` (or explicit upstream error envelope).
   - provider tolerates current upstream ACP startup variants `kimi acp` and `kimi --acp`.
-  - thread config/model discovery avoids creating extra empty Kimi sessions when local Kimi config is available.
+  - Kimi model/config discovery is sourced from ACP `session/new`, matching the other direct ACP CLI providers.
 - Verification commands:
   - `go test ./internal/agents/kimi -count=1`
-  - `E2E_KIMI=1 go test ./internal/agents/kimi -run TestKimiConfigOptionsE2EDoesNotCreateSession -v -timeout 120s`
+  - `E2E_KIMI=1 go test ./internal/agents/kimi -run TestKimiConfigOptionsE2E -v -timeout 120s`
   - `E2E_KIMI=1 go test ./internal/agents/kimi -run TestKimiE2ESmoke -v -timeout 120s`
   - `go test ./cmd/ngent ./internal/httpapi -count=1`
 - Additional validation (executed 2026-03-13):
-  - `E2E_KIMI=1 go test ./internal/agents/kimi -run TestKimiConfigOptionsE2EDoesNotCreateSession -count=1 -v -timeout 240s` (pass)
+  - `E2E_KIMI=1 go test ./internal/agents/kimi -run TestKimiConfigOptionsE2E -count=1 -v -timeout 240s` (pass)
   - `E2E_KIMI=1 go test ./internal/agents/kimi -run TestKimiE2ESmoke -count=1 -v -timeout 180s` (pass)
 
 ## Requirement 17: Thread Delete Lifecycle

@@ -46,7 +46,7 @@ func New(cfg Config) (*Client, error) {
 		SessionLoadParams:       acpcli.SessionLoadParams(cfg.Dir),
 		SessionListParams:       acpcli.SessionListParams(cfg.Dir),
 		PromptParams:            promptParams,
-		DiscoverModelsParams:    acpcli.SessionNewParams(cfg.Dir),
+		DiscoverModelsParams:    acpcli.DiscoverModelsParams(cfg.Dir),
 		PrepareConfigSession:    prepareConfigSession,
 		HandlePermissionRequest: handlePermissionRequest,
 		Cancel:                  cancelWithNotify,
@@ -67,9 +67,6 @@ func (c *Client) ConfigOptions(ctx context.Context) ([]agents.ConfigOption, erro
 	if c == nil || c.Client == nil {
 		return nil, errors.New("kimi: nil client")
 	}
-	if localCfg, err := loadLocalConfig(); err == nil {
-		return localCfg.ConfigOptions(c.CurrentModelID(), c.CurrentConfigOverrides()), nil
-	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -89,15 +86,6 @@ func (c *Client) SetConfigOption(ctx context.Context, configID, value string) ([
 	if value == "" {
 		return nil, errors.New("kimi: value is required")
 	}
-
-	if localCfg, err := loadLocalConfig(); err == nil {
-		options, localErr := c.setLocalConfigOption(localCfg, configID, value)
-		if localErr != nil {
-			return nil, localErr
-		}
-		c.ApplyConfigOptionResult(configID, value, options)
-		return options, nil
-	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -116,10 +104,16 @@ func openConn(dir string) func(context.Context, acpcli.OpenConnRequest) (*acpstd
 		req acpcli.OpenConnRequest,
 	) (*acpstdio.Conn, func(), json.RawMessage, error) {
 		var attemptErrors []string
+		selectedModelID := req.ModelID
+		thinkingArg := kimiThinkingArg(req.ConfigOverrides)
+		if req.Purpose == acpcli.OpenPurposeDiscoverModels {
+			selectedModelID = ""
+			thinkingArg = ""
+		}
 		for idx, spec := range commandCandidates() {
 			conn, cleanup, initResult, err := acpcli.OpenProcess(ctx, acpcli.ProcessConfig{
 				Command: agents.AgentIDKimi,
-				Args:    spec.args(req.ModelID, kimiThinkingArg(req.ModelID, req.ConfigOverrides)),
+				Args:    spec.args(selectedModelID, thinkingArg),
 				Dir:     strings.TrimSpace(dir),
 				Env:     os.Environ(),
 				ConnOptions: acpstdio.ConnOptions{
@@ -210,45 +204,15 @@ func (s commandSpec) args(modelID, thinkingArg string) []string {
 	return args
 }
 
-func kimiThinkingArg(modelID string, configOverrides map[string]string) string {
+func kimiThinkingArg(configOverrides map[string]string) string {
 	reasoningValue, ok := normalizeThinkingValue(configOverrides[reasoningConfigID])
 	if !ok {
-		return ""
-	}
-	if localCfg, err := loadLocalConfig(); err == nil && !localCfg.SupportsThinking(modelID) {
 		return ""
 	}
 	if reasoningValue == reasoningValueEnabled {
 		return "--thinking"
 	}
 	return "--no-thinking"
-}
-
-func (c *Client) setLocalConfigOption(cfg localConfig, configID, value string) ([]agents.ConfigOption, error) {
-	switch {
-	case strings.EqualFold(configID, "model"):
-		if _, ok := cfg.modelByID(value); !ok {
-			return nil, fmt.Errorf("kimi: unsupported model %q", value)
-		}
-		return cfg.ConfigOptions(value, c.CurrentConfigOverrides()), nil
-	case strings.EqualFold(configID, reasoningConfigID):
-		reasoningValue, ok := normalizeThinkingValue(value)
-		if !ok {
-			return nil, fmt.Errorf("kimi: unsupported reasoning value %q", value)
-		}
-		modelID := c.CurrentModelID()
-		if !cfg.SupportsThinking(modelID) {
-			return nil, errors.New("kimi: current model does not support reasoning")
-		}
-		overrides := c.CurrentConfigOverrides()
-		if overrides == nil {
-			overrides = make(map[string]string)
-		}
-		overrides[reasoningConfigID] = reasoningValue
-		return cfg.ConfigOptions(modelID, overrides), nil
-	default:
-		return nil, fmt.Errorf("kimi: config option %q is not supported without ACP session", configID)
-	}
 }
 
 func shouldRetryACPStartup(err error) bool {

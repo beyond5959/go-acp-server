@@ -52,6 +52,8 @@ func TestStreamWithFakeProcess(t *testing.T) {
 import json
 import sys
 
+thinking = "enabled"
+
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
@@ -229,6 +231,8 @@ func TestStreamCapturesSlashCommandsEmittedBeforePrompt(t *testing.T) {
 import json
 import sys
 
+thinking = "enabled"
+
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
@@ -324,6 +328,8 @@ func TestSlashCommandsAfterConfigOptionsInit(t *testing.T) {
 	fakeScript := fmt.Sprintf(`#!%s
 import json
 import sys
+
+thinking = "enabled"
 
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
@@ -422,6 +428,8 @@ func TestDiscoverModelsWithFakeProcess(t *testing.T) {
 	fakeScript := fmt.Sprintf(`#!%s
 import json
 import sys
+
+thinking = "enabled"
 
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
@@ -786,9 +794,13 @@ for line in sys.stdin:
 	}
 }
 
-func TestConfigOptionsUseLocalConfigWithoutACP(t *testing.T) {
+func TestConfigOptionsIgnoresLocalConfigAndUsesACP(t *testing.T) {
+	python3, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not in PATH")
+	}
+
 	tmpDir := t.TempDir()
-	t.Setenv("PATH", tmpDir)
 	t.Setenv("KIMI_HOME", tmpDir)
 	writeKimiConfigFile(t, tmpDir, `
 default_model = "kimi-code/default"
@@ -802,6 +814,95 @@ capabilities = ["thinking"]
 model = "Kimi Fast"
 capabilities = []
 `)
+
+	fakeScript := fmt.Sprintf(`#!%s
+import json
+import sys
+
+thinking = "enabled"
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    method = req.get("method", "")
+    rid = req.get("id")
+    if method == "initialize":
+        send({"jsonrpc":"2.0","id":rid,"result":{
+            "protocolVersion":1,
+            "agentInfo":{"name":"kimi-code","title":"Kimi CLI","version":"0.0.1"},
+            "authMethods":[],
+            "modes":{"currentModeId":"default","availableModes":[]},
+            "agentCapabilities":{"loadSession":True}
+        }})
+    elif method == "session/new":
+        send({"jsonrpc":"2.0","id":rid,"result":{
+            "sessionId":"ses_kimi_config_via_acp",
+            "configOptions":[
+                {
+                    "id":"model",
+                    "category":"model",
+                    "name":"Model",
+                    "type":"select",
+                    "currentValue":"kimi-acp/default",
+                    "options":[
+                        {"value":"kimi-acp/default","name":"Kimi ACP Default"},
+                        {"value":"kimi-acp/fast","name":"Kimi ACP Fast"}
+                    ]
+                },
+                {
+                    "id":"reasoning",
+                    "category":"reasoning",
+                    "name":"Reasoning",
+                    "type":"select",
+                    "currentValue":thinking,
+                    "options":[
+                        {"value":"enabled","name":"Enabled"},
+                        {"value":"disabled","name":"Disabled"}
+                    ]
+                }
+            ]
+        }})
+    elif method == "session/set_config_option":
+        thinking = req.get("params", {}).get("value") or thinking
+        send({"jsonrpc":"2.0","id":rid,"result":{
+            "configOptions":[
+                {
+                    "id":"model",
+                    "category":"model",
+                    "name":"Model",
+                    "type":"select",
+                    "currentValue":"kimi-acp/default",
+                    "options":[
+                        {"value":"kimi-acp/default","name":"Kimi ACP Default"},
+                        {"value":"kimi-acp/fast","name":"Kimi ACP Fast"}
+                    ]
+                },
+                {
+                    "id":"reasoning",
+                    "category":"reasoning",
+                    "name":"Reasoning",
+                    "type":"select",
+                    "currentValue":thinking,
+                    "options":[
+                        {"value":"enabled","name":"Enabled"},
+                        {"value":"disabled","name":"Disabled"}
+                    ]
+                }
+            ]
+        }})
+`, python3)
+
+	fakeBin := tmpDir + "/kimi"
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
 
 	client, err := kimi.New(kimi.Config{
 		Dir:             tmpDir,
@@ -818,8 +919,8 @@ capabilities = []
 	if got, want := len(options), 2; got != want {
 		t.Fatalf("len(options) = %d, want %d", got, want)
 	}
-	if got := strings.TrimSpace(options[0].CurrentValue); got != "kimi-code/default" {
-		t.Fatalf("model currentValue = %q, want %q", got, "kimi-code/default")
+	if got := strings.TrimSpace(options[0].CurrentValue); got != "kimi-acp/default" {
+		t.Fatalf("model currentValue = %q, want %q", got, "kimi-acp/default")
 	}
 	if got := strings.TrimSpace(options[1].ID); got != "reasoning" {
 		t.Fatalf("reasoning option id = %q, want %q", got, "reasoning")
@@ -829,9 +930,13 @@ capabilities = []
 	}
 }
 
-func TestSetConfigOptionUsesLocalConfigWithoutACP(t *testing.T) {
+func TestSetConfigOptionIgnoresLocalConfigAndUsesACP(t *testing.T) {
+	python3, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not in PATH")
+	}
+
 	tmpDir := t.TempDir()
-	t.Setenv("PATH", tmpDir)
 	t.Setenv("KIMI_HOME", tmpDir)
 	writeKimiConfigFile(t, tmpDir, `
 default_model = "kimi-code/default"
@@ -845,43 +950,120 @@ capabilities = ["thinking"]
 model = "Kimi Fast"
 capabilities = []
 `)
+
+	fakeScript := fmt.Sprintf(`#!%s
+import json
+import sys
+
+args = sys.argv[1:]
+selected_model = "kimi-acp/default"
+thinking = "disabled"
+for i, arg in enumerate(args):
+    if arg == "--model" and i + 1 < len(args):
+        selected_model = args[i + 1]
+    elif arg == "--thinking":
+        thinking = "enabled"
+    elif arg == "--no-thinking":
+        thinking = "disabled"
+
+def options():
+    base = [{
+        "id":"model",
+        "category":"model",
+        "name":"Model",
+        "type":"select",
+        "currentValue":selected_model,
+        "options":[
+            {"value":"kimi-acp/default","name":"Kimi ACP Default"},
+            {"value":"kimi-acp/fast","name":"Kimi ACP Fast"}
+        ]
+    }]
+    if selected_model != "kimi-acp/fast":
+        base.append({
+            "id":"reasoning",
+            "category":"reasoning",
+            "name":"Reasoning",
+            "type":"select",
+            "currentValue":thinking,
+            "options":[
+                {"value":"enabled","name":"Enabled"},
+                {"value":"disabled","name":"Disabled"}
+            ]
+        })
+    return base
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    method = req.get("method", "")
+    rid = req.get("id")
+    params = req.get("params", {})
+    if method == "initialize":
+        send({"jsonrpc":"2.0","id":rid,"result":{
+            "protocolVersion":1,
+            "agentInfo":{"name":"kimi-code","title":"Kimi CLI","version":"0.0.1"},
+            "authMethods":[],
+            "modes":{"currentModeId":"default","availableModes":[]},
+            "agentCapabilities":{"loadSession":True}
+        }})
+    elif method == "session/new":
+        send({"jsonrpc":"2.0","id":rid,"result":{
+            "sessionId":"ses_kimi_set_config_via_acp",
+            "configOptions":options()
+        }})
+    elif method == "session/set_config_option":
+        if params.get("configId") == "reasoning":
+            thinking = params.get("value") or thinking
+        send({"jsonrpc":"2.0","id":rid,"result":{"configOptions":options()}})
+`, python3)
+
+	fakeBin := tmpDir + "/kimi"
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
 
 	client, err := kimi.New(kimi.Config{Dir: tmpDir})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
-	options, err := client.SetConfigOption(context.Background(), "model", "kimi-code/fast")
-	if err != nil {
-		t.Fatalf("SetConfigOption(model): %v", err)
-	}
-	if got := strings.TrimSpace(client.CurrentModelID()); got != "kimi-code/fast" {
-		t.Fatalf("CurrentModelID() = %q, want %q", got, "kimi-code/fast")
-	}
-	if got, want := len(options), 1; got != want {
-		t.Fatalf("len(options) after model switch = %d, want %d", got, want)
-	}
-
-	options, err = client.SetConfigOption(context.Background(), "model", "kimi-code/default")
-	if err != nil {
-		t.Fatalf("SetConfigOption(model->default): %v", err)
-	}
-	if got, want := len(options), 2; got != want {
-		t.Fatalf("len(options) after switching back = %d, want %d", got, want)
-	}
-
-	options, err = client.SetConfigOption(context.Background(), "reasoning", "enabled")
+	options, err := client.SetConfigOption(context.Background(), "reasoning", "enabled")
 	if err != nil {
 		t.Fatalf("SetConfigOption(reasoning): %v", err)
 	}
 	if got := strings.TrimSpace(options[1].CurrentValue); got != "enabled" {
 		t.Fatalf("reasoning currentValue = %q, want %q", got, "enabled")
 	}
+	if got := strings.TrimSpace(client.CurrentConfigOverrides()["reasoning"]); got != "enabled" {
+		t.Fatalf("CurrentConfigOverrides()[reasoning] = %q, want %q", got, "enabled")
+	}
+
+	options, err = client.SetConfigOption(context.Background(), "model", "kimi-acp/fast")
+	if err != nil {
+		t.Fatalf("SetConfigOption(model): %v", err)
+	}
+	if got := strings.TrimSpace(client.CurrentModelID()); got != "kimi-acp/fast" {
+		t.Fatalf("CurrentModelID() = %q, want %q", got, "kimi-acp/fast")
+	}
+	if got, want := len(options), 1; got != want {
+		t.Fatalf("len(options) after model switch = %d, want %d", got, want)
+	}
 }
 
-func TestDiscoverModelsUsesLocalConfigWithoutACP(t *testing.T) {
+func TestDiscoverModelsIgnoresLocalConfigAndUsesACP(t *testing.T) {
+	python3, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not in PATH")
+	}
+
 	tmpDir := t.TempDir()
-	t.Setenv("PATH", tmpDir)
 	t.Setenv("KIMI_HOME", tmpDir)
 	writeKimiConfigFile(t, tmpDir, `
 default_model = "kimi-code/default"
@@ -895,6 +1077,48 @@ capabilities = ["thinking"]
 model = "Kimi Fast"
 capabilities = []
 `)
+
+	fakeScript := fmt.Sprintf(`#!%s
+import json
+import sys
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    method = req.get("method", "")
+    rid = req.get("id")
+    if method == "initialize":
+        send({"jsonrpc":"2.0","id":rid,"result":{
+            "protocolVersion":1,
+            "agentInfo":{"name":"kimi-code","title":"Kimi CLI","version":"0.0.1"},
+            "authMethods":[],
+            "modes":{"currentModeId":"default","availableModes":[]},
+            "agentCapabilities":{"loadSession":True}
+        }})
+    elif method == "session/new":
+        send({"jsonrpc":"2.0","id":rid,"result":{
+            "sessionId":"ses_kimi_models_via_acp",
+            "models":{
+                "currentModelId":"kimi-acp/default",
+                "availableModels":[
+                    {"modelId":"kimi-acp/default","name":"Kimi ACP Default"},
+                    {"modelId":"kimi-acp/fast","name":"Kimi ACP Fast"}
+                ]
+            }
+        }})
+`, python3)
+
+	fakeBin := tmpDir + "/kimi"
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
 
 	models, err := kimi.DiscoverModels(context.Background(), kimi.Config{Dir: tmpDir})
 	if err != nil {
@@ -903,32 +1127,17 @@ capabilities = []
 	if got, want := len(models), 2; got != want {
 		t.Fatalf("len(models) = %d, want %d", got, want)
 	}
-	if got := strings.TrimSpace(models[0].ID); got != "kimi-code/default" {
-		t.Fatalf("models[0].id = %q, want %q", got, "kimi-code/default")
+	if got := strings.TrimSpace(models[0].ID); got != "kimi-acp/default" {
+		t.Fatalf("models[0].id = %q, want %q", got, "kimi-acp/default")
 	}
 }
 
-func TestKimiConfigOptionsE2EDoesNotCreateSession(t *testing.T) {
+func TestKimiConfigOptionsE2E(t *testing.T) {
 	if os.Getenv("E2E_KIMI") != "1" {
 		t.Skip("set E2E_KIMI=1 to run")
 	}
 	if err := kimi.Preflight(); err != nil {
 		t.Skipf("kimi not available: %v", err)
-	}
-
-	kimiHome := strings.TrimSpace(os.Getenv("KIMI_HOME"))
-	if kimiHome == "" {
-		userHome, err := os.UserHomeDir()
-		if err != nil {
-			t.Fatalf("UserHomeDir: %v", err)
-		}
-		kimiHome = filepath.Join(userHome, ".kimi")
-	}
-	sessionsDir := filepath.Join(kimiHome, "sessions")
-
-	before, err := os.ReadDir(sessionsDir)
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatalf("ReadDir(before): %v", err)
 	}
 
 	cwd, err := os.Getwd()
@@ -950,14 +1159,7 @@ func TestKimiConfigOptionsE2EDoesNotCreateSession(t *testing.T) {
 	if len(options) == 0 {
 		t.Fatal("ConfigOptions returned no options")
 	}
-
-	after, err := os.ReadDir(sessionsDir)
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatalf("ReadDir(after): %v", err)
-	}
-	if len(after) != len(before) {
-		t.Fatalf("ConfigOptions created session directories: before=%d after=%d", len(before), len(after))
-	}
+	t.Logf("ConfigOptions returned %d options", len(options))
 }
 
 // TestKimiE2ESmoke performs a real turn with the installed kimi binary.

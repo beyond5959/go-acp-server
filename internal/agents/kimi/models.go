@@ -9,9 +9,6 @@ import (
 
 // DiscoverModels starts one ACP session/new handshake and returns model options.
 func DiscoverModels(ctx context.Context, cfg Config) ([]agents.ModelOption, error) {
-	if localCfg, err := loadLocalConfig(); err == nil {
-		return localCfg.ModelOptions(), nil
-	}
 	return acpcli.DiscoverModelsWithClient(ctx, func() (*Client, error) {
 		return New(cfg)
 	})

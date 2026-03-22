@@ -35,7 +35,6 @@
 - ADR-031: Kimi CLI ACP stdio provider with dual startup syntax fallback. (Accepted)
 - ADR-032: Shared common agent config/state helper without protocol unification. (Accepted)
 - ADR-033: Surface ACP plan updates as first-class SSE and Web UI state. (Accepted)
-- ADR-034: Source Kimi config catalogs from local config to avoid empty sessions. (Accepted)
 - ADR-035: Add opt-in ACP debug tracing behind `--debug`. (Accepted)
 - ADR-036: Persist stable Codex session ids and normalize Codex transcript replay. (Superseded)
 - ADR-037: Replay Kimi session history from local Kimi session files. (Superseded)
@@ -1019,26 +1018,6 @@ Use this template for new decisions.
   - fold plan text into `message_delta` (rejected: mixes distinct ACP concepts and loses replacement semantics).
   - keep plan rendering purely transient in the browser (rejected: history reload would still discard plan state).
 
-## ADR-034: Source Kimi config catalogs from local config to avoid empty sessions
-
-- Status: Accepted
-- Date: 2026-03-09
-- Context:
-  - Kimi CLI persists ACP `session/new` handshakes as local session history, even when the hub only wants model/config metadata and never sends a prompt.
-  - the previous Kimi provider queried models and thread config options through `session/new`, which polluted `~/.kimi/sessions` with empty sessions during startup catalog refresh, thread config loads, and model changes.
-  - local Kimi config already exposes the needed metadata: `default_model`, `default_thinking`, and model capabilities.
-- Decision:
-  - read Kimi model catalog and default thinking state from local `config.toml` when available.
-  - synthesize thread `ConfigOptions` and `DiscoverModels()` results from that local config instead of ACP `session/new`.
-  - apply reasoning overrides for real prompt turns through Kimi startup flags (`--thinking` / `--no-thinking`) and keep model selection on `--model`.
-  - retain ACP fallback only when local config cannot be read or parsed.
-- Consequences:
-  - Kimi thread config queries and startup catalog refresh no longer create empty session history entries in normal local setups.
-  - Kimi keeps real ACP turns for actual prompts, permissions, streaming, and cancellation behavior.
-  - local config structure becomes part of the provider compatibility surface, so future Kimi config schema drift must be monitored.
-- Alternatives considered:
-  - keep ACP-only config discovery (rejected: side effect creates noisy empty sessions).
-  - disable Kimi config/model catalog refresh entirely (rejected: would regress model picker accuracy).
 
 ## ADR-035: Add opt-in ACP debug tracing behind `--debug`
 
@@ -1299,14 +1278,13 @@ Use this template for new decisions.
 - Status: Accepted
 - Date: 2026-03-21
 - Context:
-  - `gemini`, `qwen`, and `opencode` each had an identical package-level `DiscoverModels(ctx, cfg)` implementation that only constructed the provider client and delegated to `client.DiscoverModels(ctx)`.
-  - `kimi` had the same tail path after its local-config short-circuit, so the repeated wrapper logic still existed there too.
+  - `gemini`, `qwen`, `kimi`, and `opencode` each had an identical package-level `DiscoverModels(ctx, cfg)` implementation that only constructed the provider client and delegated to `client.DiscoverModels(ctx)`.
   - the shared behavior already lived in `internal/agents/acpcli.Client.DiscoverModels`; the duplication was only in package entrypoints.
   - those same four providers also duplicated the ACP request parameter builders for `session/new`, `session/load`, `session/list`, and the `cwd` fallback helper used by `session/list`.
 - Decision:
   - add `acpcli.DiscoverModelsWithClient`, a small shared helper that constructs a provider client and invokes its `DiscoverModels` method.
   - add shared `acpcli.SessionNewParams`, `acpcli.DiscoverModelsParams`, `acpcli.SessionLoadParams`, `acpcli.SessionListParams`, and `acpcli.SessionCWD` helpers for the common ACP request shapes used by these providers.
-  - route `gemini`, `qwen`, and `opencode` package-level `DiscoverModels` through that helper.
+  - route `gemini`, `qwen`, `kimi`, and `opencode` package-level `DiscoverModels` through that helper.
   - keep Kimi's local-config fast path in `internal/agents/kimi/models.go`, but use the same helper for its ACP fallback path.
   - wire `gemini`, `qwen`, `opencode`, and `kimi` to those shared ACP param helpers, leaving only genuinely provider-specific hooks local.
 - Consequences:

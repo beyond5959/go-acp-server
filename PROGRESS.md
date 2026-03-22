@@ -98,7 +98,6 @@ This file is the source of milestone progress, validation commands, and next act
   - migrated the four ACP CLI providers to provider-hook configuration instead of maintaining separate copies of the same stdio/session orchestration logic.
   - extended `internal/agents/acpstdio` with opt-in stdout-noise tolerance so Gemini can reuse the same transport instead of a provider-local JSON-RPC implementation.
   - preserved provider-specific behavior behind hooks:
-    - `kimi` keeps local config sourcing, `kimi acp` / `kimi --acp` fallback, and model-via-startup handling.
     - `gemini` keeps temporary `GEMINI_CLI_HOME` bootstrapping and stdout noise filtering.
     - `qwen` / `kimi` keep selectable permission-option mapping and fail-closed timeout handling.
     - `opencode` keeps synchronous `session/cancel` behavior.
@@ -678,7 +677,6 @@ This file is the source of milestone progress, validation commands, and next act
   - `item/tool/call` now returns structured tool failure payload (`success=false`) instead of JSON-RPC method error, so app-server no longer aborts the whole flow on this request type.
 - 2026-03-09: unified ACP message-chunk constant usage across stdio providers by removing per-provider `updateTypeMessageChunk` definitions and reusing `agents.ACPUpdateTypeMessageChunk`.
 - 2026-03-09: hid the Web UI Reasoning switch when the active agent exposes fewer than two reasoning choices, so agents without switchable reasoning no longer show a dead control.
-- 2026-03-09: switched Kimi model/reasoning catalog queries to local `config.toml` when available, so startup catalog refresh and thread config/model operations no longer create empty Kimi sessions; real prompt turns still use ACP.
 - 2026-03-11: added opt-in `--debug` startup flag; when enabled, stderr now emits sanitized `acp.message` traces for ACP stdio and embedded-runtime request/response traffic, including session prompts, updates, and permission flows.
 - 2026-03-11: added ACP session browsing/resume support across built-in agents:
   - introduced shared agent session abstractions for `session/list`, bound-session reporting, and initialize capability parsing.
@@ -878,7 +876,7 @@ This file is the source of milestone progress, validation commands, and next act
     - pass: `env GOCACHE=/tmp/ngent-gocache GOFLAGS=-p=1 /usr/local/go/bin/go test ./...`
 
 - 2026-03-21: deduplicated the built-in ACP provider `DiscoverModels` entrypoints.
-  - `gemini`, `qwen`, and `opencode` all carried the same package-level wrapper that only called `New(cfg)` and then `client.DiscoverModels(ctx)`, while `kimi` duplicated the same ACP fallback after its local-config shortcut.
+  - `gemini`, `qwen`, `kimi`, and `opencode` all carried the same package-level wrapper that only called `New(cfg)` and then `client.DiscoverModels(ctx)`.
   - added `internal/agents/acpcli.DiscoverModelsWithClient` so that constructor-plus-delegate path lives in one shared helper.
   - updated `internal/agents/gemini/models.go`, `internal/agents/qwen/models.go`, `internal/agents/opencode/models.go`, and the ACP fallback in `internal/agents/kimi/models.go` to reuse that helper while preserving Kimi's local-config override behavior.
   - continued the same cleanup by moving the shared ACP `session/new`, `session/load`, `session/list`, and `sessionCWD` parameter builders into `internal/agents/acpcli`, then rewired `gemini`, `qwen`, `opencode`, and `kimi` to use those common helpers instead of carrying identical local functions.

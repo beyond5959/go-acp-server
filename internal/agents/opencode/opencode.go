@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 )
 
 const defaultPermissionTimeout = 15 * time.Second
+const methodSessionSetModel = "session/set_model"
 
 var handlePermissionRequest = acpcli.StructuredPermissionRequestHandler(defaultPermissionTimeout)
 
@@ -43,6 +45,7 @@ func New(cfg Config) (*Client, error) {
 		PromptParams:            promptParams,
 		DiscoverModelsParams:    acpcli.DiscoverModelsParams(cfg.Dir),
 		PrepareConfigSession:    prepareConfigSession,
+		SelectSessionModel:      selectSessionModel,
 		HandlePermissionRequest: handlePermissionRequest,
 		Cancel:                  cancelWithCall,
 	})
@@ -63,9 +66,6 @@ func openConn(dir string) func(context.Context, acpcli.OpenConnRequest) (*acpstd
 		req acpcli.OpenConnRequest,
 	) (*acpstdio.Conn, func(), json.RawMessage, error) {
 		args := []string{"acp", "--cwd", strings.TrimSpace(dir)}
-		if modelID := strings.TrimSpace(req.ModelID); modelID != "" {
-			args = append([]string{"-m", modelID}, args...)
-		}
 		conn, cleanup, initResult, err := acpcli.OpenProcess(ctx, acpcli.ProcessConfig{
 			Command: agents.AgentIDOpencode,
 			Args:    args,
@@ -102,6 +102,34 @@ func promptParams(sessionID, input, modelID string) map[string]any {
 		params["modelId"] = modelID
 	}
 	return params
+}
+
+func selectSessionModel(
+	ctx context.Context,
+	conn *acpstdio.Conn,
+	sessionID, modelID string,
+	options []agents.ConfigOption,
+) ([]agents.ConfigOption, error) {
+	if conn == nil {
+		return options, nil
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	modelID = strings.TrimSpace(modelID)
+	if sessionID == "" || modelID == "" {
+		return options, nil
+	}
+
+	_, err := conn.Call(ctx, methodSessionSetModel, map[string]any{
+		"sessionId": sessionID,
+		"modelId":   modelID,
+	})
+	if err != nil {
+		if isMethodNotFoundError(err) {
+			return configOptionsWithSelection(options, "model", modelID), nil
+		}
+		return nil, fmt.Errorf("%s: %s: %w", agents.AgentIDOpencode, methodSessionSetModel, err)
+	}
+	return configOptionsWithSelection(options, "model", modelID), nil
 }
 
 func prepareConfigSession(
@@ -192,6 +220,14 @@ func configOptionsWithSelection(options []agents.ConfigOption, configID, value s
 		return options
 	}
 	return acpmodel.NormalizeConfigOptions(cloned)
+}
+
+func isMethodNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "(-32601)") && strings.Contains(text, "method not found")
 }
 
 // Name returns the provider identifier.

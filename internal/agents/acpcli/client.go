@@ -50,6 +50,7 @@ type Hooks struct {
 	PromptParams            func(sessionID, input, modelID string) map[string]any
 	DiscoverModelsParams    func(modelID string) map[string]any
 	PrepareConfigSession    func(modelID string, overrides map[string]string, configID, value string) ConfigSessionPlan
+	SelectSessionModel      func(ctx context.Context, conn *acpstdio.Conn, sessionID, modelID string, options []agents.ConfigOption) ([]agents.ConfigOption, error)
 	HandlePermissionRequest func(ctx context.Context, params json.RawMessage, handler agents.PermissionHandler, hasHandler bool) (json.RawMessage, error)
 	Cancel                  func(conn *acpstdio.Conn, sessionID string)
 }
@@ -311,6 +312,13 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 		initialOptions = acpmodel.ExtractConfigOptions(newResult)
 	}
 
+	if modelID != "" && c.hooks.SelectSessionModel != nil {
+		selectedOptions, err := c.hooks.SelectSessionModel(ctx, conn, sessionID, modelID, initialOptions)
+		if err != nil {
+			return agents.StopReasonEndTurn, err
+		}
+		initialOptions = selectedOptions
+	}
 	if _, err := c.applyConfigOverrides(ctx, conn, sessionID, initialOptions, configOverrides); err != nil {
 		return agents.StopReasonEndTurn, err
 	}
@@ -482,7 +490,14 @@ func (c *Client) RunConfigSession(
 		return nil, errors.New(c.nameForError() + ": config options session/new returned empty sessionId")
 	}
 
-	options, err := c.applyConfigOverrides(ctx, conn, sessionID, acpmodel.ExtractConfigOptions(newResult), configOverrides)
+	options := acpmodel.ExtractConfigOptions(newResult)
+	if strings.TrimSpace(plan.SessionModelID) != "" && c.hooks.SelectSessionModel != nil {
+		options, err = c.hooks.SelectSessionModel(ctx, conn, sessionID, plan.SessionModelID, options)
+		if err != nil {
+			return nil, err
+		}
+	}
+	options, err = c.applyConfigOverrides(ctx, conn, sessionID, options, configOverrides)
 	if err != nil {
 		return nil, err
 	}

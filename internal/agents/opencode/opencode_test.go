@@ -363,7 +363,7 @@ for line in sys.stdin:
 	}
 }
 
-func TestSetConfigOptionModelUsesStartupModelSelection(t *testing.T) {
+func TestSetConfigOptionModelUsesSessionSetModelSelection(t *testing.T) {
 	python3, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skip("python3 not in PATH")
@@ -373,11 +373,7 @@ func TestSetConfigOptionModelUsesStartupModelSelection(t *testing.T) {
 import json
 import sys
 
-args = sys.argv[1:]
 selected_model = "opencode/big-pickle"
-for i, arg in enumerate(args):
-    if arg == "-m" and i + 1 < len(args):
-        selected_model = args[i + 1]
 
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
@@ -401,13 +397,16 @@ for line in sys.stdin:
         send({"jsonrpc":"2.0","id":rid,"result":{
             "sessionId":"ses_model_switch",
             "models":{
-                "currentModelId":selected_model,
+                "currentModelId":"opencode/big-pickle",
                 "availableModels":[
                     "opencode/big-pickle",
                     "opencode/minimax-m2.5-free"
                 ]
             }
         }})
+    elif method == "session/set_model":
+        selected_model = params.get("modelId") or selected_model
+        send({"jsonrpc":"2.0","id":rid,"result":{}})
     elif method == "session/set_config_option":
         send({"jsonrpc":"2.0","id":rid,"error":{"code":-32601,"message":"method not found"}})
         sys.exit(0)
@@ -441,7 +440,7 @@ for line in sys.stdin:
 	}
 }
 
-func TestStreamUsesStartupModelSelection(t *testing.T) {
+func TestStreamUsesSessionModelSelection(t *testing.T) {
 	python3, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skip("python3 not in PATH")
@@ -451,11 +450,7 @@ func TestStreamUsesStartupModelSelection(t *testing.T) {
 import json
 import sys
 
-args = sys.argv[1:]
 selected_model = "opencode/big-pickle"
-for i, arg in enumerate(args):
-    if arg == "-m" and i + 1 < len(args):
-        selected_model = args[i + 1]
 
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
@@ -479,13 +474,16 @@ for line in sys.stdin:
         send({"jsonrpc":"2.0","id":rid,"result":{
             "sessionId":"ses_stream_model",
             "models":{
-                "currentModelId":selected_model,
+                "currentModelId":"opencode/big-pickle",
                 "availableModels":[
                     "opencode/big-pickle",
                     "opencode/minimax-m2.5-free"
                 ]
             }
         }})
+    elif method == "session/set_model":
+        selected_model = params.get("modelId") or selected_model
+        send({"jsonrpc":"2.0","id":rid,"result":{}})
     elif method == "session/prompt":
         sid = params.get("sessionId","")
         send({"jsonrpc":"2.0","method":"session/update","params":{
@@ -525,6 +523,79 @@ for line in sys.stdin:
 	}
 	if got, want := strings.Join(deltas, ""), "opencode/minimax-m2.5-free"; got != want {
 		t.Fatalf("streamed model = %q, want %q", got, want)
+	}
+}
+
+func TestListSessionsWithConfiguredModelDoesNotUseStartupFlags(t *testing.T) {
+	python3, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not in PATH")
+	}
+
+	tmpDir := t.TempDir()
+	fakeScript := fmt.Sprintf(`#!%s
+import json
+import sys
+
+expected_args = ["acp", "--cwd", %q]
+if sys.argv[1:] != expected_args:
+    sys.exit(99)
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    method = req.get("method", "")
+    rid = req.get("id")
+    params = req.get("params", {})
+    if method == "initialize":
+        send({"jsonrpc":"2.0","id":rid,"result":{
+            "protocolVersion":1,
+            "agentInfo":{"name":"FakeOpenCode","version":"0.0.1"},
+            "agentCapabilities":{
+                "loadSession":True,
+                "sessionCapabilities":{"list":True,"resume":True}
+            },
+            "authMethods":[]
+        }})
+    elif method == "session/list":
+        send({"jsonrpc":"2.0","id":rid,"result":{
+            "sessions":[
+                {"sessionId":"ses_list_1","cwd":params.get("cwd",""),"title":"History"}
+            ]
+        }})
+        sys.exit(0)
+`, python3, tmpDir)
+
+	fakeBin := tmpDir + "/opencode"
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+
+	client, err := opencode.New(opencode.Config{
+		Dir:     tmpDir,
+		ModelID: "opencode/mimo-v2-pro-free/high",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := client.ListSessions(context.Background(), agents.SessionListRequest{CWD: tmpDir})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if got, want := len(result.Sessions), 1; got != want {
+		t.Fatalf("len(result.Sessions) = %d, want %d", got, want)
+	}
+	if got, want := result.Sessions[0].SessionID, "ses_list_1"; got != want {
+		t.Fatalf("result.Sessions[0].SessionID = %q, want %q", got, want)
 	}
 }
 
@@ -571,4 +642,35 @@ func TestOpenCodeE2ESmoke(t *testing.T) {
 	if builder.Len() == 0 {
 		t.Error("no response text received")
 	}
+}
+
+func TestOpenCodeE2EListSessionsWithConfiguredModel(t *testing.T) {
+	if os.Getenv("E2E_OPENCODE") != "1" {
+		t.Skip("set E2E_OPENCODE=1 to run")
+	}
+	if err := opencode.Preflight(); err != nil {
+		t.Skipf("opencode not available: %v", err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+
+	client, err := opencode.New(opencode.Config{
+		Dir:     cwd,
+		ModelID: "opencode/mimo-v2-pro-free/high",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := client.ListSessions(ctx, agents.SessionListRequest{CWD: cwd})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	t.Logf("ListSessions returned %d sessions", len(result.Sessions))
 }

@@ -140,7 +140,7 @@ See `docs/API.md` for endpoint and schema contracts.
   - request parameter schemas
   - permission-request response encoding
   - cancel strategy
-  - provider quirks such as Kimi local config/model-startup behavior and Gemini stdout-noise filtering
+  - provider quirks such as Kimi model/reasoning startup hints and Gemini stdout-noise filtering
 - `internal/agents/acpstdio` now supports opt-in stdout-noise tolerance so providers like Gemini can ignore non-JSON stdout lines without maintaining a separate transport implementation.
 
 ## 10. Error Contract
@@ -271,14 +271,11 @@ and upstream ACP schema:
 - startup command:
   - official Kimi docs currently show both `kimi acp` and `kimi --acp`.
   - the hub must try `kimi acp` first and fall back to `kimi --acp` when ACP initialization closes immediately.
-- local config sourcing:
-  - model catalog and default thinking state should be read from local Kimi config (`config.toml`) when available.
-  - avoid creating ACP `session/new` calls for model discovery or thread config queries that do not send a real prompt, to prevent empty Kimi sessions.
-  - if local config is unavailable or cannot be parsed, fall back to ACP handshake-based discovery/query behavior.
 - ACP flow:
   - `initialize` with `protocolVersion: 1` and `clientCapabilities.fs`.
   - `session/new` with `cwd` and `mcpServers: []`.
   - `session/prompt` with ACP prompt blocks (`[{type:"text", text:...}]`).
+  - model and config catalogs are sourced directly from `session/new` / returned `configOptions`, matching the other direct ACP providers.
 - streaming:
   - consume `session/update` deltas only when `update.sessionUpdate == "agent_message_chunk"`.
   - delta text is read from `update.content.text`.
@@ -286,6 +283,8 @@ and upstream ACP schema:
 - permissions and cancellation:
   - handle `session/request_permission` with fail-closed approval mapping.
   - on context cancellation, send `session/cancel` quickly and converge to `stopReason=cancelled`.
+- tradeoff:
+  - ACP-only metadata discovery can create provider-owned empty Kimi sessions during startup refresh or config/model probes because `session/new` is the discovery surface.
 
 ### 13.3 Server Wiring
 
