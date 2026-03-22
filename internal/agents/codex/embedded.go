@@ -787,15 +787,15 @@ func (c *Client) handlePermissionRequest(
 
 	request := agents.PermissionRequest{
 		RequestID: idToString(*msg.ID),
-		Approval:  mapString(rawParams, "approval"),
-		Command:   mapString(rawParams, "command"),
-		Files:     mapStringSlice(rawParams, "files"),
-		Host:      mapString(rawParams, "host"),
-		Protocol:  mapString(rawParams, "protocol"),
-		Port:      mapInt(rawParams, "port"),
-		MCPServer: mapString(rawParams, "mcpServer"),
-		MCPTool:   mapString(rawParams, "mcpTool"),
-		Message:   mapString(rawParams, "message"),
+		Approval:  agentutil.MapString(rawParams, "approval"),
+		Command:   agentutil.MapString(rawParams, "command"),
+		Files:     agentutil.MapStringSlice(rawParams, "files"),
+		Host:      agentutil.MapString(rawParams, "host"),
+		Protocol:  agentutil.MapString(rawParams, "protocol"),
+		Port:      agentutil.MapInt(rawParams, "port"),
+		MCPServer: agentutil.MapString(rawParams, "mcpServer"),
+		MCPTool:   agentutil.MapString(rawParams, "mcpTool"),
+		Message:   agentutil.MapString(rawParams, "message"),
 		RawParams: rawParams,
 	}
 
@@ -1229,50 +1229,6 @@ func parsePromptStopReason(raw json.RawMessage) (string, error) {
 		stopReason = string(agents.StopReasonEndTurn)
 	}
 	return stopReason, nil
-}
-
-func mapString(values map[string]any, key string) string {
-	value, _ := values[key]
-	text, _ := value.(string)
-	return text
-}
-
-func mapStringSlice(values map[string]any, key string) []string {
-	value, ok := values[key]
-	if !ok {
-		return nil
-	}
-	switch v := value.(type) {
-	case []string:
-		return v
-	case []any:
-		result := make([]string, 0, len(v))
-		for _, item := range v {
-			if s, ok := item.(string); ok {
-				result = append(result, s)
-			}
-		}
-		return result
-	default:
-		return nil
-	}
-}
-
-func mapInt(values map[string]any, key string) int {
-	value, ok := values[key]
-	if !ok {
-		return 0
-	}
-	switch v := value.(type) {
-	case int:
-		return v
-	case int64:
-		return int(v)
-	case float64:
-		return int(v)
-	default:
-		return 0
-	}
 }
 
 func idToString(raw json.RawMessage) string {
