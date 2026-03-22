@@ -641,3 +641,163 @@ and upstream ACP schema:
   - path/location lists
   - raw JSON input/output blocks
 - Unsupported non-text ACP tool-call payload shapes are still shown via generic JSON fallback so the information is visible even when no richer renderer exists yet.
+
+## 19. TODO Checklist Events (2026-03-22)
+
+### 19.1 Overview
+
+Agents may embed a structured checklist in any `session/update` payload by including a top-level `todo` array. The server extracts these items from every parsed `ACPUpdate` and forwards them to the client as `todo_update` SSE events.
+
+### 19.2 Data Shapes
+
+`TodoItem`:
+```json
+{"text": "Implement feature X", "done": false}
+```
+
+`todo_update` SSE event payload:
+```json
+{
+  "turnId": "tu_...",
+  "items": [
+    {"text": "Implement feature X", "done": false},
+    {"text": "Write tests", "done": true}
+  ]
+}
+```
+
+### 19.3 Parsing Contract
+
+- The `todo` field is extracted from the top-level `session/update` notification payload, not from the nested `update` object.
+- Each `todo_update` event is a full replacement snapshot of the agent's current checklist, not an incremental diff.
+- `todo_update` events are emitted per turn alongside (not instead of) `message_delta`, `plan_update`, and other events.
+- `todo_update` events are not persisted to the append-only event log; they are forwarded in-flight only.
+- The `ACPUpdate.TodoItems` field is populated by `ParseACPUpdate` regardless of the primary `sessionUpdate` type. Any `session/update` payload that has a `todo` array will carry items, including lifecycle-only updates like `thinking_started`.
+
+### 19.4 Provider Support
+
+- Both embedded providers (`codex`, `claude`) and all ACP stdio providers forward `todo_update` items through the shared `agents.NotifyTodoUpdate` callback.
+- Providers use `agents.WithTodoUpdateHandler` on the turn context; the HTTP layer installs this handler and emits the SSE event.
+
+## 20. Rich Session/Prompt Parameters (2026-03-22)
+
+### 20.1 Overview
+
+`POST /v1/threads/{threadId}/turns` now accepts three optional fields that extend the standard `input` string: structured content blocks (`content`), file/URI references (`resources`), and per-turn runtime overrides (`promptConfig`). These are forwarded to the agent via ACP `session/prompt`.
+
+### 20.2 Type Definitions
+
+`ByteRange` — byte offset window for resource references:
+```json
+{"start": 0, "end": 1024}
+```
+
+`PromptContentBlock` — one structured content block:
+| Field | Type | Purpose |
+|---|---|---|
+| `type` | string | Block kind: `"text"`, `"image"`, or provider-defined type |
+| `text` | string | Text body (for `type:"text"`) |
+| `data` | string | Base64-encoded binary payload (for inline image) |
+| `uri` | string | Remote resource URI (for URL-based image) |
+| `path` | string | Local file path (for path-based image) |
+| `name` | string | Optional label |
+| `mimeType` | string | Optional MIME type hint |
+| `range` | ByteRange | Optional byte range |
+
+`PromptResource` — one file/URI reference:
+| Field | Type | Purpose |
+|---|---|---|
+| `name` | string | Optional label |
+| `uri` | string | Resource URI |
+| `path` | string | Local file path |
+| `mimeType` | string | Optional MIME type hint |
+| `text` | string | Optional pre-read text content |
+| `data` | string | Optional base64-encoded binary content |
+| `range` | ByteRange | Optional byte range |
+
+`TurnPromptConfig` — per-turn runtime overrides:
+| Field | Type | Purpose |
+|---|---|---|
+| `profile` | string | Named profile preset from `/v1/agents/{id}/profiles` |
+| `approvalPolicy` | string | Permission approval policy override |
+| `sandbox` | string | Sandbox mode override |
+| `personality` | string | Personality override |
+| `systemInstructions` | string | System prompt override |
+
+### 20.3 Provider Forwarding
+
+All four provider paths forward these parameters to ACP `session/prompt` when present:
+
+- Embedded `codex`: adds to the `session/prompt` params map as `content`, `resources`, and flattened `promptConfig` fields.
+- Embedded `claude`: same shape as codex.
+- `acp` (direct stdio ACP): same shape forwarded into ACP `session/prompt`.
+- `acpcli` (shared ACP CLI driver for `opencode`, `qwen`, `gemini`, `kimi`): same shape forwarded via the shared prompt-params builder.
+
+Only non-empty values are added to the params map; unset optional fields are omitted rather than sent as `null`.
+
+### 20.4 Context Helpers
+
+Internally, the HTTP layer binds content/resources/config into the Go `context.Context` before invoking the provider:
+
+- `agents.WithTurnContent` / `agents.TurnContentFromContext`
+- `agents.WithTurnResources` / `agents.TurnResourcesFromContext`
+- `agents.WithTurnPromptConfig` / `agents.TurnPromptConfigFromContext`
+
+Providers read these values from context inside their `Stream()` call, ensuring the enriched parameters are available at prompt-send time regardless of when the session was initialized.
+
+## 21. Agent Sessions and Profiles Endpoints (2026-03-22)
+
+### 21.1 Session Listing
+
+`GET /v1/agents/{agentId}/sessions` exposes ACP `session/list` directly at the agent level, independent of any specific thread:
+
+- Query params: `cwd` (optional filter), `cursor` (optional pagination).
+- Returns `{"sessions":[...],"nextCursor":""}`.
+- `503 UPSTREAM_UNAVAILABLE` when the agent does not support session listing (provider returns `ErrSessionListUnsupported`, which is set when ACP `initialize` capabilities report `canList=false` or `canLoad=false`).
+- `404 NOT_FOUND` when `agentId` is not in the runtime allowlist.
+
+This endpoint is distinct from `GET /v1/threads/{threadId}/sessions` (thread-scoped session listing that applies thread cwd and ownership). The agent-level endpoint is used by clients that need to list sessions without having a specific thread, for example when creating a thread pre-bound to a historical session.
+
+Currently wired for `codex` and `claude` embedded providers. ACP CLI providers (`qwen`, `opencode`, `gemini`, `kimi`) return `503` because their stdio-per-operation model does not support the concurrent listing flow used here.
+
+### 21.2 Agent Profiles
+
+`GET /v1/agents/{agentId}/profiles` exposes named runtime profile presets for the agent:
+
+- Returns `{"profiles":[...]}`.
+- Never returns `null` for `profiles`; an unconfigured agent returns an empty array.
+- `404 NOT_FOUND` when `agentId` is not in the runtime allowlist.
+
+Profiles are populated at server startup from `codexacp.RuntimeConfig.Profiles` and `claudeacp.RuntimeConfig.Profiles`. Each profile bundles a named combination of model, thought level, approval policy, sandbox mode, personality, and system instructions so clients can offer preset-based turn configuration without requiring the user to configure each field individually.
+
+Profiles are consumed by the `promptConfig.profile` field on `POST /v1/threads/{threadId}/turns`.
+
+### 21.3 AgentInfo.AdapterInfo
+
+`GET /v1/agents` now includes an optional `adapterInfo` field on each agent entry:
+
+```json
+{
+  "id": "codex",
+  "name": "Codex",
+  "status": "available",
+  "adapterInfo": {
+    "name": "codex-acp",
+    "version": "0.3.3"
+  }
+}
+```
+
+This is populated from the ACP `initialize` response (`agentInfo.name`, `agentInfo.version`) when available, and is captured lazily on first ACP session for embedded providers. The field is omitted when not available.
+
+### 21.4 Embedded Provider Update Routing
+
+Both embedded providers (`codex`, `claude`) now have a `default:` arm in their `handleUpdate` switch that forwards any unrecognized `session/update` type to `agents.NotifyLifecycle`. This prevents unknown update types from silently dropping through without forwarding, so future ACP extension updates are handled gracefully.
+
+`handlePermissionRequest` in both embedded providers now populates all `PermissionRequest` fields using shared `agentutil.MapString` / `agentutil.MapStringSlice` / `agentutil.MapInt` helpers:
+- `Files`
+- `Host`, `Protocol`, `Port`
+- `MCPServer`, `MCPTool`
+- `Message`
+
+Unknown inbound methods (for example `fs/write_text_file`, `fs/read_text_file`) now receive a graceful error response instead of crashing the turn.

@@ -11,7 +11,43 @@ This file is the source of milestone progress, validation commands, and next act
 
 - `Post-M8` ACP multi-agent readiness and maintenance.
 
-## Latest Update (2026-03-19)
+## Latest Update (2026-03-22)
+
+- `Post-M8` TODO checklist events completed:
+  - added `agents.TodoItem` struct and `agents.TodoUpdateHandler` callback in `internal/agents/agents.go`.
+  - extended `ParseACPUpdate` in `internal/agents/acp_update.go` to extract the top-level `todo` array from every `session/update` payload, regardless of the primary update type.
+  - wired `NotifyTodoUpdate` into both embedded providers (`codex/embedded.go`, `claude/embedded.go`) and the ACP stdio notification path (`acpstdio_notifications.go`).
+  - HTTP turn handler installs a `WithTodoUpdateHandler` and emits `todo_update` SSE events with `{"turnId":"...","items":[{"text":"...","done":false}]}`.
+  - validation:
+    - pass: `go test ./...`
+
+- `Post-M8` rich session/prompt parameters completed:
+  - added `PromptContentBlock`, `PromptResource`, `TurnPromptConfig`, and `ByteRange` types in `internal/agents/agents.go`.
+  - added context helpers `WithTurnContent/TurnContentFromContext`, `WithTurnResources/TurnResourcesFromContext`, `WithTurnPromptConfig/TurnPromptConfigFromContext`.
+  - extended `POST /v1/threads/{threadId}/turns` request body with `content`, `resources`, and `promptConfig` optional fields.
+  - HTTP handler binds content/resources/config into the turn context before invoking the agent provider.
+  - all four provider paths (`codex/embedded.go`, `claude/embedded.go`, `acp/acp.go`, `acpcli/client.go`) forward `content`, `resources`, and flattened `promptConfig` fields into ACP `session/prompt` when present.
+  - validation:
+    - pass: `go test ./...`
+
+- `Post-M8` session listing and profiles endpoints completed:
+  - added `GET /v1/agents/{agentId}/sessions` endpoint wired through `AgentSessionsFactory` in `httpapi.Config`.
+  - added `GET /v1/agents/{agentId}/profiles` endpoint wired through `AgentProfilesMap map[string][]AgentProfile` in `httpapi.Config`.
+  - wired both in `cmd/ngent/main.go` for `codex` and `claude` embedded providers.
+  - `GET /v1/agents/{agentId}/sessions` returns `503 UPSTREAM_UNAVAILABLE` when the agent does not support session listing.
+  - `GET /v1/agents/{agentId}/profiles` always returns an array (never `null`), sourced from `codexacp.RuntimeConfig.Profiles` and `claudeacp.RuntimeConfig.Profiles`.
+  - validation:
+    - pass: `go test ./...`
+
+- `Post-M8` embedded agent correctness improvements completed:
+  - added `default:` arm in `handleUpdate` for both `codex` and `claude` embedded providers forwarding unknown update types through `agents.NotifyLifecycle`.
+  - `handlePermissionRequest` now populates all `PermissionRequest` fields (`Files`, `Host`, `Protocol`, `Port`, `MCPServer`, `MCPTool`, `Message`) using shared `agentutil.MapString/MapStringSlice/MapInt` helpers.
+  - unknown inbound ACP methods (`fs/write_text_file`, `fs/read_text_file`, others) now respond gracefully instead of crashing the turn.
+  - `AgentInfo.AdapterInfo` field added to `/v1/agents` response, populated from ACP `initialize` response (`agentInfo.name`, `agentInfo.version`) for embedded providers.
+  - validation:
+    - pass: `go test ./...`
+
+## Previous Latest Update (2026-03-19)
 
 - `Post-M8` Web UI left-rail layout alignment completed:
   - moved ACP session browsing from the right edge into a left-side session panel beside chat, following the same high-level navigation pattern as OpenCode's web UI.

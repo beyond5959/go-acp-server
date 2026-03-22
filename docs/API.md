@@ -75,6 +75,7 @@ All errors use:
 - agent status contract:
   - each agent entry reports readiness as `available|unavailable`.
   - current built-in ids are `codex`, `claude`, `gemini`, `qwen`, `opencode`.
+  - `adapterInfo` is populated from the ACP `initialize` response when available; omitted otherwise.
 - Response `200`:
 
 ```json
@@ -83,7 +84,11 @@ All errors use:
     {
       "id": "codex",
       "name": "Codex",
-      "status": "available"
+      "status": "available",
+      "adapterInfo": {
+        "name": "codex-acp",
+        "version": "0.3.3"
+      }
     },
     {
       "id": "claude",
@@ -110,6 +115,72 @@ All errors use:
   ]
 }
 ```
+
+2.2 `GET /v1/agents/{agentId}/profiles`
+- Headers: `X-Client-ID` (required), optional bearer auth if enabled.
+- Behavior:
+  - returns the named runtime profile presets configured for the agent.
+  - returns an empty array when no profiles are configured; never returns `null`.
+  - returns `404 NOT_FOUND` when `agentId` is not in the runtime allowlist.
+  - currently populated from `codexacp.RuntimeConfig.Profiles` and `claudeacp.RuntimeConfig.Profiles`.
+- Response `200`:
+
+```json
+{
+  "profiles": [
+    {
+      "name": "fast",
+      "model": "gpt-4o-mini",
+      "thoughtLevel": "low",
+      "approvalPolicy": "auto",
+      "sandbox": "none",
+      "personality": "",
+      "systemInstructions": ""
+    }
+  ]
+}
+```
+
+- Profile fields (all optional/omitempty):
+  - `name` — profile identifier used with `promptConfig.profile` on turns.
+  - `model` — model id to activate with this profile.
+  - `thoughtLevel` — reasoning intensity hint.
+  - `approvalPolicy` — default permission approval policy for this profile.
+  - `sandbox` — sandbox mode hint.
+  - `personality` — personality override.
+  - `systemInstructions` — system prompt override.
+
+2.3 `GET /v1/agents/{agentId}/sessions`
+- Headers: `X-Client-ID` (required), optional bearer auth if enabled.
+- Query parameters:
+  - `cwd` (optional) — filter sessions by working directory.
+  - `cursor` (optional) — pagination cursor from a previous response's `nextCursor`.
+- Behavior:
+  - pages through provider ACP `session/list` and returns normalized session entries.
+  - returns `503 UPSTREAM_UNAVAILABLE` when the agent does not support session listing (non-embedded providers, or embedded provider reports `canList=false`).
+  - returns `404 NOT_FOUND` when `agentId` is not in the runtime allowlist.
+- Response `200`:
+
+```json
+{
+  "sessions": [
+    {
+      "sessionId": "abc123",
+      "cwd": "/home/user/project",
+      "title": "Fix auth bug",
+      "updatedAt": "2026-03-22T10:00:00Z"
+    }
+  ],
+  "nextCursor": ""
+}
+```
+
+- Session fields:
+  - `sessionId` — provider-assigned session identifier.
+  - `cwd` — working directory where the session was created (omitted if unknown).
+  - `title` — human-readable session title (omitted if unknown).
+  - `updatedAt` — last-modified timestamp as reported by the provider (omitted if unknown).
+  - `_meta` — opaque provider metadata (omitted if empty).
 
 3. `POST /v1/threads`
 - Headers: `X-Client-ID` (required), optional bearer auth if enabled.
@@ -246,9 +317,58 @@ All errors use:
 ```json
 {
   "input": "hello",
-  "stream": true
+  "stream": true,
+  "content": [
+    {"type": "text", "text": "explain this file"},
+    {"type": "image", "path": "/home/user/screenshot.png", "mimeType": "image/png"},
+    {"type": "image", "uri": "https://example.com/img.png"},
+    {"type": "image", "data": "<base64>", "mimeType": "image/png"}
+  ],
+  "resources": [
+    {
+      "name": "main.go",
+      "path": "/home/user/project/main.go",
+      "mimeType": "text/x-go",
+      "range": {"start": 0, "end": 1024}
+    }
+  ],
+  "promptConfig": {
+    "profile": "fast",
+    "approvalPolicy": "auto",
+    "sandbox": "none",
+    "personality": "",
+    "systemInstructions": "You are a helpful assistant."
+  }
 }
 ```
+
+- Request fields:
+  - `input` (string, required) — plain text input sent as the turn prompt.
+  - `stream` (bool, optional) — must be `true`; SSE streaming is the only supported mode.
+  - `sessionId` (string, optional) — target a specific ACP session on this thread.
+  - `content` (array, optional) — structured content blocks forwarded to the agent via ACP `session/prompt`. Each block has:
+    - `type` — block kind: `"text"` | `"image"` | other provider-defined types.
+    - `text` — text body (for `type:"text"`).
+    - `data` — base64-encoded binary payload (for `type:"image"` inline).
+    - `uri` — resource URI (for `type:"image"` by URL).
+    - `path` — local file path (for `type:"image"` by file path).
+    - `name` — optional label.
+    - `mimeType` — optional MIME type hint.
+    - `range` — optional byte range `{"start":N,"end":N}`.
+  - `resources` (array, optional) — file/URI references attached to the turn. Each entry has:
+    - `name` — optional label.
+    - `uri` — resource URI.
+    - `path` — local file path.
+    - `mimeType` — optional MIME type hint.
+    - `text` — optional pre-read text content.
+    - `data` — optional base64-encoded binary content.
+    - `range` — optional byte range `{"start":N,"end":N}`.
+  - `promptConfig` (object, optional) — per-turn runtime overrides forwarded to the agent. All fields are optional:
+    - `profile` — named profile preset (must match a profile from `GET /v1/agents/{agentId}/profiles`).
+    - `approvalPolicy` — permission approval policy override.
+    - `sandbox` — sandbox mode override.
+    - `personality` — personality override.
+    - `systemInstructions` — system prompt override.
 
 - Behavior:
   - response is SSE (`text/event-stream`).
@@ -256,15 +376,24 @@ All errors use:
   - if another turn is active on that same scope, return `409 CONFLICT`.
   - different sessions on the same thread may run concurrently after switching `agentOptions.sessionId`.
   - if provider requests runtime permission, server emits `permission_required` and pauses turn until decision/timeout.
+  - `content`, `resources`, and `promptConfig` are passed through to the underlying ACP `session/prompt` call; unsupported providers silently ignore fields they do not recognize.
 
 - SSE event types:
   - `turn_started`: `{"turnId":"..."}`
   - `message_delta`: `{"turnId":"...","delta":"..."}`
   - `plan_update`: `{"turnId":"...","entries":[{"content":"...","status":"pending|in_progress|completed","priority":"low|medium|high"}]}`
+  - `todo_update`: `{"turnId":"...","items":[{"text":"...","done":false}]}`
   - `permission_required`: `{"turnId":"...","permissionId":"...","approval":"command|file|network|mcp","command":"...","requestId":"..."}`
   - `turn_completed`: `{"turnId":"...","stopReason":"end_turn|cancelled|error"}`
   - `error`: `{"turnId":"...","code":"...","message":"..."}`
   - for ACP `sessionUpdate == "plan"`, the server emits `plan_update` and treats each payload as a full replacement of the current plan list.
+  - for any ACP `session/update` payload containing a top-level `todo` array, the server emits `todo_update` with the current snapshot of the agent's checklist. Each `todo_update` replaces the prior list for that turn.
+
+- `todo_update` payload:
+  - `turnId` — the active turn ID.
+  - `items` — array of checklist items, each with:
+    - `text` — item description.
+    - `done` — completion flag (`true` = checked off).
 
 - Permission fail-closed contract:
   - permission request timeout or disconnected stream defaults to `declined`.
