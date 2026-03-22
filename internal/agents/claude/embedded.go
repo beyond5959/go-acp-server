@@ -71,6 +71,8 @@ type Client struct {
 	configOptions  []agents.ConfigOption
 	canLoadSession bool
 
+	adapterInfo *agents.AdapterInfo
+
 	requestSeq uint64
 }
 
@@ -156,6 +158,16 @@ func (c *Client) Name() string {
 		return "claude-embedded"
 	}
 	return c.name
+}
+
+// AdapterInfo returns adapter identity captured during ACP initialize, if available.
+func (c *Client) AdapterInfo() *agents.AdapterInfo {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.adapterInfo
 }
 
 // ConfigOptions returns current ACP session config options.
@@ -355,10 +367,34 @@ func (c *Client) streamOnce(
 	}
 	promptDone := make(chan promptResult, 1)
 	go func() {
-		resp, reqErr := c.clientRequest(promptCtx, runtime, methodSessionPrompt, map[string]any{
+		params := map[string]any{
 			"sessionId": sessionID,
 			"prompt":    input,
-		})
+		}
+		if content := agents.TurnContentFromContext(ctx); len(content) > 0 {
+			params["content"] = content
+		}
+		if resources := agents.TurnResourcesFromContext(ctx); len(resources) > 0 {
+			params["resources"] = resources
+		}
+		if cfg, ok := agents.TurnPromptConfigFromContext(ctx); ok {
+			if cfg.Profile != "" {
+				params["profile"] = cfg.Profile
+			}
+			if cfg.ApprovalPolicy != "" {
+				params["approvalPolicy"] = cfg.ApprovalPolicy
+			}
+			if cfg.Sandbox != "" {
+				params["sandbox"] = cfg.Sandbox
+			}
+			if cfg.Personality != "" {
+				params["personality"] = cfg.Personality
+			}
+			if cfg.SystemInstructions != "" {
+				params["systemInstructions"] = cfg.SystemInstructions
+			}
+		}
+		resp, reqErr := c.clientRequest(promptCtx, runtime, methodSessionPrompt, params)
 		promptDone <- promptResult{response: resp, err: reqErr}
 	}()
 
@@ -459,6 +495,19 @@ func (c *Client) handleUpdate(
 				c.sendSessionCancel(runtime, c.currentSessionID())
 				return err
 			}
+		case agents.ACPUpdateTypeConfigOptionsUpdate:
+			if err := agents.NotifyConfigOptions(ctx, update.ConfigOptions); err != nil {
+				c.sendSessionCancel(runtime, c.currentSessionID())
+				return err
+			}
+		case agents.ACPUpdateTypeThoughtMessageChunk:
+			if update.Delta == "" {
+				return nil
+			}
+			if err := agents.NotifyReasoningDelta(ctx, update.Delta); err != nil {
+				c.sendSessionCancel(runtime, c.currentSessionID())
+				return err
+			}
 		case agents.ACPUpdateTypeToolCall, agents.ACPUpdateTypeToolCallUpdate:
 			if update.ToolCall == nil {
 				return nil
@@ -466,6 +515,20 @@ func (c *Client) handleUpdate(
 			if err := agents.NotifyToolCall(ctx, *update.ToolCall); err != nil {
 				c.sendSessionCancel(runtime, c.currentSessionID())
 				return err
+			}
+		case agents.ACPUpdateTypeThinkingStarted,
+			agents.ACPUpdateTypeThinkingCompleted,
+			agents.ACPUpdateTypeAgentWriting,
+			agents.ACPUpdateTypeAgentDoneWriting:
+			if err := agents.NotifyLifecycle(ctx, update.Type); err != nil {
+				c.sendSessionCancel(runtime, c.currentSessionID())
+				return err
+			}
+		default:
+			// Forward unrecognized event types (e.g. review_mode_entered,
+			// review_mode_exited) as lifecycle events so they reach the SSE layer.
+			if update.Type != "" {
+				_ = agents.NotifyLifecycle(ctx, update.Type)
 			}
 		}
 		if len(update.TodoItems) > 0 {
@@ -481,9 +544,28 @@ func (c *Client) handleUpdate(
 		return c.handlePermissionRequest(ctx, runtime, msg)
 	}
 
-	if msg.Method != "" && msg.ID != nil {
-		c.sendSessionCancel(runtime, c.currentSessionID())
-		return fmt.Errorf("claude: unsupported embedded request method %q", msg.Method)
+	switch msg.Method {
+	case "fs/write_text_file":
+		if msg.ID != nil {
+			respondCtx, cancel := context.WithTimeout(context.Background(), c.requestTimeout)
+			defer cancel()
+			_ = runtime.RespondPermission(respondCtx, *msg.ID,
+				claudeacp.PermissionDecision{Outcome: "declined"})
+		}
+	case "fs/read_text_file":
+		if msg.ID != nil {
+			respondCtx, cancel := context.WithTimeout(context.Background(), c.requestTimeout)
+			defer cancel()
+			_ = runtime.RespondPermission(respondCtx, *msg.ID,
+				claudeacp.PermissionDecision{})
+		}
+	default:
+		if msg.Method != "" && msg.ID != nil {
+			// Unknown inbound request — log and do NOT cancel the turn.
+			observability.LogACPMessage(c.Name(), "unsupported-inbound", map[string]any{
+				"method": msg.Method,
+			})
+		}
 	}
 	return nil
 }
@@ -506,8 +588,15 @@ func (c *Client) handlePermissionRequest(
 
 	request := agents.PermissionRequest{
 		RequestID: idToString(*msg.ID),
-		Approval:  mapString(rawParams, "approval"),
-		Command:   mapString(rawParams, "command"),
+		Approval:  agentutil.MapString(rawParams, "approval"),
+		Command:   agentutil.MapString(rawParams, "command"),
+		Files:     agentutil.MapStringSlice(rawParams, "files"),
+		Host:      agentutil.MapString(rawParams, "host"),
+		Protocol:  agentutil.MapString(rawParams, "protocol"),
+		Port:      agentutil.MapInt(rawParams, "port"),
+		MCPServer: agentutil.MapString(rawParams, "mcpServer"),
+		MCPTool:   agentutil.MapString(rawParams, "mcpTool"),
+		Message:   agentutil.MapString(rawParams, "message"),
 		RawParams: rawParams,
 	}
 
@@ -720,6 +809,22 @@ func (c *Client) startRuntime(
 		_ = runtime.Close()
 		return nil, acpsession.Capabilities{}, err
 	}
+
+	var initResult struct {
+		AgentInfo *struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		} `json:"agentInfo"`
+	}
+	if jsonErr := json.Unmarshal(initResp.Result, &initResult); jsonErr == nil && initResult.AgentInfo != nil {
+		c.mu.Lock()
+		c.adapterInfo = &agents.AdapterInfo{
+			Name:    initResult.AgentInfo.Name,
+			Version: initResult.AgentInfo.Version,
+		}
+		c.mu.Unlock()
+	}
+
 	return runtime, acpsession.ParseInitializeCapabilities(initResp.Result), nil
 }
 
@@ -808,12 +913,6 @@ func parsePromptStopReason(raw json.RawMessage) (string, error) {
 		stopReason = string(agents.StopReasonEndTurn)
 	}
 	return stopReason, nil
-}
-
-func mapString(values map[string]any, key string) string {
-	value, _ := values[key]
-	text, _ := value.(string)
-	return text
 }
 
 func idToString(raw json.RawMessage) string {

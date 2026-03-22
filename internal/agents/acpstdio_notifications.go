@@ -27,6 +27,9 @@ func NewACPNotificationHandler(
 		if update.Type == ACPUpdateTypeAvailableCommands {
 			return NotifySlashCommands(ctx, update.Commands)
 		}
+		if update.Type == ACPUpdateTypeConfigOptionsUpdate {
+			return NotifyConfigOptions(ctx, update.ConfigOptions)
+		}
 		if !promptStarted.Load() {
 			return nil
 		}
@@ -44,6 +47,17 @@ func NewACPNotificationHandler(
 		case ACPUpdateTypeToolCall, ACPUpdateTypeToolCallUpdate:
 			if update.ToolCall != nil {
 				return NotifyToolCall(ctx, *update.ToolCall)
+			}
+		case ACPUpdateTypeThinkingStarted,
+			ACPUpdateTypeThinkingCompleted,
+			ACPUpdateTypeAgentWriting,
+			ACPUpdateTypeAgentDoneWriting:
+			return NotifyLifecycle(ctx, update.Type)
+		default:
+			// Forward unrecognized event types (e.g. review_mode_entered,
+			// review_mode_exited) as lifecycle events so they reach the SSE layer.
+			if update.Type != "" {
+				_ = NotifyLifecycle(ctx, update.Type)
 			}
 		}
 		if len(update.TodoItems) > 0 {

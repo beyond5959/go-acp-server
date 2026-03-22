@@ -267,7 +267,31 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 	}
 
 	markPromptStarted()
-	promptResult, err := conn.Call(ctx, "session/prompt", c.hooks.PromptParams(sessionID, input, modelID))
+	promptParams := c.hooks.PromptParams(sessionID, input, modelID)
+	if content := agents.TurnContentFromContext(streamCtx); len(content) > 0 {
+		promptParams["content"] = content
+	}
+	if resources := agents.TurnResourcesFromContext(streamCtx); len(resources) > 0 {
+		promptParams["resources"] = resources
+	}
+	if cfg, ok := agents.TurnPromptConfigFromContext(streamCtx); ok {
+		if cfg.Profile != "" {
+			promptParams["profile"] = cfg.Profile
+		}
+		if cfg.ApprovalPolicy != "" {
+			promptParams["approvalPolicy"] = cfg.ApprovalPolicy
+		}
+		if cfg.Sandbox != "" {
+			promptParams["sandbox"] = cfg.Sandbox
+		}
+		if cfg.Personality != "" {
+			promptParams["personality"] = cfg.Personality
+		}
+		if cfg.SystemInstructions != "" {
+			promptParams["systemInstructions"] = cfg.SystemInstructions
+		}
+	}
+	promptResult, err := conn.Call(ctx, "session/prompt", promptParams)
 	if err != nil {
 		if ctx.Err() != nil {
 			if c.hooks.Cancel != nil {

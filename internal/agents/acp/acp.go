@@ -169,9 +169,22 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 			}
 		case agents.ACPUpdateTypeAvailableCommands:
 			return agents.NotifySlashCommands(ctx, update.Commands)
+		case agents.ACPUpdateTypeConfigOptionsUpdate:
+			return agents.NotifyConfigOptions(ctx, update.ConfigOptions)
 		case agents.ACPUpdateTypeToolCall, agents.ACPUpdateTypeToolCallUpdate:
 			if update.ToolCall != nil {
 				return agents.NotifyToolCall(ctx, *update.ToolCall)
+			}
+		case agents.ACPUpdateTypeThinkingStarted,
+			agents.ACPUpdateTypeThinkingCompleted,
+			agents.ACPUpdateTypeAgentWriting,
+			agents.ACPUpdateTypeAgentDoneWriting:
+			return agents.NotifyLifecycle(ctx, update.Type)
+		default:
+			// Forward unrecognized event types (e.g. review_mode_entered,
+			// review_mode_exited) as lifecycle events so they reach the SSE layer.
+			if update.Type != "" {
+				_ = agents.NotifyLifecycle(ctx, update.Type)
 			}
 		}
 		return nil
@@ -184,10 +197,34 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 		return c.handlePermissionRequest(ctx, conn, msg)
 	})
 
-	promptResult, err := conn.Call(ctx, "session/prompt", map[string]any{
+	promptParams := map[string]any{
 		"sessionId": sessionID,
 		"input":     input,
-	})
+	}
+	if content := agents.TurnContentFromContext(ctx); len(content) > 0 {
+		promptParams["content"] = content
+	}
+	if resources := agents.TurnResourcesFromContext(ctx); len(resources) > 0 {
+		promptParams["resources"] = resources
+	}
+	if cfg, ok := agents.TurnPromptConfigFromContext(ctx); ok {
+		if cfg.Profile != "" {
+			promptParams["profile"] = cfg.Profile
+		}
+		if cfg.ApprovalPolicy != "" {
+			promptParams["approvalPolicy"] = cfg.ApprovalPolicy
+		}
+		if cfg.Sandbox != "" {
+			promptParams["sandbox"] = cfg.Sandbox
+		}
+		if cfg.Personality != "" {
+			promptParams["personality"] = cfg.Personality
+		}
+		if cfg.SystemInstructions != "" {
+			promptParams["systemInstructions"] = cfg.SystemInstructions
+		}
+	}
+	promptResult, err := conn.Call(ctx, "session/prompt", promptParams)
 	if err != nil {
 		if ctx.Err() != nil {
 			c.sendSessionCancel(conn, sessionID)
@@ -215,6 +252,13 @@ func (c *Client) handlePermissionRequest(ctx context.Context, conn *rpcConn, msg
 		RequestID: idToString(msg.ID),
 		Approval:  stringValue(rawParams, "approval"),
 		Command:   stringValue(rawParams, "command"),
+		Files:     stringSliceValue(rawParams, "files"),
+		Host:      stringValue(rawParams, "host"),
+		Protocol:  stringValue(rawParams, "protocol"),
+		Port:      intValue(rawParams, "port"),
+		MCPServer: stringValue(rawParams, "mcpServer"),
+		MCPTool:   stringValue(rawParams, "mcpTool"),
+		Message:   stringValue(rawParams, "message"),
 		RawParams: rawParams,
 	}
 
@@ -571,6 +615,45 @@ func stringValue(data map[string]any, key string) string {
 	v, _ := data[key]
 	text, _ := v.(string)
 	return strings.TrimSpace(text)
+}
+
+func stringSliceValue(data map[string]any, key string) []string {
+	if data == nil {
+		return nil
+	}
+	v, ok := data[key]
+	if !ok {
+		return nil
+	}
+	if raw, ok := v.([]any); ok {
+		out := make([]string, 0, len(raw))
+		for _, item := range raw {
+			if s, ok := item.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+func intValue(data map[string]any, key string) int {
+	if data == nil {
+		return 0
+	}
+	v, ok := data[key]
+	if !ok {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case int64:
+		return int(n)
+	}
+	return 0
 }
 
 func idToString(id json.RawMessage) string {

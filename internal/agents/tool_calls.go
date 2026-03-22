@@ -16,18 +16,23 @@ const (
 // ACPToolCall is one normalized ACP tool-call update payload.
 type ACPToolCall struct {
 	Type       string
-	ToolCallID string          `json:"toolCallId"`
-	Title      string          `json:"title,omitempty"`
-	Kind       string          `json:"kind,omitempty"`
-	Status     string          `json:"status,omitempty"`
-	Content    json.RawMessage `json:"content,omitempty"`
-	Locations  json.RawMessage `json:"locations,omitempty"`
-	RawInput   json.RawMessage `json:"rawInput,omitempty"`
-	RawOutput  json.RawMessage `json:"rawOutput,omitempty"`
+	ToolCallID string `json:"toolCallId"`
+	Title      string `json:"title,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	Status     string `json:"status,omitempty"`
+	// Delta carries the plain-text streaming output for in-progress tool calls
+	// (e.g. command execution stdout/stderr chunks). Extracted from the nested
+	// content {"type":"text","text":"..."} emitted by the acp-adapter.
+	Delta     string          `json:"delta,omitempty"`
+	Content   json.RawMessage `json:"content,omitempty"`
+	Locations json.RawMessage `json:"locations,omitempty"`
+	RawInput  json.RawMessage `json:"rawInput,omitempty"`
+	RawOutput json.RawMessage `json:"rawOutput,omitempty"`
 
 	HasTitle     bool `json:"-"`
 	HasKind      bool `json:"-"`
 	HasStatus    bool `json:"-"`
+	HasDelta     bool `json:"-"`
 	HasContent   bool `json:"-"`
 	HasLocations bool `json:"-"`
 	HasRawInput  bool `json:"-"`
@@ -48,6 +53,9 @@ func (event ACPToolCall) EventPayload(turnID string) map[string]any {
 	}
 	if event.HasStatus {
 		payload["status"] = strings.TrimSpace(event.Status)
+	}
+	if event.HasDelta {
+		payload["delta"] = strings.TrimSpace(event.Delta)
 	}
 	if event.HasContent {
 		payload["content"] = cloneACPToolCallJSON(event.Content)
@@ -72,6 +80,7 @@ func CloneACPToolCall(event ACPToolCall) ACPToolCall {
 		Title:        strings.TrimSpace(event.Title),
 		Kind:         strings.TrimSpace(event.Kind),
 		Status:       strings.TrimSpace(event.Status),
+		Delta:        strings.TrimSpace(event.Delta),
 		Content:      cloneACPToolCallJSON(event.Content),
 		Locations:    cloneACPToolCallJSON(event.Locations),
 		RawInput:     cloneACPToolCallJSON(event.RawInput),
@@ -79,6 +88,7 @@ func CloneACPToolCall(event ACPToolCall) ACPToolCall {
 		HasTitle:     event.HasTitle,
 		HasKind:      event.HasKind,
 		HasStatus:    event.HasStatus,
+		HasDelta:     event.HasDelta,
 		HasContent:   event.HasContent,
 		HasLocations: event.HasLocations,
 		HasRawInput:  event.HasRawInput,
