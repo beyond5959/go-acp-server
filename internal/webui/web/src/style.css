@@ -45,6 +45,8 @@
 
   /* Scrollbar */
   --scrollbar-thumb: #d1d1d6;
+  --kimi-icon-image: url('/kimi-icon.png');
+  --opencode-icon-image: url('/opencode-icon.png');
 
   /* Dimensions */
   --sidebar-w:      228px;
@@ -109,6 +111,8 @@
   --scrollbar-thumb: #3a3a3c;
   --shadow-sm: 0 1px 3px rgba(0,0,0,.3);
   --shadow-md: 0 4px 16px rgba(0,0,0,.4);
+  --kimi-icon-image: url('/kimi-text.png');
+  --opencode-icon-image: url('/opencode-logo-dark.svg');
 }
 
 /* ===== Base ===== */
@@ -288,6 +292,20 @@ body {
 
 .thread-item-avatar-icon--contain {
   object-fit: contain;
+}
+
+.thread-item-avatar-icon--kimi {
+  background-image: var(--kimi-icon-image);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
+.thread-item-avatar-icon--opencode {
+  background-image: var(--opencode-icon-image);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
 }
 
 .thread-item-body {
@@ -1149,6 +1167,20 @@ body {
 
 .message-avatar-icon--contain {
   object-fit: contain;
+}
+
+.message-avatar-icon--kimi {
+  background-image: var(--kimi-icon-image);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
+.message-avatar-icon--opencode {
+  background-image: var(--opencode-icon-image);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
 }
 
 .message-group {
@@ -2761,6 +2793,28 @@ button:disabled, .btn:disabled {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+
+.agent-card-kimi-icon {
+  width: 32px;
+  height: 32px;
+  display: block;
+  border-radius: 8px;
+  background-image: var(--kimi-icon-image);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
+.agent-card-opencode-icon {
+  width: 32px;
+  height: 32px;
+  display: block;
+  border-radius: 8px;
+  background-image: var(--opencode-icon-image);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
 }
 
 .agent-card-name {

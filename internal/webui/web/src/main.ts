@@ -102,8 +102,6 @@ const iconChevronRight = `<svg width="12" height="12" viewBox="0 0 24 24" fill="
 const codexIconURL = '/codex-icon.png'
 const geminiIconURL = '/gemini-icon.png'
 const claudeIconURL = '/claude-icon.png'
-const kimiIconURL = '/kimi-icon.png'
-const opencodeIconURL = '/opencode-icon.png'
 const qwenIconURL = '/qwen-icon.png'
 
 const defaultConfigCatalogCacheKey = '__default__'
@@ -1991,10 +1989,10 @@ function renderAgentAvatar(agentId: string, variant: 'thread' | 'message'): stri
     return `<img src="${claudeIconURL}" alt="Claude Code" class="${cls}" loading="lazy" decoding="async">`
   }
   if (normalized === 'kimi') {
-    return `<img src="${kimiIconURL}" alt="Kimi CLI" class="${cls} ${cls}--contain" loading="lazy" decoding="async">`
+    return `<span class="${cls} ${cls}--contain ${cls}--kimi" role="img" aria-label="Kimi CLI"></span>`
   }
   if (normalized === 'opencode') {
-    return `<img src="${opencodeIconURL}" alt="OpenCode" class="${cls} ${cls}--contain" loading="lazy" decoding="async">`
+    return `<span class="${cls} ${cls}--contain ${cls}--opencode" role="img" aria-label="OpenCode"></span>`
   }
   if (normalized === 'qwen') {
     return `<img src="${qwenIconURL}" alt="Qwen Code" class="${cls}" loading="lazy" decoding="async">`

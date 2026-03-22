@@ -19,8 +19,8 @@ const agentIcons: Record<string, string> = {
   codex: `<img src="/codex-icon.png" width="32" height="32" alt="Codex" style="border-radius:8px;display:block;">`,
   gemini: `<img src="/gemini-icon.png" width="32" height="32" alt="Gemini CLI" style="border-radius:8px;display:block;">`,
   claude: `<img src="/claude-icon.png" width="32" height="32" alt="Claude Code" style="border-radius:8px;display:block;">`,
-  kimi: `<img src="/kimi-icon.png" width="32" height="32" alt="Kimi CLI" style="border-radius:8px;display:block;object-fit:contain;">`,
-  opencode: `<img src="/opencode-icon.png" width="32" height="32" alt="OpenCode" style="border-radius:8px;display:block;object-fit:contain;">`,
+  kimi: `<span class="agent-card-kimi-icon" role="img" aria-label="Kimi CLI"></span>`,
+  opencode: `<span class="agent-card-opencode-icon" role="img" aria-label="OpenCode"></span>`,
   qwen: `<img src="/qwen-icon.png" width="32" height="32" alt="Qwen Code" style="border-radius:8px;display:block;">`,
 }
 
