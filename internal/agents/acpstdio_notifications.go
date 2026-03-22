@@ -46,6 +46,9 @@ func NewACPNotificationHandler(
 				return NotifyToolCall(ctx, *update.ToolCall)
 			}
 		}
+		if len(update.TodoItems) > 0 {
+			_ = NotifyTodoUpdate(ctx, update.TodoItems)
+		}
 		return nil
 	}
 

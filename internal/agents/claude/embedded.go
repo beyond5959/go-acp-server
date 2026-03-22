@@ -468,6 +468,12 @@ func (c *Client) handleUpdate(
 				return err
 			}
 		}
+		if len(update.TodoItems) > 0 {
+			if err := agents.NotifyTodoUpdate(ctx, update.TodoItems); err != nil {
+				c.sendSessionCancel(runtime, c.currentSessionID())
+				return err
+			}
+		}
 		return nil
 	}
 

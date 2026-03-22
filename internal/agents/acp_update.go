@@ -41,6 +41,7 @@ type ACPUpdate struct {
 	PlanEntries []PlanEntry
 	Commands    []SlashCommand
 	ToolCall    *ACPToolCall
+	TodoItems   []TodoItem
 }
 
 // ParseACPUpdate normalizes provider-specific session/update payloads.
@@ -54,7 +55,11 @@ func ParseACPUpdate(raw json.RawMessage) (ACPUpdate, error) {
 		MessageID string         `json:"messageId"`
 		Timestamp string         `json:"timestamp"`
 		Meta      map[string]any `json:"_meta"`
-		Update    struct {
+		Todo      []struct {
+			Text string `json:"text"`
+			Done bool   `json:"done"`
+		} `json:"todo"`
+		Update struct {
 			SessionUpdate     string            `json:"sessionUpdate"`
 			MessageID         string            `json:"messageId"`
 			Timestamp         string            `json:"timestamp"`
@@ -75,70 +80,87 @@ func ParseACPUpdate(raw json.RawMessage) (ACPUpdate, error) {
 		return ACPUpdate{}, fmt.Errorf("decode ACP session/update payload: %w", err)
 	}
 
+	var todoItems []TodoItem
+	if len(payload.Todo) > 0 {
+		todoItems = make([]TodoItem, 0, len(payload.Todo))
+		for _, t := range payload.Todo {
+			todoItems = append(todoItems, TodoItem{
+				Text: t.Text,
+				Done: t.Done,
+			})
+		}
+	}
+
+	var update ACPUpdate
 	switch strings.TrimSpace(payload.Update.SessionUpdate) {
 	case "":
-		if payload.Delta == "" {
+		if payload.Delta == "" && len(todoItems) == 0 {
 			return ACPUpdate{}, nil
 		}
-		return ACPUpdate{
-			Type:  ACPUpdateTypeMessageChunk,
-			Role:  "assistant",
-			Delta: payload.Delta,
-			MessageID: normalizeACPUpdateString(
-				payload.Update.MessageID,
-				payload.MessageID,
-				acpUpdateMetaString(payload.Update.Meta, "messageId"),
-				acpUpdateMetaString(payload.Meta, "messageId"),
-			),
-			Timestamp: normalizeACPUpdateString(
-				payload.Update.Timestamp,
-				payload.Timestamp,
-				acpUpdateMetaString(payload.Update.Meta, "timestamp"),
-				acpUpdateMetaString(payload.Meta, "timestamp"),
-			),
-		}, nil
+		if payload.Delta == "" {
+			update = ACPUpdate{}
+		} else {
+			update = ACPUpdate{
+				Type:  ACPUpdateTypeMessageChunk,
+				Role:  "assistant",
+				Delta: payload.Delta,
+				MessageID: normalizeACPUpdateString(
+					payload.Update.MessageID,
+					payload.MessageID,
+					acpUpdateMetaString(payload.Update.Meta, "messageId"),
+					acpUpdateMetaString(payload.Meta, "messageId"),
+				),
+				Timestamp: normalizeACPUpdateString(
+					payload.Update.Timestamp,
+					payload.Timestamp,
+					acpUpdateMetaString(payload.Update.Meta, "timestamp"),
+					acpUpdateMetaString(payload.Meta, "timestamp"),
+				),
+			}
+		}
 	case ACPUpdateTypeAgentMessageChunk, ACPUpdateTypeUserMessageChunk, ACPUpdateTypeThoughtMessageChunk, acpUpdateTypeAgentThoughtChunk:
 		content, ok, err := parseACPUpdateTextContent(payload.Update.Content)
 		if err != nil {
 			return ACPUpdate{}, err
 		}
 		if !ok {
-			return ACPUpdate{Type: normalizeACPUpdateType(payload.Update.SessionUpdate)}, nil
+			update = ACPUpdate{Type: normalizeACPUpdateType(payload.Update.SessionUpdate)}
+		} else {
+			role := ""
+			switch normalizeACPUpdateType(payload.Update.SessionUpdate) {
+			case ACPUpdateTypeAgentMessageChunk:
+				role = "assistant"
+			case ACPUpdateTypeUserMessageChunk:
+				role = "user"
+			}
+			update = ACPUpdate{
+				Type:  normalizeACPUpdateType(payload.Update.SessionUpdate),
+				Role:  role,
+				Delta: content,
+				MessageID: normalizeACPUpdateString(
+					payload.Update.MessageID,
+					payload.MessageID,
+					acpUpdateMetaString(payload.Update.Meta, "messageId"),
+					acpUpdateMetaString(payload.Meta, "messageId"),
+				),
+				Timestamp: normalizeACPUpdateString(
+					payload.Update.Timestamp,
+					payload.Timestamp,
+					acpUpdateMetaString(payload.Update.Meta, "timestamp"),
+					acpUpdateMetaString(payload.Meta, "timestamp"),
+				),
+			}
 		}
-		role := ""
-		switch normalizeACPUpdateType(payload.Update.SessionUpdate) {
-		case ACPUpdateTypeAgentMessageChunk:
-			role = "assistant"
-		case ACPUpdateTypeUserMessageChunk:
-			role = "user"
-		}
-		return ACPUpdate{
-			Type:  normalizeACPUpdateType(payload.Update.SessionUpdate),
-			Role:  role,
-			Delta: content,
-			MessageID: normalizeACPUpdateString(
-				payload.Update.MessageID,
-				payload.MessageID,
-				acpUpdateMetaString(payload.Update.Meta, "messageId"),
-				acpUpdateMetaString(payload.Meta, "messageId"),
-			),
-			Timestamp: normalizeACPUpdateString(
-				payload.Update.Timestamp,
-				payload.Timestamp,
-				acpUpdateMetaString(payload.Update.Meta, "timestamp"),
-				acpUpdateMetaString(payload.Meta, "timestamp"),
-			),
-		}, nil
 	case ACPUpdateTypePlan:
-		return ACPUpdate{
+		update = ACPUpdate{
 			Type:        ACPUpdateTypePlan,
 			PlanEntries: normalizePlanEntries(payload.Update.Entries),
-		}, nil
+		}
 	case ACPUpdateTypeAvailableCommands:
-		return ACPUpdate{
+		update = ACPUpdate{
 			Type:     ACPUpdateTypeAvailableCommands,
 			Commands: parseACPUpdateSlashCommands(payload.Update.AvailableCommands),
-		}, nil
+		}
 	case ACPUpdateTypeToolCall, ACPUpdateTypeToolCallUpdate:
 		title, hasTitle := normalizeACPOptionalString(payload.Update.Title)
 		kind, hasKind := normalizeACPOptionalString(payload.Update.Kind)
@@ -161,13 +183,15 @@ func ParseACPUpdate(raw json.RawMessage) (ACPUpdate, error) {
 			HasRawInput:  hasACPUpdateJSON(payload.Update.RawInput),
 			HasRawOutput: hasACPUpdateJSON(payload.Update.RawOutput),
 		}
-		return ACPUpdate{
+		update = ACPUpdate{
 			Type:     toolCall.Type,
 			ToolCall: &toolCall,
-		}, nil
+		}
 	default:
-		return ACPUpdate{Type: normalizeACPUpdateType(payload.Update.SessionUpdate)}, nil
+		update = ACPUpdate{Type: normalizeACPUpdateType(payload.Update.SessionUpdate)}
 	}
+	update.TodoItems = todoItems
+	return update, nil
 }
 
 func parseACPUpdateSlashCommands(rawCommands []json.RawMessage) []SlashCommand {

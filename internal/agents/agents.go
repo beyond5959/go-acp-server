@@ -97,3 +97,43 @@ func PermissionHandlerFromContext(ctx context.Context) (PermissionHandler, bool)
 	}
 	return handler, true
 }
+
+// TodoItem is one structured checklist item emitted by an agent.
+type TodoItem struct {
+	Text string `json:"text"`
+	Done bool   `json:"done"`
+}
+
+// TodoUpdateHandler receives agent TODO list updates for the active turn.
+type TodoUpdateHandler func(ctx context.Context, items []TodoItem) error
+
+type todoUpdateHandlerContextKey struct{}
+
+// WithTodoUpdateHandler binds one per-turn todo callback to context.
+func WithTodoUpdateHandler(ctx context.Context, handler TodoUpdateHandler) context.Context {
+	if handler == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, todoUpdateHandlerContextKey{}, handler)
+}
+
+// TodoUpdateHandlerFromContext gets todo callback from context, if present.
+func TodoUpdateHandlerFromContext(ctx context.Context) (TodoUpdateHandler, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	handler, ok := ctx.Value(todoUpdateHandlerContextKey{}).(TodoUpdateHandler)
+	if !ok || handler == nil {
+		return nil, false
+	}
+	return handler, true
+}
+
+// NotifyTodoUpdate dispatches todo items to the handler bound in ctx, if any.
+func NotifyTodoUpdate(ctx context.Context, items []TodoItem) error {
+	handler, ok := TodoUpdateHandlerFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	return handler(ctx, items)
+}

@@ -128,6 +128,7 @@ const (
 	eventTypeReasoningDelta          = "reasoning_delta"
 	eventTypeToolCall                = "tool_call"
 	eventTypeToolCallUpdate          = "tool_call_update"
+	eventTypeTodoUpdate              = "todo_update"
 )
 
 const (
@@ -885,6 +886,13 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 		}
 		return nil
 	})
+	turnCtx = agents.WithTodoUpdateHandler(turnCtx, func(todoCtx context.Context, items []agents.TodoItem) error {
+		_ = todoCtx
+		return emit(eventTypeTodoUpdate, map[string]any{
+			"turnId": turnID,
+			"items":  items,
+		})
+	})
 	turnCtx = agents.WithSessionBoundHandler(turnCtx, func(sessionCtx context.Context, sessionID string) error {
 		_ = sessionCtx
 		sessionID = strings.TrimSpace(sessionID)
@@ -1097,6 +1105,13 @@ func (s *Server) handleCompactThread(w http.ResponseWriter, r *http.Request, cli
 			return nil
 		}
 		return appendOnlyEvent(eventType, event.EventPayload(turnID))
+	})
+	turnCtx = agents.WithTodoUpdateHandler(turnCtx, func(todoCtx context.Context, items []agents.TodoItem) error {
+		_ = todoCtx
+		return appendOnlyEvent(eventTypeTodoUpdate, map[string]any{
+			"turnId": turnID,
+			"items":  items,
+		})
 	})
 	stopReason, streamErr := streamAgent.Stream(turnCtx, compactPrompt, func(delta string) error {
 		aggregated.WriteString(delta)
