@@ -9,3 +9,11 @@ internal/webui/web/node_modules/
 internal/webui/web/dist/
 internal/webui/web/tsconfig.tsbuildinfo
 .codex
+# Build output
+ngent
+
+# Claude Code worktrees and session data
+.claude/
+
+# Generated deployment docs
+docs/DEPLOYMENT.md
