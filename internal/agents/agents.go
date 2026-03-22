@@ -1,6 +1,9 @@
 package agents
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // ByteRange marks byte offsets for one referenced resource window.
 type ByteRange struct {
@@ -281,3 +284,32 @@ func NotifyTodoUpdate(ctx context.Context, items []TodoItem) error {
 	}
 	return handler(ctx, items)
 }
+
+// MCPServer describes one configured MCP server.
+type MCPServer struct {
+	Name          string   `json:"name"`
+	OAuthRequired bool     `json:"oauthRequired,omitempty"`
+	Tools         []string `json:"tools,omitempty"`
+}
+
+// MCPCallParams are parameters for invoking an MCP tool.
+type MCPCallParams struct {
+	Server    string `json:"server"`
+	Tool      string `json:"tool"`
+	Arguments string `json:"arguments,omitempty"`
+}
+
+// MCPCallResult is the output from an MCP tool invocation.
+type MCPCallResult struct {
+	Output string `json:"output,omitempty"`
+}
+
+// MCPOAuthResult is the response from starting MCP OAuth.
+type MCPOAuthResult struct {
+	Status  string `json:"status"`
+	URL     string `json:"url,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// ErrMCPUnsupported is returned when the agent does not support MCP operations.
+var ErrMCPUnsupported = errors.New("agent does not support MCP operations")

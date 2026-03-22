@@ -301,6 +301,111 @@ func main() {
 				return agentimpl.SessionListResult{}, agentimpl.ErrSessionListUnsupported
 			}
 		},
+		MCPServersFactory: func(ctx context.Context, agentID string) ([]agentimpl.MCPServer, error) {
+			switch agentID {
+			case agentimpl.AgentIDCodex:
+				if codexPreflightErr != nil {
+					return nil, agentimpl.ErrMCPUnsupported
+				}
+				client, err := codexagent.New(codexagent.Config{
+					Name:          "codex-embedded",
+					RuntimeConfig: codexRuntimeConfig,
+				})
+				if err != nil {
+					return nil, err
+				}
+				if closer, ok := any(client).(io.Closer); ok {
+					defer closer.Close()
+				}
+				return client.MCPServers(ctx)
+			case agentimpl.AgentIDClaude:
+				if claudePreflightErr != nil {
+					return nil, agentimpl.ErrMCPUnsupported
+				}
+				client, err := claudeagent.New(claudeagent.Config{
+					Name: "claude-embedded",
+				})
+				if err != nil {
+					return nil, err
+				}
+				if closer, ok := any(client).(io.Closer); ok {
+					defer closer.Close()
+				}
+				return client.MCPServers(ctx)
+			default:
+				return nil, agentimpl.ErrMCPUnsupported
+			}
+		},
+		MCPCallFactory: func(ctx context.Context, agentID string, params agentimpl.MCPCallParams) (agentimpl.MCPCallResult, error) {
+			switch agentID {
+			case agentimpl.AgentIDCodex:
+				if codexPreflightErr != nil {
+					return agentimpl.MCPCallResult{}, agentimpl.ErrMCPUnsupported
+				}
+				client, err := codexagent.New(codexagent.Config{
+					Name:          "codex-embedded",
+					RuntimeConfig: codexRuntimeConfig,
+				})
+				if err != nil {
+					return agentimpl.MCPCallResult{}, err
+				}
+				if closer, ok := any(client).(io.Closer); ok {
+					defer closer.Close()
+				}
+				return client.MCPCall(ctx, params)
+			case agentimpl.AgentIDClaude:
+				if claudePreflightErr != nil {
+					return agentimpl.MCPCallResult{}, agentimpl.ErrMCPUnsupported
+				}
+				client, err := claudeagent.New(claudeagent.Config{
+					Name: "claude-embedded",
+				})
+				if err != nil {
+					return agentimpl.MCPCallResult{}, err
+				}
+				if closer, ok := any(client).(io.Closer); ok {
+					defer closer.Close()
+				}
+				return client.MCPCall(ctx, params)
+			default:
+				return agentimpl.MCPCallResult{}, agentimpl.ErrMCPUnsupported
+			}
+		},
+		MCPOAuthFactory: func(ctx context.Context, agentID string, server string) (agentimpl.MCPOAuthResult, error) {
+			switch agentID {
+			case agentimpl.AgentIDCodex:
+				if codexPreflightErr != nil {
+					return agentimpl.MCPOAuthResult{}, agentimpl.ErrMCPUnsupported
+				}
+				client, err := codexagent.New(codexagent.Config{
+					Name:          "codex-embedded",
+					RuntimeConfig: codexRuntimeConfig,
+				})
+				if err != nil {
+					return agentimpl.MCPOAuthResult{}, err
+				}
+				if closer, ok := any(client).(io.Closer); ok {
+					defer closer.Close()
+				}
+				return client.MCPOAuth(ctx, server)
+			case agentimpl.AgentIDClaude:
+				if claudePreflightErr != nil {
+					return agentimpl.MCPOAuthResult{}, agentimpl.ErrMCPUnsupported
+				}
+				client, err := claudeagent.New(claudeagent.Config{
+					Name: "claude-embedded",
+				})
+				if err != nil {
+					return agentimpl.MCPOAuthResult{}, err
+				}
+				if closer, ok := any(client).(io.Closer); ok {
+					defer closer.Close()
+				}
+				return client.MCPOAuth(ctx, server)
+			default:
+				return agentimpl.MCPOAuthResult{}, agentimpl.ErrMCPUnsupported
+			}
+		},
 		AgentProfilesMap: map[string][]httpapi.AgentProfile{
 			agentimpl.AgentIDCodex:  codexProfiles,
 			agentimpl.AgentIDClaude: {},

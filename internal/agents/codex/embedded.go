@@ -304,6 +304,119 @@ func (c *Client) listSessionsRaw(
 	return acpsession.ParseSessionListResult(result.Result)
 }
 
+// MCPServers lists available MCP servers for this agent.
+func (c *Client) MCPServers(ctx context.Context) ([]agents.MCPServer, error) {
+	if c == nil {
+		return nil, errors.New("codex: nil client")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	startCtx, cancel := context.WithTimeout(ctx, c.startTimeout)
+	defer cancel()
+
+	runtime, _, err := c.startRuntime(startCtx)
+	if err != nil {
+		return nil, err
+	}
+	defer runtime.Close()
+
+	result, err := c.clientRequest(startCtx, runtime, "mcpServer/list", map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("codex: mcpServer/list: %w", err)
+	}
+
+	var payload struct {
+		Servers []agents.MCPServer `json:"servers"`
+	}
+	if jsonErr := json.Unmarshal(result.Result, &payload); jsonErr != nil {
+		return nil, fmt.Errorf("codex: decode mcpServer/list result: %w", jsonErr)
+	}
+	if payload.Servers == nil {
+		payload.Servers = []agents.MCPServer{}
+	}
+	return payload.Servers, nil
+}
+
+// MCPCall invokes one MCP tool.
+func (c *Client) MCPCall(ctx context.Context, params agents.MCPCallParams) (agents.MCPCallResult, error) {
+	if c == nil {
+		return agents.MCPCallResult{}, errors.New("codex: nil client")
+	}
+	params.Server = strings.TrimSpace(params.Server)
+	params.Tool = strings.TrimSpace(params.Tool)
+	if params.Server == "" {
+		return agents.MCPCallResult{}, errors.New("codex: server is required")
+	}
+	if params.Tool == "" {
+		return agents.MCPCallResult{}, errors.New("codex: tool is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	startCtx, cancel := context.WithTimeout(ctx, c.startTimeout)
+	defer cancel()
+
+	runtime, _, err := c.startRuntime(startCtx)
+	if err != nil {
+		return agents.MCPCallResult{}, err
+	}
+	defer runtime.Close()
+
+	result, err := c.clientRequest(startCtx, runtime, "mcpServer/call", map[string]any{
+		"server":    params.Server,
+		"tool":      params.Tool,
+		"arguments": params.Arguments,
+	})
+	if err != nil {
+		return agents.MCPCallResult{}, fmt.Errorf("codex: mcpServer/call: %w", err)
+	}
+
+	var payload agents.MCPCallResult
+	if jsonErr := json.Unmarshal(result.Result, &payload); jsonErr != nil {
+		return agents.MCPCallResult{}, fmt.Errorf("codex: decode mcpServer/call result: %w", jsonErr)
+	}
+	return payload, nil
+}
+
+// MCPOAuth starts an MCP OAuth login flow for the given server.
+func (c *Client) MCPOAuth(ctx context.Context, server string) (agents.MCPOAuthResult, error) {
+	if c == nil {
+		return agents.MCPOAuthResult{}, errors.New("codex: nil client")
+	}
+	server = strings.TrimSpace(server)
+	if server == "" {
+		return agents.MCPOAuthResult{}, errors.New("codex: server is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	startCtx, cancel := context.WithTimeout(ctx, c.startTimeout)
+	defer cancel()
+
+	runtime, _, err := c.startRuntime(startCtx)
+	if err != nil {
+		return agents.MCPOAuthResult{}, err
+	}
+	defer runtime.Close()
+
+	result, err := c.clientRequest(startCtx, runtime, "mcpServer/oauth/login", map[string]any{
+		"server": server,
+	})
+	if err != nil {
+		return agents.MCPOAuthResult{}, fmt.Errorf("codex: mcpServer/oauth/login: %w", err)
+	}
+
+	var payload agents.MCPOAuthResult
+	if jsonErr := json.Unmarshal(result.Result, &payload); jsonErr != nil {
+		return agents.MCPOAuthResult{}, fmt.Errorf("codex: decode mcpServer/oauth/login result: %w", jsonErr)
+	}
+	return payload, nil
+}
+
 // SetConfigOption applies one ACP session config option and returns latest options.
 func (c *Client) SetConfigOption(ctx context.Context, configID, value string) ([]agents.ConfigOption, error) {
 	if c == nil {

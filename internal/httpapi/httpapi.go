@@ -83,6 +83,15 @@ type AgentModelsFactory func(ctx context.Context, agentID string) ([]agents.Mode
 // Returns agents.ErrSessionListUnsupported if the agent does not support session listing.
 type AgentSessionsFactory func(ctx context.Context, agentID, cwd, cursor string) (agents.SessionListResult, error)
 
+// AgentMCPServersFactory lists MCP servers for one agent. May be nil.
+type AgentMCPServersFactory func(ctx context.Context, agentID string) ([]agents.MCPServer, error)
+
+// AgentMCPCallFactory invokes an MCP tool for one agent. May be nil.
+type AgentMCPCallFactory func(ctx context.Context, agentID string, params agents.MCPCallParams) (agents.MCPCallResult, error)
+
+// AgentMCPOAuthFactory starts MCP OAuth for one agent. May be nil.
+type AgentMCPOAuthFactory func(ctx context.Context, agentID string, server string) (agents.MCPOAuthResult, error)
+
 // Config controls HTTP API behavior.
 type Config struct {
 	AuthToken            string
@@ -95,12 +104,18 @@ type Config struct {
 	TurnAgentFactory     TurnAgentFactory
 	AgentModelsFactory   AgentModelsFactory
 	AgentSessionsFactory AgentSessionsFactory
-	AgentIdleTTL         time.Duration
-	Logger               *slog.Logger
-	ContextRecentTurns   int
-	ContextMaxChars      int
-	CompactMaxChars      int
-	PermissionTimeout    time.Duration
+	// MCPServersFactory lists MCP servers for an agent. May be nil.
+	MCPServersFactory AgentMCPServersFactory
+	// MCPCallFactory invokes an MCP tool for an agent. May be nil.
+	MCPCallFactory AgentMCPCallFactory
+	// MCPOAuthFactory starts MCP OAuth for an agent. May be nil.
+	MCPOAuthFactory    AgentMCPOAuthFactory
+	AgentIdleTTL       time.Duration
+	Logger             *slog.Logger
+	ContextRecentTurns int
+	ContextMaxChars    int
+	CompactMaxChars    int
+	PermissionTimeout  time.Duration
 	// AgentProfilesMap maps agentID → named profiles for that agent.
 	AgentProfilesMap map[string][]AgentProfile
 	// FrontendHandler, if non-nil, is served for any request that does not
@@ -119,6 +134,9 @@ type Server struct {
 	turnAgentFactory     TurnAgentFactory
 	agentModelsFactory   AgentModelsFactory
 	agentSessionsFactory AgentSessionsFactory
+	mcpServersFactory    AgentMCPServersFactory
+	mcpCallFactory       AgentMCPCallFactory
+	mcpOAuthFactory      AgentMCPOAuthFactory
 	agentProfilesMap     map[string][]AgentProfile
 	agentIdleTTL         time.Duration
 	logger               *slog.Logger
@@ -243,6 +261,9 @@ func New(cfg Config) *Server {
 		turnAgentFactory:     turnAgentFactory,
 		agentModelsFactory:   cfg.AgentModelsFactory,
 		agentSessionsFactory: cfg.AgentSessionsFactory,
+		mcpServersFactory:    cfg.MCPServersFactory,
+		mcpCallFactory:       cfg.MCPCallFactory,
+		mcpOAuthFactory:      cfg.MCPOAuthFactory,
 		agentProfilesMap:     cfg.AgentProfilesMap,
 		agentIdleTTL:         agentIdleTTL,
 		logger:               logger,
@@ -348,6 +369,18 @@ func (s *Server) routeV1(w http.ResponseWriter, r *http.Request, clientID string
 		s.handleAgentSessions(w, r, agentID)
 		return
 	}
+	if agentID, ok := parseAgentMCPServersPath(r.URL.Path); ok {
+		s.handleAgentMCPServers(w, r, agentID)
+		return
+	}
+	if agentID, ok := parseAgentMCPCallPath(r.URL.Path); ok {
+		s.handleAgentMCPCall(w, r, agentID)
+		return
+	}
+	if agentID, ok := parseAgentMCPOAuthPath(r.URL.Path); ok {
+		s.handleAgentMCPOAuth(w, r, agentID)
+		return
+	}
 
 	if r.URL.Path == "/v1/path-search" {
 		s.handlePathSearch(w, r)
@@ -374,6 +407,10 @@ func (s *Server) routeV1(w http.ResponseWriter, r *http.Request, clientID string
 		return
 	}
 
+	if threadID, mcpSub, ok := parseThreadMCPPath(r.URL.Path); ok {
+		s.handleThreadMCPResource(w, r, clientID, threadID, mcpSub)
+		return
+	}
 	if threadID, subresource, ok := parseThreadPath(r.URL.Path); ok {
 		s.handleThreadResource(w, r, clientID, threadID, subresource)
 		return
@@ -492,6 +529,140 @@ func (s *Server) handleAgentSessions(w http.ResponseWriter, r *http.Request, age
 		result.Sessions = []agents.SessionInfo{}
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleAgentMCPServers(w http.ResponseWriter, r *http.Request, agentID string) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, r)
+		return
+	}
+	if _, ok := s.allowedAgent[agentID]; !ok {
+		writeError(w, http.StatusNotFound, codeNotFound, "agent not found", map[string]any{"agent": agentID})
+		return
+	}
+	if s.mcpServersFactory == nil {
+		writeError(w, http.StatusServiceUnavailable, codeUpstreamUnavailable,
+			"MCP is not configured", map[string]any{"agent": agentID})
+		return
+	}
+	servers, err := s.mcpServersFactory(r.Context(), agentID)
+	if err != nil {
+		if errors.Is(err, agents.ErrMCPUnsupported) {
+			writeError(w, http.StatusServiceUnavailable, codeUpstreamUnavailable,
+				"agent does not support MCP operations", map[string]any{"agent": agentID})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, codeInternal,
+			"failed to list MCP servers", map[string]any{"agent": agentID, "reason": err.Error()})
+		return
+	}
+	if servers == nil {
+		servers = []agents.MCPServer{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"servers": servers})
+}
+
+func (s *Server) handleAgentMCPCall(w http.ResponseWriter, r *http.Request, agentID string) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, r)
+		return
+	}
+	if _, ok := s.allowedAgent[agentID]; !ok {
+		writeError(w, http.StatusNotFound, codeNotFound, "agent not found", map[string]any{"agent": agentID})
+		return
+	}
+	if s.mcpCallFactory == nil {
+		writeError(w, http.StatusServiceUnavailable, codeUpstreamUnavailable,
+			"MCP is not configured", map[string]any{"agent": agentID})
+		return
+	}
+	var params agents.MCPCallParams
+	if err := decodeJSONBody(r, &params); err != nil {
+		writeError(w, http.StatusBadRequest, codeInvalidArgument, "invalid JSON body", map[string]any{"reason": err.Error()})
+		return
+	}
+	params.Server = strings.TrimSpace(params.Server)
+	params.Tool = strings.TrimSpace(params.Tool)
+	if params.Server == "" {
+		writeError(w, http.StatusBadRequest, codeInvalidArgument, "server is required", map[string]any{"field": "server"})
+		return
+	}
+	if params.Tool == "" {
+		writeError(w, http.StatusBadRequest, codeInvalidArgument, "tool is required", map[string]any{"field": "tool"})
+		return
+	}
+	result, err := s.mcpCallFactory(r.Context(), agentID, params)
+	if err != nil {
+		if errors.Is(err, agents.ErrMCPUnsupported) {
+			writeError(w, http.StatusServiceUnavailable, codeUpstreamUnavailable,
+				"agent does not support MCP operations", map[string]any{"agent": agentID})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, codeInternal,
+			"failed to invoke MCP tool", map[string]any{"agent": agentID, "reason": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleAgentMCPOAuth(w http.ResponseWriter, r *http.Request, agentID string) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, r)
+		return
+	}
+	if _, ok := s.allowedAgent[agentID]; !ok {
+		writeError(w, http.StatusNotFound, codeNotFound, "agent not found", map[string]any{"agent": agentID})
+		return
+	}
+	if s.mcpOAuthFactory == nil {
+		writeError(w, http.StatusServiceUnavailable, codeUpstreamUnavailable,
+			"MCP is not configured", map[string]any{"agent": agentID})
+		return
+	}
+	var body struct {
+		Server string `json:"server"`
+	}
+	if err := decodeJSONBody(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, codeInvalidArgument, "invalid JSON body", map[string]any{"reason": err.Error()})
+		return
+	}
+	body.Server = strings.TrimSpace(body.Server)
+	if body.Server == "" {
+		writeError(w, http.StatusBadRequest, codeInvalidArgument, "server is required", map[string]any{"field": "server"})
+		return
+	}
+	result, err := s.mcpOAuthFactory(r.Context(), agentID, body.Server)
+	if err != nil {
+		if errors.Is(err, agents.ErrMCPUnsupported) {
+			writeError(w, http.StatusServiceUnavailable, codeUpstreamUnavailable,
+				"agent does not support MCP operations", map[string]any{"agent": agentID})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, codeInternal,
+			"failed to start MCP OAuth", map[string]any{"agent": agentID, "reason": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleThreadMCPResource handles /v1/threads/{threadID}/mcp/{sub} requests.
+func (s *Server) handleThreadMCPResource(w http.ResponseWriter, r *http.Request, clientID, threadID, mcpSub string) {
+	thread, ok := s.getOwnedThread(r.Context(), clientID, threadID)
+	if !ok {
+		writeError(w, http.StatusNotFound, codeNotFound, "thread not found", map[string]any{})
+		return
+	}
+	agentID := thread.AgentID
+	switch mcpSub {
+	case "servers":
+		s.handleAgentMCPServers(w, r, agentID)
+	case "call":
+		s.handleAgentMCPCall(w, r, agentID)
+	case "oauth":
+		s.handleAgentMCPOAuth(w, r, agentID)
+	default:
+		writeError(w, http.StatusNotFound, codeNotFound, "endpoint not found", map[string]any{"path": r.URL.Path})
+	}
 }
 
 func (s *Server) handleThreadsCollection(w http.ResponseWriter, r *http.Request, clientID string) {
@@ -2544,6 +2715,41 @@ func parseAgentSessionsPath(path string) (agentID string, ok bool) {
 
 func parseAgentProfilesPath(path string) (agentID string, ok bool) {
 	return parseAgentSubPath(path, "/profiles")
+}
+
+func parseAgentMCPServersPath(path string) (agentID string, ok bool) {
+	return parseAgentSubPath(path, "/mcp/servers")
+}
+
+func parseAgentMCPCallPath(path string) (agentID string, ok bool) {
+	return parseAgentSubPath(path, "/mcp/call")
+}
+
+func parseAgentMCPOAuthPath(path string) (agentID string, ok bool) {
+	return parseAgentSubPath(path, "/mcp/oauth")
+}
+
+// parseThreadMCPPath matches /v1/threads/{threadId}/mcp/{mcpSub} and returns the threadID and mcpSub.
+func parseThreadMCPPath(path string) (threadID, mcpSub string, ok bool) {
+	const prefix = "/v1/threads/"
+	const mcpInfix = "/mcp/"
+	if !strings.HasPrefix(path, prefix) {
+		return "", "", false
+	}
+	rest := strings.TrimPrefix(path, prefix)
+	idx := strings.Index(rest, mcpInfix)
+	if idx < 0 {
+		return "", "", false
+	}
+	tid := rest[:idx]
+	if tid == "" || strings.Contains(tid, "/") {
+		return "", "", false
+	}
+	sub := rest[idx+len(mcpInfix):]
+	if sub == "" || strings.Contains(sub, "/") {
+		return "", "", false
+	}
+	return tid, sub, true
 }
 
 func parsePermissionPath(path string) (permissionID string, ok bool) {
