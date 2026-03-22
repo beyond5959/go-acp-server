@@ -35,6 +35,17 @@ type AgentInfo struct {
 	Status string `json:"status"`
 }
 
+// AgentProfile is one named runtime profile preset.
+type AgentProfile struct {
+	Name               string `json:"name"`
+	Model              string `json:"model,omitempty"`
+	ThoughtLevel       string `json:"thoughtLevel,omitempty"`
+	ApprovalPolicy     string `json:"approvalPolicy,omitempty"`
+	Sandbox            string `json:"sandbox,omitempty"`
+	Personality        string `json:"personality,omitempty"`
+	SystemInstructions string `json:"systemInstructions,omitempty"`
+}
+
 // ThreadStore is the storage contract required by HTTP APIs.
 type ThreadStore interface {
 	UpsertClient(ctx context.Context, clientID string) error
@@ -89,6 +100,8 @@ type Config struct {
 	ContextMaxChars      int
 	CompactMaxChars      int
 	PermissionTimeout    time.Duration
+	// AgentProfilesMap maps agentID → named profiles for that agent.
+	AgentProfilesMap map[string][]AgentProfile
 	// FrontendHandler, if non-nil, is served for any request that does not
 	// match /healthz or /v1/*. Intended for the embedded web UI.
 	FrontendHandler http.Handler
@@ -105,6 +118,7 @@ type Server struct {
 	turnAgentFactory     TurnAgentFactory
 	agentModelsFactory   AgentModelsFactory
 	agentSessionsFactory AgentSessionsFactory
+	agentProfilesMap     map[string][]AgentProfile
 	agentIdleTTL         time.Duration
 	logger               *slog.Logger
 	contextRecentTurns   int
@@ -227,6 +241,7 @@ func New(cfg Config) *Server {
 		turnAgentFactory:     turnAgentFactory,
 		agentModelsFactory:   cfg.AgentModelsFactory,
 		agentSessionsFactory: cfg.AgentSessionsFactory,
+		agentProfilesMap:     cfg.AgentProfilesMap,
 		agentIdleTTL:         agentIdleTTL,
 		logger:               logger,
 		contextRecentTurns:   contextRecentTurns,
@@ -323,6 +338,10 @@ func (s *Server) routeV1(w http.ResponseWriter, r *http.Request, clientID string
 		s.handleAgentModels(w, r, agentID)
 		return
 	}
+	if agentID, ok := parseAgentProfilesPath(r.URL.Path); ok {
+		s.handleAgentProfiles(w, r, agentID)
+		return
+	}
 	if agentID, ok := parseAgentSessionsPath(r.URL.Path); ok {
 		s.handleAgentSessions(w, r, agentID)
 		return
@@ -417,6 +436,24 @@ func (s *Server) handleAgentModels(w http.ResponseWriter, r *http.Request, agent
 		"agentId": agentID,
 		"models":  models,
 	})
+}
+
+func (s *Server) handleAgentProfiles(w http.ResponseWriter, r *http.Request, agentID string) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, r)
+		return
+	}
+	if _, ok := s.allowedAgent[agentID]; !ok {
+		writeError(w, http.StatusNotFound, codeNotFound, "agent not found", map[string]any{"agent": agentID})
+		return
+	}
+	profiles := s.agentProfilesMap[agentID]
+	if profiles == nil {
+		profiles = []AgentProfile{}
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Profiles []AgentProfile `json:"profiles"`
+	}{Profiles: profiles})
 }
 
 func (s *Server) handleAgentSessions(w http.ResponseWriter, r *http.Request, agentID string) {
@@ -2481,6 +2518,21 @@ func parseAgentModelsPath(path string) (agentID string, ok bool) {
 func parseAgentSessionsPath(path string) (agentID string, ok bool) {
 	const prefix = "/v1/agents/"
 	const suffix = "/sessions"
+	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
+		return "", false
+	}
+	raw := strings.TrimSuffix(strings.TrimPrefix(path, prefix), suffix)
+	raw = strings.Trim(raw, "/")
+	if raw == "" || strings.Contains(raw, "/") {
+		return "", false
+	}
+	return raw, true
+}
+
+// parseAgentProfilesPath matches /v1/agents/{agentId}/profiles
+func parseAgentProfilesPath(path string) (agentID string, ok bool) {
+	const prefix = "/v1/agents/"
+	const suffix = "/profiles"
 	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
 		return "", false
 	}

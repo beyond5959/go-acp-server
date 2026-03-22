@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/beyond5959/acp-adapter/pkg/claudeacp"
 	"github.com/beyond5959/acp-adapter/pkg/codexacp"
 	agentimpl "github.com/beyond5959/ngent/internal/agents"
 	"github.com/beyond5959/ngent/internal/agents/acpmodel"
@@ -65,6 +66,9 @@ func main() {
 
 	codexRuntimeConfig := codexagent.DefaultRuntimeConfig()
 	codexPreflightErr := codexagent.Preflight(codexRuntimeConfig)
+
+	claudeRuntimeConfig := claudeagent.DefaultRuntimeConfig()
+
 	opencodePreflightErr := opencodeagent.Preflight()
 	geminiPreflightErr := geminiagent.Preflight()
 	kimiPreflightErr := kimiagent.Preflight()
@@ -254,6 +258,7 @@ func main() {
 				return nil, fmt.Errorf("unsupported agent %q", agentID)
 			}
 		},
+		AgentProfilesMap:   buildAgentProfilesMap(codexRuntimeConfig, claudeRuntimeConfig),
 		ContextRecentTurns: *contextRecentTurns,
 		ContextMaxChars:    *contextMaxChars,
 		CompactMaxChars:    *compactMaxChars,
@@ -723,6 +728,37 @@ func extractConfigOverrides(agentOptionsJSON string) map[string]string {
 		return nil
 	}
 	return normalized
+}
+
+func buildAgentProfilesMap(codexCfg codexacp.RuntimeConfig, claudeCfg claudeacp.RuntimeConfig) map[string][]httpapi.AgentProfile {
+	codexProfiles := make([]httpapi.AgentProfile, 0, len(codexCfg.Profiles))
+	for name, p := range codexCfg.Profiles {
+		codexProfiles = append(codexProfiles, httpapi.AgentProfile{
+			Name:               name,
+			Model:              p.Model,
+			ThoughtLevel:       p.ThoughtLevel,
+			ApprovalPolicy:     p.ApprovalPolicy,
+			Sandbox:            p.Sandbox,
+			Personality:        p.Personality,
+			SystemInstructions: p.SystemInstructions,
+		})
+	}
+	claudeProfiles := make([]httpapi.AgentProfile, 0, len(claudeCfg.Profiles))
+	for name, p := range claudeCfg.Profiles {
+		claudeProfiles = append(claudeProfiles, httpapi.AgentProfile{
+			Name:               name,
+			Model:              p.Model,
+			ThoughtLevel:       p.ThoughtLevel,
+			ApprovalPolicy:     p.ApprovalPolicy,
+			Sandbox:            p.Sandbox,
+			Personality:        p.Personality,
+			SystemInstructions: p.SystemInstructions,
+		})
+	}
+	return map[string][]httpapi.AgentProfile{
+		agentimpl.AgentIDCodex:  codexProfiles,
+		agentimpl.AgentIDClaude: claudeProfiles,
+	}
 }
 
 func supportedAgents(codexAvailable, opencodeAvailable, geminiAvailable, kimiAvailable, qwenAvailable, claudeAvailable bool) []httpapi.AgentInfo {
