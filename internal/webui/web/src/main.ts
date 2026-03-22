@@ -99,12 +99,17 @@ const iconChevronRight = `<svg width="12" height="12" viewBox="0 0 24 24" fill="
   <path d="m9 18 6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`
 
+const iconDotsHorizontal = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+  <circle cx="3" cy="7" r="1.15" fill="currentColor"/>
+  <circle cx="7" cy="7" r="1.15" fill="currentColor"/>
+  <circle cx="11" cy="7" r="1.15" fill="currentColor"/>
+</svg>`
+
 const codexIconURL = '/codex-icon.png'
 const geminiIconURL = '/gemini-icon.png'
 const claudeIconURL = '/claude-icon.png'
 const qwenIconURL = '/qwen-icon.png'
 
-const defaultConfigCatalogCacheKey = '__default__'
 const threadConfigCache = new Map<string, ConfigOption[]>()
 const agentConfigCatalogCache = new Map<string, ConfigOption[]>()
 const agentConfigCatalogInFlight = new Map<string, Promise<ConfigOption[]>>()
@@ -188,7 +193,8 @@ function normalizeConfigCatalogOptions(options: ConfigOption[]): ConfigOption[] 
 function normalizeAgentConfigCatalogKey(agentId: string, modelId = ''): string {
   const normalizedAgentID = agentId.trim().toLowerCase()
   if (!normalizedAgentID) return ''
-  const normalizedModelID = modelId.trim() || defaultConfigCatalogCacheKey
+  const normalizedModelID = modelId.trim()
+  if (!normalizedModelID) return ''
   return `${normalizedAgentID}::${normalizedModelID}`
 }
 
@@ -612,7 +618,10 @@ function cacheAgentConfigCatalog(agentId: string, modelId: string, options: Conf
 function cacheThreadConfigOptions(thread: Thread, options: ConfigOption[], selectedModelID?: string): ConfigOption[] {
   const normalized = normalizeConfigOptions(options)
   threadConfigCache.set(thread.threadId, normalized)
-  cacheAgentConfigCatalog(thread.agent ?? '', selectedModelID ?? fallbackThreadModelID(thread), normalized)
+  const cacheModelID = selectedModelID?.trim() || fallbackThreadModelID(thread)
+  if (cacheModelID) {
+    cacheAgentConfigCatalog(thread.agent ?? '', cacheModelID, normalized)
+  }
   return normalized
 }
 
@@ -708,7 +717,8 @@ async function loadThreadConfigOptions(threadId: string): Promise<ConfigOption[]
 
   const task = api.getThreadConfigOptions(thread.threadId)
     .then(options => {
-      cacheThreadConfigOptions(thread, options, selectedModelID)
+      const nextModelID = findModelOption(options)?.currentValue?.trim() || selectedModelID
+      cacheThreadConfigOptions(thread, options, nextModelID)
       return cloneConfigOptions(getThreadConfigOptionsForRender(thread))
     })
     .finally(() => {
@@ -717,6 +727,23 @@ async function loadThreadConfigOptions(threadId: string): Promise<ConfigOption[]
 
   if (catalogKey) agentConfigCatalogInFlight.set(catalogKey, task)
   return task
+}
+
+async function refreshThreadConfigState(threadId: string): Promise<void> {
+  const thread = store.get().threads.find(item => item.threadId === threadId)
+  if (!thread) return
+
+  const options = await api.getThreadConfigOptions(thread.threadId)
+  const nextModelID = findModelOption(options)?.currentValue?.trim() || fallbackThreadModelID(thread)
+  const normalized = cacheThreadConfigOptions(thread, options, nextModelID)
+  const state = store.get()
+  store.set({
+    threads: state.threads.map(item => (
+      item.threadId === thread.threadId
+        ? { ...item, agentOptions: buildThreadAgentOptions(item.agentOptions, normalized) }
+        : item
+    )),
+  })
 }
 
 async function loadThreadSlashCommands(threadId: string, force = false): Promise<SlashCommand[]> {
@@ -1449,6 +1476,7 @@ async function switchThreadSession(thread: Thread, nextSessionID: string): Promi
     const updatedThread = await api.updateThread(thread.threadId, {
       agentOptions: buildThreadAgentOptionsWithSession(thread.agentOptions, targetSessionID),
     })
+    threadConfigCache.delete(thread.threadId)
     const state = store.get()
     const nextMessages = !targetSessionID
       ? activateFreshSessionScope(thread.threadId, state.messages)
@@ -1490,6 +1518,17 @@ function renderSessionItem(item: SessionInfo, active: boolean, loading: boolean)
     </button>`
 }
 
+function prependEphemeralSession(
+  sessions: SessionInfo[],
+  knownIDs: Set<string>,
+  sessionID: string,
+): void {
+  const normalized = sessionID.trim()
+  if (!normalized || knownIDs.has(normalized)) return
+  knownIDs.add(normalized)
+  sessions.unshift({ sessionId: normalized, title: normalized })
+}
+
 function renderSessionPanel(): string {
   const { activeThreadId, threads, streamStates } = store.get()
   const thread = activeThreadId ? threads.find(item => item.threadId === activeThreadId) : null
@@ -1513,16 +1552,20 @@ function renderSessionPanel(): string {
   const disabled = switching
   const refreshDisabled = disabled || state.loading || state.loadingMore
 
+  const loadingSessionIDs = Object.values(streamStates)
+    .filter(streamState => streamState.threadId === thread.threadId && !!streamState.sessionId)
+    .map(streamState => streamState.sessionId.trim())
+    .filter(Boolean)
+
   const knownIDs = new Set(state.sessions.map(item => item.sessionId))
   const sessions = [...state.sessions]
-  if (selectedSessionID && !knownIDs.has(selectedSessionID)) {
-    sessions.unshift({ sessionId: selectedSessionID, title: selectedSessionID })
+  for (let i = loadingSessionIDs.length - 1; i >= 0; i -= 1) {
+    prependEphemeralSession(sessions, knownIDs, loadingSessionIDs[i])
   }
-  const loadingSessionIDs = new Set(
-    Object.values(streamStates)
-      .filter(streamState => streamState.threadId === thread.threadId && !!streamState.sessionId)
-      .map(streamState => streamState.sessionId),
-  )
+  if (selectedSessionID && !knownIDs.has(selectedSessionID)) {
+    prependEphemeralSession(sessions, knownIDs, selectedSessionID)
+  }
+  const loadingSessionIDSet = new Set(loadingSessionIDs)
 
   let bodyHTML = ''
   if (state.loading && !sessions.length) {
@@ -1536,7 +1579,7 @@ function renderSessionPanel(): string {
       ? sessions.map(item => renderSessionItem(
           item,
           item.sessionId === selectedSessionID,
-          loadingSessionIDs.has(item.sessionId),
+          loadingSessionIDSet.has(item.sessionId),
         )).join('')
       : `<div class="session-panel-empty">No previous sessions for this working directory.</div>`
     const showMoreHTML = state.nextCursor
@@ -1760,6 +1803,10 @@ function shouldShowReasoningSwitch(configOption: ConfigOption | null): boolean {
   return countConfigOptionChoices(configOption) > 1
 }
 
+function shouldShowModelSwitch(configOption: ConfigOption | null): boolean {
+  return countConfigOptionChoices(configOption) > 0
+}
+
 function fallbackThreadConfigValue(thread: Thread, configId: string): string {
   const trimmedConfigID = configId.trim()
   if (!trimmedConfigID) return ''
@@ -1782,7 +1829,10 @@ function currentValueForConfig(options: ConfigOption[], configId: string): strin
 
 function getThreadConfigOptionsForRender(thread: Thread): ConfigOption[] {
   const threadOptions = threadConfigCache.get(thread.threadId) ?? []
-  const agentCatalog = getAgentConfigCatalog(thread.agent ?? '', fallbackThreadModelID(thread))
+  const selectedModelID = fallbackThreadModelID(thread)
+  const agentCatalog = selectedModelID
+    ? getAgentConfigCatalog(thread.agent ?? '', selectedModelID)
+    : []
 
   if (!agentCatalog.length) {
     return cloneConfigOptions(threadOptions)
@@ -1940,9 +1990,10 @@ function renderComposerConfigSwitch(
   pickerData: ConfigPickerData,
   labels: ConfigPickerLabels,
   disabled: boolean,
+  visible = true,
 ): string {
   return `
-    <div class="thread-model-switch thread-model-switch--composer" data-picker-key="${escHtml(key)}">
+    <div class="thread-model-switch thread-model-switch--composer" data-picker-key="${escHtml(key)}" ${visible ? '' : 'hidden'}>
       <button
         id="thread-${escHtml(key)}-trigger"
         class="thread-model-trigger"
@@ -2000,6 +2051,16 @@ function renderAgentAvatar(agentId: string, variant: 'thread' | 'message'): stri
   return escHtml((agentId || 'A').slice(0, 1).toUpperCase())
 }
 
+function hasAgentAvatarIcon(agentId: string): boolean {
+  const normalized = (agentId || '').trim().toLowerCase()
+  return normalized === 'codex'
+    || normalized === 'gemini'
+    || normalized === 'claude'
+    || normalized === 'kimi'
+    || normalized === 'opencode'
+    || normalized === 'qwen'
+}
+
 type ThreadActivityIndicator = 'loading' | 'done' | null
 
 function renderThreadStatusIndicator(status: ThreadActivityIndicator): string {
@@ -2048,6 +2109,7 @@ function renderThreadItem(
 ): string {
   const isActive = t.threadId === activeId
   const isMenuOpen = openThreadActionMenuId === t.threadId
+  const hasIconAvatar = hasAgentAvatarIcon(t.agent ?? '')
   const avatar = renderAgentAvatar(t.agent ?? '', 'thread')
   const displayTitle = threadTitle(t)
   const relTime = t.updatedAt ? formatRelativeTime(t.updatedAt) : ''
@@ -2058,22 +2120,24 @@ function renderThreadItem(
          role="button"
          tabindex="0"
          aria-label="${escHtml(displayTitle)}">
-      <div class="thread-item-avatar ${isActive ? '' : 'thread-item-avatar--inactive'}">${avatar}</div>
+      <div class="thread-item-avatar ${hasIconAvatar ? 'thread-item-avatar--icon' : (isActive ? '' : 'thread-item-avatar--inactive')}">${avatar}</div>
       <div class="thread-item-body">
         <div class="thread-item-title">${escHtml(displayTitle)}</div>
         <div class="thread-item-foot">
           <span class="badge badge--agent">${escHtml(t.agent ?? '')}</span>
-          <span class="thread-item-time">${relTime}</span>
         </div>
       </div>
       <div class="thread-item-actions">
         ${renderThreadStatusIndicator(activityIndicator)}
-        <button class="btn btn-ghost btn-sm thread-item-menu-trigger" type="button"
-                data-thread-id="${escHtml(t.threadId)}"
-                aria-expanded="${isMenuOpen ? 'true' : 'false'}"
-                aria-label="Agent actions">
-          ...
-        </button>
+        <div class="thread-item-action-meta">
+          <button class="btn btn-ghost btn-sm thread-item-menu-trigger" type="button"
+                  data-thread-id="${escHtml(t.threadId)}"
+                  aria-expanded="${isMenuOpen ? 'true' : 'false'}"
+                  aria-label="Agent actions">
+            ${iconDotsHorizontal}
+          </button>
+          ${relTime ? `<span class="thread-item-time thread-item-time--actions">${relTime}</span>` : ''}
+        </div>
       </div>
     </div>`
 }
@@ -2395,6 +2459,18 @@ async function loadHistory(threadId: string): Promise<void> {
           if (replay.supported && replay.messages.length) {
             const replayMessages = sessionTranscriptToMessages(replay.messages, requestedSessionID)
             nextMessages = mergeSessionReplayMessages(replayMessages, localMessages)
+          }
+
+          if (replay.supported) {
+            void refreshThreadConfigState(threadId).then(() => {
+              const refreshedState = store.get()
+              if (refreshedState.activeThreadId !== threadId) return
+              const refreshedThread = refreshedState.threads.find(item => item.threadId === threadId)
+              if (!refreshedThread || threadSessionID(refreshedThread) !== requestedSessionID) return
+              if (activeStreamMsgId) return
+              bindThreadConfigSwitches(refreshedThread)
+              updateInputState()
+            }).catch(() => {})
           }
         } catch {
           nextMessages = localMessages
@@ -3353,7 +3429,8 @@ function renderChatThread(t: Thread): string {
     loadingConfig,
     reasoningPickerLabels,
   )
-  const showReasoningSwitch = shouldShowReasoningSwitch(reasoningOption)
+  const showModelSwitch = modelPickerData.state === 'ready' && shouldShowModelSwitch(modelOption)
+  const showReasoningSwitch = reasoningPickerData.state === 'ready' && shouldShowReasoningSwitch(reasoningOption)
   const isSwitching = threadConfigSwitching.has(t.threadId)
 
   return `
@@ -3392,10 +3469,8 @@ function renderChatThread(t: Thread): string {
         ></textarea>
         <div class="input-compose-bar">
           <div class="thread-config-switches">
-            ${renderComposerConfigSwitch('model', 'Model', modelPickerData, modelPickerLabels, isSwitching)}
-            ${showReasoningSwitch
-              ? renderComposerConfigSwitch('reasoning', 'Reasoning', reasoningPickerData, reasoningPickerLabels, isSwitching)
-              : ''}
+            ${renderComposerConfigSwitch('model', 'Model', modelPickerData, modelPickerLabels, isSwitching, showModelSwitch)}
+            ${renderComposerConfigSwitch('reasoning', 'Reasoning', reasoningPickerData, reasoningPickerLabels, isSwitching, showReasoningSwitch)}
           </div>
           <button class="btn btn-primary btn-send" id="send-btn" aria-label="Send message">
             ${iconSend}
@@ -3500,8 +3575,8 @@ function bindThreadConfigSwitches(thread: Thread): void {
       reasoning: reasoningPickerLabels,
     } as const
     const visibleByKey = {
-      model: true,
-      reasoning: shouldShowReasoningSwitch(reasoningOption),
+      model: pickerDataByKey.model.state === 'ready' && shouldShowModelSwitch(modelOption),
+      reasoning: pickerDataByKey.reasoning.state === 'ready' && shouldShowReasoningSwitch(reasoningOption),
     } as const
 
     switchEls.forEach(switchEl => {
@@ -3611,6 +3686,7 @@ function bindThreadConfigSwitches(thread: Thread): void {
     const triggerEl = switchEl.querySelector<HTMLButtonElement>('.thread-model-trigger')
     const menuEl = switchEl.querySelector<HTMLDivElement>('.thread-model-menu')
     if (!triggerEl || !menuEl) return
+    if (switchEl.dataset.bound === 'true') return
 
     const toggleMenu = (): void => {
       const expanded = triggerEl.getAttribute('aria-expanded') === 'true'
@@ -3655,6 +3731,7 @@ function bindThreadConfigSwitches(thread: Thread): void {
     }
     triggerEl.addEventListener('keydown', onEsc)
     menuEl.addEventListener('keydown', onEsc)
+    switchEl.dataset.bound = 'true'
   })
 }
 
@@ -4056,6 +4133,13 @@ function handleSend(): void {
         toolCalls: finalToolCalls,
         reasoning: hasReasoningText(finalReasoning) ? finalReasoning : undefined,
       })
+      void refreshThreadConfigState(capturedThreadID)
+        .then(() => {
+          if (store.get().activeThreadId === capturedThreadID && !activeStreamMsgId) {
+            updateChatArea()
+          }
+        })
+        .catch(() => {})
     },
 
     onError({ code, message: msg }) {
@@ -4082,6 +4166,13 @@ function handleSend(): void {
         toolCalls:    finalToolCalls,
         reasoning:    hasReasoningText(finalReasoning) ? finalReasoning : undefined,
       })
+      void refreshThreadConfigState(capturedThreadID)
+        .then(() => {
+          if (store.get().activeThreadId === capturedThreadID && !activeStreamMsgId) {
+            updateChatArea()
+          }
+        })
+        .catch(() => {})
     },
 
     onDisconnect() {
@@ -4107,6 +4198,13 @@ function handleSend(): void {
         toolCalls:    finalToolCalls,
         reasoning:    hasReasoningText(finalReasoning) ? finalReasoning : undefined,
       })
+      void refreshThreadConfigState(capturedThreadID)
+        .then(() => {
+          if (store.get().activeThreadId === capturedThreadID && !activeStreamMsgId) {
+            updateChatArea()
+          }
+        })
+        .catch(() => {})
     },
   })
 

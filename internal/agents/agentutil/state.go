@@ -149,6 +149,43 @@ func (s *State) ApplyConfigOptionResult(configID, requestedValue string, options
 	s.SetConfigOverride(configID, current)
 }
 
+// ApplyConfigOptionsSnapshot updates common state from one full ACP config snapshot.
+func (s *State) ApplyConfigOptionsSnapshot(options []agents.ConfigOption) {
+	if s == nil || len(options) == 0 {
+		return
+	}
+
+	modelID := ""
+	overrides := make(map[string]string)
+	for _, option := range options {
+		configID := strings.TrimSpace(option.ID)
+		if configID == "" {
+			continue
+		}
+		if strings.EqualFold(configID, "model") || strings.EqualFold(strings.TrimSpace(option.Category), "model") {
+			if current := strings.TrimSpace(option.CurrentValue); current != "" {
+				modelID = current
+			}
+			continue
+		}
+
+		if current := strings.TrimSpace(option.CurrentValue); current != "" {
+			overrides[configID] = current
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if modelID != "" {
+		s.modelID = modelID
+	}
+	if len(overrides) == 0 {
+		s.configOverrides = nil
+		return
+	}
+	s.configOverrides = overrides
+}
+
 func normalizeConfigOverrides(input map[string]string) map[string]string {
 	if len(input) == 0 {
 		return nil

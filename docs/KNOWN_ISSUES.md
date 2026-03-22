@@ -372,6 +372,23 @@
 - Follow-up plan:
   - reduce test startup latency and remove package-parallel sensitivity in the ACP-heavy fake-process suites so default `go test ./...` stays stable without extra flags.
 
+- ID: KI-036
+- Title: Fresh agents do not expose model/reasoning metadata until one real session reports it
+- Status: Open
+- Severity: Low
+- Affects: brand-new threads or fresh installs before any real turn / resumed-session turn has returned `configOptions`
+- Symptom:
+  - `GET /v1/agents/{agentId}/models` can return an empty list for an agent that has never reported config metadata into sqlite.
+  - `GET /v1/threads/{threadId}/config-options` returns an empty `configOptions` list for a fresh thread until a real `session/new` or `session/load` runs during a turn.
+  - the Web UI therefore hides model/reasoning controls until after that first real session snapshot arrives.
+  - once a specific session has already been learned, switching back to that same session now restores its cached model/reasoning snapshot immediately.
+  - switching directly onto an unseen existing session can also reveal controls immediately if that user-triggered `session/load` returns config metadata.
+  - only sessions whose real `session/new` / `session/load` have never yielded config metadata remain empty.
+- Workaround:
+  - send one real turn on the thread, or switch to an existing session and let ngent load it once so the session's config snapshot can be learned.
+- Follow-up plan:
+  - if upstream CLIs eventually expose model/config catalogs without creating sessions, consider adopting those non-session surfaces so ngent can prefill metadata without reintroducing empty probe sessions.
+
 ## Recently Closed
 
 - ID: KI-033

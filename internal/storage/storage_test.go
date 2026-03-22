@@ -570,6 +570,65 @@ func TestSessionTranscriptCacheCRUD(t *testing.T) {
 	}
 }
 
+func TestSessionConfigCacheCRUD(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer func() {
+		_ = store.Close()
+	}()
+
+	base := time.Date(2026, 3, 22, 9, 0, 0, 0, time.UTC)
+	counter := 0
+	store.now = func() time.Time {
+		counter++
+		return base.Add(time.Duration(counter) * time.Second)
+	}
+
+	if _, err := store.GetSessionConfigCache(ctx, "codex", "/tmp/project", "session-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetSessionConfigCache(missing) err = %v, want ErrNotFound", err)
+	}
+
+	if err := store.UpsertSessionConfigCache(ctx, UpsertSessionConfigCacheParams{
+		AgentID:           "codex",
+		CWD:               "/tmp/project",
+		SessionID:         "session-1",
+		ConfigOptionsJSON: `[{"id":"model","currentValue":"gpt-5.3-codex"}]`,
+	}); err != nil {
+		t.Fatalf("UpsertSessionConfigCache(first): %v", err)
+	}
+
+	cache, err := store.GetSessionConfigCache(ctx, "codex", "/tmp/project", "session-1")
+	if err != nil {
+		t.Fatalf("GetSessionConfigCache(first): %v", err)
+	}
+	if cache.ConfigOptionsJSON != `[{"id":"model","currentValue":"gpt-5.3-codex"}]` {
+		t.Fatalf("config_options_json = %q", cache.ConfigOptionsJSON)
+	}
+	if got, want := cache.UpdatedAt, base.Add(1*time.Second); !got.Equal(want) {
+		t.Fatalf("updated_at = %s, want %s", got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
+	}
+
+	if err := store.UpsertSessionConfigCache(ctx, UpsertSessionConfigCacheParams{
+		AgentID:           "codex",
+		CWD:               "/tmp/project",
+		SessionID:         "session-1",
+		ConfigOptionsJSON: `[{"id":"model","currentValue":"gpt-5.2-codex"}]`,
+	}); err != nil {
+		t.Fatalf("UpsertSessionConfigCache(update): %v", err)
+	}
+
+	updated, err := store.GetSessionConfigCache(ctx, "codex", "/tmp/project", "session-1")
+	if err != nil {
+		t.Fatalf("GetSessionConfigCache(update): %v", err)
+	}
+	if updated.ConfigOptionsJSON != `[{"id":"model","currentValue":"gpt-5.2-codex"}]` {
+		t.Fatalf("updated config_options_json = %q", updated.ConfigOptionsJSON)
+	}
+	if got, want := updated.UpdatedAt, base.Add(2*time.Second); !got.Equal(want) {
+		t.Fatalf("updated updated_at = %s, want %s", got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
+	}
+}
+
 func TestAgentSlashCommandsCRUD(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)

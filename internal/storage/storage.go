@@ -96,6 +96,23 @@ type UpsertSessionTranscriptCacheParams struct {
 	MessagesJSON string
 }
 
+// SessionConfigCache stores one persisted provider session config snapshot.
+type SessionConfigCache struct {
+	AgentID           string
+	CWD               string
+	SessionID         string
+	ConfigOptionsJSON string
+	UpdatedAt         time.Time
+}
+
+// UpsertSessionConfigCacheParams contains input for UpsertSessionConfigCache.
+type UpsertSessionConfigCacheParams struct {
+	AgentID           string
+	CWD               string
+	SessionID         string
+	ConfigOptionsJSON string
+}
+
 // Turn stores one persisted turn row.
 type Turn struct {
 	TurnID       string
@@ -777,6 +794,89 @@ func (s *Store) UpsertSessionTranscriptCache(
 	return nil
 }
 
+// GetSessionConfigCache returns one persisted provider session config snapshot.
+func (s *Store) GetSessionConfigCache(
+	ctx context.Context,
+	agentID, cwd, sessionID string,
+) (SessionConfigCache, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			agent_id,
+			cwd,
+			session_id,
+			config_options_json,
+			updated_at
+		FROM session_config_cache
+		WHERE agent_id = ? AND cwd = ? AND session_id = ?;
+	`, strings.TrimSpace(agentID), strings.TrimSpace(cwd), strings.TrimSpace(sessionID))
+
+	var (
+		cache       SessionConfigCache
+		updatedAtDB string
+	)
+	if err := row.Scan(
+		&cache.AgentID,
+		&cache.CWD,
+		&cache.SessionID,
+		&cache.ConfigOptionsJSON,
+		&updatedAtDB,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return SessionConfigCache{}, ErrNotFound
+		}
+		return SessionConfigCache{}, fmt.Errorf("storage: get session config cache: %w", err)
+	}
+
+	updatedAt, err := parseTime(updatedAtDB)
+	if err != nil {
+		return SessionConfigCache{}, fmt.Errorf("storage: parse session config cache.updated_at: %w", err)
+	}
+	cache.UpdatedAt = updatedAt
+	return cache, nil
+}
+
+// UpsertSessionConfigCache stores one provider session config snapshot.
+func (s *Store) UpsertSessionConfigCache(
+	ctx context.Context,
+	params UpsertSessionConfigCacheParams,
+) error {
+	if strings.TrimSpace(params.AgentID) == "" {
+		return errors.New("storage: agentID is required")
+	}
+	if strings.TrimSpace(params.CWD) == "" {
+		return errors.New("storage: cwd is required")
+	}
+	if strings.TrimSpace(params.SessionID) == "" {
+		return errors.New("storage: sessionID is required")
+	}
+	if strings.TrimSpace(params.ConfigOptionsJSON) == "" {
+		params.ConfigOptionsJSON = "[]"
+	}
+
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO session_config_cache (
+			agent_id,
+			cwd,
+			session_id,
+			config_options_json,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(agent_id, cwd, session_id) DO UPDATE SET
+			config_options_json = excluded.config_options_json,
+			updated_at = excluded.updated_at;
+	`,
+		strings.TrimSpace(params.AgentID),
+		strings.TrimSpace(params.CWD),
+		strings.TrimSpace(params.SessionID),
+		params.ConfigOptionsJSON,
+		formatTime(s.now()),
+	); err != nil {
+		return fmt.Errorf("storage: upsert session config cache: %w", err)
+	}
+
+	return nil
+}
+
 // ListThreadsByClient returns all threads for one client.
 func (s *Store) ListThreadsByClient(ctx context.Context, clientID string) ([]Thread, error) {
 	rows, err := s.db.QueryContext(ctx, `
@@ -1292,7 +1392,6 @@ func boolToSQLiteInt(v bool) int {
 func sqliteIntToBool(v int) bool {
 	return v != 0
 }
-
 
 // ListRecentDirectories returns the most recently used directories from threads.
 // Returns up to limit unique directories, ordered by most recent update time.

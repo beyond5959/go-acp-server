@@ -299,6 +299,12 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 			}
 			return agents.StopReasonEndTurn, fmt.Errorf("claude: initialize runtime: %w", err)
 		}
+		c.mu.Lock()
+		configOptions := acpmodel.CloneConfigOptions(c.configOptions)
+		c.mu.Unlock()
+		if err := agents.NotifyConfigOptions(ctx, configOptions); err != nil {
+			return agents.StopReasonEndTurn, fmt.Errorf("claude: report config options: %w", err)
+		}
 		if c.supportsLoadSession() {
 			if err := agents.NotifySessionBound(ctx, sessionID); err != nil {
 				return agents.StopReasonEndTurn, fmt.Errorf("claude: report session bound: %w", err)
@@ -590,14 +596,16 @@ func (c *Client) ensureInitialized(ctx context.Context) (*claudeacp.EmbeddedRunt
 			_ = runtime.Close()
 			return nil, "", agents.ErrSessionLoadUnsupported
 		}
-		if _, err := c.clientRequest(startCtx, runtime, "session/load", map[string]any{
+		loadResp, err := c.clientRequest(startCtx, runtime, "session/load", map[string]any{
 			"sessionId":  sessionID,
 			"cwd":        c.Dir(),
 			"mcpServers": []any{},
-		}); err != nil {
+		})
+		if err != nil {
 			_ = runtime.Close()
 			return nil, "", fmt.Errorf("claude: session/load failed: %w", err)
 		}
+		configOptions = acpmodel.ExtractConfigOptions(loadResp.Result)
 	} else {
 		newParams := map[string]any{
 			"cwd": c.Dir(),
@@ -623,6 +631,7 @@ func (c *Client) ensureInitialized(ctx context.Context) (*claudeacp.EmbeddedRunt
 		_ = runtime.Close()
 		return nil, "", err
 	}
+	c.ApplyConfigOptionsSnapshot(configOptions)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()

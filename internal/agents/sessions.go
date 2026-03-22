@@ -56,7 +56,8 @@ type SessionTranscriptRequest struct {
 
 // SessionTranscriptResult contains one session transcript payload.
 type SessionTranscriptResult struct {
-	Messages []SessionTranscriptMessage `json:"messages"`
+	Messages      []SessionTranscriptMessage `json:"messages"`
+	ConfigOptions []ConfigOption             `json:"configOptions,omitempty"`
 }
 
 // SessionTranscriptLoader exposes replayable session transcript messages.
@@ -194,7 +195,7 @@ func CloneSessionListResult(result SessionListResult) SessionListResult {
 
 // CloneSessionTranscriptResult returns a trimmed deep copy of one session transcript.
 func CloneSessionTranscriptResult(result SessionTranscriptResult) SessionTranscriptResult {
-	if len(result.Messages) == 0 {
+	if len(result.Messages) == 0 && len(result.ConfigOptions) == 0 {
 		return SessionTranscriptResult{}
 	}
 
@@ -218,6 +219,10 @@ func CloneSessionTranscriptResult(result SessionTranscriptResult) SessionTranscr
 	}
 	if len(cloned.Messages) == 0 {
 		cloned.Messages = nil
+	}
+	cloned.ConfigOptions = CloneConfigOptions(result.ConfigOptions)
+	if len(cloned.ConfigOptions) == 0 {
+		cloned.ConfigOptions = nil
 	}
 	return cloned
 }

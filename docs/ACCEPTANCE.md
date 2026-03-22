@@ -433,3 +433,38 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - `go test ./internal/httpapi -run 'TestTurnsSSEIncludesToolCallUpdatesAndPersistsHistory' -count=1`
   - `cd internal/webui/web && npm run build`
   - `go test ./...`
+
+## Requirement 26: Session-Driven Model and Reasoning Discovery
+
+- Operation:
+  - create a fresh thread for a config-capable agent.
+  - call `GET /v1/threads/{threadId}/config-options` before any turn.
+  - run one real turn on that thread, or switch the thread to an existing session so a user-triggered `session/load` executes.
+  - call `GET /v1/threads/{threadId}/config-options`, `GET /v1/threads/{threadId}`, and optionally `GET /v1/agents/{agentId}/models` after the turn.
+  - switch the same thread onto a different existing session and observe the config UI before and after the next turn.
+- Expected:
+  - before any real session lifecycle call, `GET /v1/threads/{threadId}/config-options` returns an empty `configOptions` list instead of probing upstream.
+  - ngent does not need startup refresh or read-only config/model endpoints to create provider sessions just to discover metadata.
+  - once a real `session/new` or `session/load` returns `configOptions`, sqlite is updated immediately:
+    - the thread row reflects the actual current `modelId` / `configOverrides`
+    - the agent config catalog stores the snapshot under the actual current model id
+    - the session-scoped snapshot is stored under the actual `sessionId` when one is known
+  - after that real turn, `GET /v1/threads/{threadId}/config-options` returns the stored snapshot and `POST /v1/threads/{threadId}/config-options` can update selections without opening a probe session.
+  - switching to an existing session clears stale thread-local model/reasoning selections until the next `session/load` reports the destination session's real config.
+  - switching back to a previously learned session restores its stored model/reasoning snapshot immediately, without requiring another turn.
+  - switching directly onto an existing session can also reveal model/reasoning controls immediately when that session's user-triggered `session/load` returns config metadata, even if the thread itself has not sent a new turn yet.
+  - the Web UI hides model/reasoning controls before metadata exists and reveals them only after a real session snapshot has been learned.
+  - `/v1/agents/{agentId}/models` returns only sqlite-backed learned models and may legitimately be empty on a brand-new agent.
+- Verification commands (executed 2026-03-22):
+  - `go test ./internal/httpapi -run 'Test(V1AgentModels|V1AgentModelsUsesStoredCatalog|V1AgentModelsEmptyWhenNoStoredCatalog|ThreadConfigOptionsGetAndSetModel|ThreadConfigOptionsGetUsesStoredCatalog|ThreadConfigOptionsPersistConfigOverrides|ThreadConfigOptionsRestoreFromSessionCacheAfterSessionSwitch|ThreadSessionHistoryEndpointPersistsConfigOptionsForSelectedSession|ThreadSessionHistoryEndpointReloadsLiveWhenTranscriptCachedButConfigMissing|ThreadConfigOptionsUnsupportedManager)$' -count=1`
+  - `cd internal/webui/web && npm run build`
+  - `go test ./...`
+  - real Kimi Web UI validation:
+    - run `go run ./cmd/ngent -db-path /tmp/ngent-session-config.db -port 8687 --debug`
+    - send one real message to create a fresh session and learn model metadata
+    - switch to an older session and confirm the model button hides when that session has no cached snapshot
+    - switch back to the fresh learned session and confirm the model button reappears immediately without sending another turn
+  - real Codex Web UI validation:
+    - run `go run ./cmd/ngent -db-path /tmp/ngent-session-load-config.db -port 8687 --debug`
+    - without sending any turn, click an existing Codex session from the sidebar
+    - confirm `Model` and `Reasoning` buttons appear immediately after the user-triggered session switch

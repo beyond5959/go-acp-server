@@ -51,6 +51,8 @@ type ThreadStore interface {
 	UpsertAgentSlashCommands(ctx context.Context, params storage.UpsertAgentSlashCommandsParams) error
 	GetSessionTranscriptCache(ctx context.Context, agentID, cwd, sessionID string) (storage.SessionTranscriptCache, error)
 	UpsertSessionTranscriptCache(ctx context.Context, params storage.UpsertSessionTranscriptCacheParams) error
+	GetSessionConfigCache(ctx context.Context, agentID, cwd, sessionID string) (storage.SessionConfigCache, error)
+	UpsertSessionConfigCache(ctx context.Context, params storage.UpsertSessionConfigCacheParams) error
 	ListThreadsByClient(ctx context.Context, clientID string) ([]storage.Thread, error)
 	CreateTurn(ctx context.Context, params storage.CreateTurnParams) (storage.Turn, error)
 	GetTurn(ctx context.Context, turnID string) (storage.Turn, error)
@@ -140,6 +142,8 @@ const (
 	codeInternal            = "INTERNAL"
 	codeUpstreamUnavailable = "UPSTREAM_UNAVAILABLE"
 )
+
+var errThreadConfigOptionsUnavailable = errors.New("thread config options are not available yet")
 
 // New creates a new API server.
 func New(cfg Config) *Server {
@@ -390,16 +394,8 @@ func (s *Server) handleAgentModels(w http.ResponseWriter, r *http.Request, agent
 		})
 		return
 	}
-	if !found && s.agentModelsFactory != nil {
-		discovered, err := s.agentModelsFactory(r.Context(), agentID)
-		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, codeUpstreamUnavailable, "failed to query agent models", map[string]any{
-				"agent":  agentID,
-				"reason": err.Error(),
-			})
-			return
-		}
-		models = acpmodel.NormalizeModelOptions(discovered)
+	if !found {
+		models = []agents.ModelOption{}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -608,13 +604,22 @@ func (s *Server) handleUpdateThread(w http.ResponseWriter, r *http.Request, clie
 			writeError(w, http.StatusBadRequest, codeInvalidArgument, "agentOptions must be a JSON object", map[string]any{"field": "agentOptions"})
 			return
 		}
+
+		nextSessionID := threadSessionID(agentOptionsJSON)
+		if nextSessionID != "" && nextSessionID != currentSessionID {
+			agentOptionsJSON, err = withoutThreadConfigState(agentOptionsJSON)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, codeInvalidArgument, "agentOptions must be a JSON object", map[string]any{"field": "agentOptions"})
+				return
+			}
+		}
 		sessionOnlyUpdate, err = isSessionOnlyAgentOptionsUpdate(thread.AgentOptionsJSON, agentOptionsJSON)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, codeInvalidArgument, "agentOptions must be a JSON object", map[string]any{"field": "agentOptions"})
 			return
 		}
 
-		nextSessionID := threadSessionID(agentOptionsJSON)
+		nextSessionID = threadSessionID(agentOptionsJSON)
 		shouldRequestFreshSession := currentFreshSession
 		switch {
 		case nextSessionID != "":
@@ -885,6 +890,11 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 		}
 		return nil
 	})
+	turnCtx = agents.WithConfigOptionsHandler(turnCtx, func(configOptionsCtx context.Context, options []agents.ConfigOption) error {
+		_ = configOptionsCtx
+		s.persistThreadConfigSnapshotBestEffort(persistCtx, &thread, options)
+		return nil
+	})
 	turnCtx = agents.WithSessionBoundHandler(turnCtx, func(sessionCtx context.Context, sessionID string) error {
 		_ = sessionCtx
 		sessionID = strings.TrimSpace(sessionID)
@@ -928,6 +938,7 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 					)
 				}
 				thread.AgentOptionsJSON = nextAgentOptionsJSON
+				s.persistThreadSessionConfigSnapshotBestEffort(persistCtx, thread)
 			}
 		}
 
@@ -1420,7 +1431,16 @@ func (s *Server) handleThreadSessionHistory(w http.ResponseWriter, r *http.Reque
 		})
 		return
 	}
-	if found {
+	_, configFound, configErr := s.loadStoredSessionConfigOptions(r.Context(), thread, sessionID)
+	if configErr != nil {
+		writeError(w, http.StatusInternalServerError, codeInternal, "failed to load session config cache", map[string]any{
+			"threadId":  thread.ThreadID,
+			"sessionId": sessionID,
+			"reason":    configErr.Error(),
+		})
+		return
+	}
+	if found && configFound {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"threadId":  thread.ThreadID,
 			"sessionId": sessionID,
@@ -1444,6 +1464,15 @@ func (s *Server) handleThreadSessionHistory(w http.ResponseWriter, r *http.Reque
 
 	loader, ok := provider.(agents.SessionTranscriptLoader)
 	if !ok {
+		if found {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"threadId":  thread.ThreadID,
+				"sessionId": sessionID,
+				"supported": true,
+				"messages":  cachedResult.Messages,
+			})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"threadId":  thread.ThreadID,
 			"sessionId": sessionID,
@@ -1458,6 +1487,15 @@ func (s *Server) handleThreadSessionHistory(w http.ResponseWriter, r *http.Reque
 		SessionID: sessionID,
 	})
 	if err != nil {
+		if found {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"threadId":  thread.ThreadID,
+				"sessionId": sessionID,
+				"supported": true,
+				"messages":  cachedResult.Messages,
+			})
+			return
+		}
 		if errors.Is(err, agents.ErrSessionLoadUnsupported) || errors.Is(err, agents.ErrSessionListUnsupported) {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"threadId":  thread.ThreadID,
@@ -1484,6 +1522,7 @@ func (s *Server) handleThreadSessionHistory(w http.ResponseWriter, r *http.Reque
 	}
 
 	result = agents.CloneSessionTranscriptResult(result)
+	s.persistSessionLoadConfigSnapshotBestEffort(r.Context(), &thread, sessionID, result.ConfigOptions)
 	if err := s.persistSessionTranscriptCache(r.Context(), thread, sessionID, result); err != nil {
 		s.logger.Warn("session_history.cache_persist_failed",
 			"threadId", thread.ThreadID,
@@ -1585,8 +1624,6 @@ func (s *Server) handleThreadConfigOptions(w http.ResponseWriter, r *http.Reques
 
 	switch r.Method {
 	case http.MethodGet:
-		var provider any
-		modelID, overrides := threadConfigSelections(thread.AgentOptionsJSON)
 		options, found, err := s.loadStoredThreadConfigOptions(r.Context(), thread)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, codeInternal, "failed to load stored thread config options", map[string]any{
@@ -1596,34 +1633,8 @@ func (s *Server) handleThreadConfigOptions(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		if !found {
-			manager, err := s.resolveThreadConfigOptionManager(thread)
-			if err != nil {
-				writeError(w, http.StatusServiceUnavailable, codeUpstreamUnavailable, "failed to resolve config options manager", map[string]any{
-					"agent":  thread.AgentID,
-					"reason": err.Error(),
-				})
-				return
-			}
-			provider = manager
-			options, err = manager.ConfigOptions(r.Context())
-			if err != nil {
-				writeError(w, http.StatusServiceUnavailable, codeUpstreamUnavailable, "failed to query thread config options", map[string]any{
-					"threadId": thread.ThreadID,
-					"reason":   err.Error(),
-				})
-				return
-			}
-			liveOptions := acpmodel.NormalizeConfigOptions(options)
-			if persistErr := s.persistAgentConfigCatalog(r.Context(), thread.AgentID, thread.AgentOptionsJSON, liveOptions); persistErr != nil {
-				s.logger.Warn("config_catalog.persist_failed",
-					"threadId", thread.ThreadID,
-					"agent", thread.AgentID,
-					"reason", persistErr.Error(),
-				)
-			}
-			options = applyThreadConfigSelections(liveOptions, modelID, overrides)
+			options = []agents.ConfigOption{}
 		}
-		s.persistThreadSlashCommandsBestEffort(r.Context(), thread, provider)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"threadId":      thread.ThreadID,
 			"configOptions": options,
@@ -1655,6 +1666,12 @@ func (s *Server) handleThreadConfigOptions(w http.ResponseWriter, r *http.Reques
 
 		currentOptions, err := s.loadThreadConfigOptionsForUpdate(r.Context(), thread)
 		if err != nil {
+			if errors.Is(err, errThreadConfigOptionsUnavailable) {
+				writeError(w, http.StatusConflict, codeConflict, "thread config options are not available yet", map[string]any{
+					"threadId": thread.ThreadID,
+				})
+				return
+			}
 			writeError(w, http.StatusServiceUnavailable, codeUpstreamUnavailable, "failed to load thread config options", map[string]any{
 				"threadId": thread.ThreadID,
 				"reason":   err.Error(),
@@ -2548,13 +2565,36 @@ func (s *Server) loadStoredAgentModels(ctx context.Context, agentID string) ([]a
 
 func (s *Server) loadStoredThreadConfigOptions(ctx context.Context, thread storage.Thread) ([]agents.ConfigOption, bool, error) {
 	modelID, overrides := threadConfigSelections(thread.AgentOptionsJSON)
+	if modelID != "" {
+		catalog, err := s.store.GetAgentConfigCatalog(ctx, thread.AgentID, modelID)
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
 
-	lookupModelID := modelID
-	if lookupModelID == "" {
-		lookupModelID = storage.DefaultAgentConfigCatalogModelID
+		options, err := decodeStoredConfigOptions(catalog.ConfigOptionsJSON)
+		if err != nil {
+			return nil, false, err
+		}
+		return applyThreadConfigSelections(options, modelID, overrides), true, nil
 	}
 
-	catalog, err := s.store.GetAgentConfigCatalog(ctx, thread.AgentID, lookupModelID)
+	sessionID := threadSessionID(thread.AgentOptionsJSON)
+	if sessionID == "" {
+		return nil, false, nil
+	}
+
+	return s.loadStoredSessionConfigOptions(ctx, thread, sessionID)
+}
+
+func (s *Server) loadStoredSessionConfigOptions(
+	ctx context.Context,
+	thread storage.Thread,
+	sessionID string,
+) ([]agents.ConfigOption, bool, error) {
+	cache, err := s.store.GetSessionConfigCache(ctx, thread.AgentID, thread.CWD, sessionID)
 	if errors.Is(err, storage.ErrNotFound) {
 		return nil, false, nil
 	}
@@ -2562,11 +2602,11 @@ func (s *Server) loadStoredThreadConfigOptions(ctx context.Context, thread stora
 		return nil, false, err
 	}
 
-	options, err := decodeStoredConfigOptions(catalog.ConfigOptionsJSON)
+	options, err := decodeStoredConfigOptions(cache.ConfigOptionsJSON)
 	if err != nil {
 		return nil, false, err
 	}
-	return applyThreadConfigSelections(options, modelID, overrides), true, nil
+	return options, true, nil
 }
 
 func (s *Server) loadStoredAgentConfigOptions(
@@ -2604,17 +2644,7 @@ func (s *Server) loadThreadConfigOptionsForUpdate(
 	if found {
 		return options, nil
 	}
-
-	manager, err := s.resolveThreadConfigOptionManager(thread)
-	if err != nil {
-		return nil, err
-	}
-	options, err = manager.ConfigOptions(ctx)
-	if err != nil {
-		return nil, err
-	}
-	modelID, overrides := threadConfigSelections(thread.AgentOptionsJSON)
-	return applyThreadConfigSelections(acpmodel.NormalizeConfigOptions(options), modelID, overrides), nil
+	return nil, errThreadConfigOptionsUnavailable
 }
 
 func (s *Server) loadStoredAgentSlashCommands(ctx context.Context, agentID string) ([]agents.SlashCommand, bool, error) {
@@ -2730,6 +2760,9 @@ func (s *Server) updatedThreadConfigOptions(
 		}
 		if found {
 			baseOptions = storedOptions
+		} else {
+			baseOptions = modelOnlyThreadConfigOptions(currentOptions)
+			nextOverrides = nil
 		}
 	}
 
@@ -2803,6 +2836,144 @@ func (s *Server) persistAgentConfigCatalogBestEffort(
 	}
 }
 
+func (s *Server) persistThreadConfigSnapshotBestEffort(
+	ctx context.Context,
+	thread *storage.Thread,
+	options []agents.ConfigOption,
+) {
+	if thread == nil {
+		return
+	}
+
+	normalized := acpmodel.NormalizeConfigOptions(options)
+	if len(normalized) == 0 {
+		return
+	}
+
+	currentModel := strings.TrimSpace(acpmodel.CurrentValueForConfig(normalized, "model"))
+	nextAgentOptionsJSON, err := withThreadConfigState(thread.AgentOptionsJSON, currentModel, normalized)
+	if err != nil {
+		s.logger.Warn("thread.config_snapshot_encode_failed",
+			"threadId", thread.ThreadID,
+			"agent", thread.AgentID,
+			"reason", err.Error(),
+		)
+		return
+	}
+	if nextAgentOptionsJSON != thread.AgentOptionsJSON {
+		if err := s.store.UpdateThreadAgentOptions(ctx, thread.ThreadID, nextAgentOptionsJSON); err != nil {
+			s.logger.Warn("thread.config_snapshot_persist_failed",
+				"threadId", thread.ThreadID,
+				"agent", thread.AgentID,
+				"reason", err.Error(),
+			)
+			return
+		}
+		thread.AgentOptionsJSON = nextAgentOptionsJSON
+	}
+	if err := s.persistAgentConfigCatalog(ctx, thread.AgentID, thread.AgentOptionsJSON, normalized); err != nil {
+		s.logger.Warn("config_catalog.persist_failed",
+			"threadId", thread.ThreadID,
+			"agent", thread.AgentID,
+			"reason", err.Error(),
+		)
+	}
+	s.persistSessionConfigSnapshotBestEffort(ctx, *thread, normalized)
+}
+
+func (s *Server) persistThreadSessionConfigSnapshotBestEffort(ctx context.Context, thread storage.Thread) {
+	options, found, err := s.loadStoredThreadConfigOptions(ctx, thread)
+	if err != nil {
+		s.logger.Warn("thread.session_config_restore_failed",
+			"threadId", thread.ThreadID,
+			"agent", thread.AgentID,
+			"sessionId", threadSessionID(thread.AgentOptionsJSON),
+			"reason", err.Error(),
+		)
+		return
+	}
+	if !found {
+		return
+	}
+	s.persistSessionConfigSnapshotBestEffort(ctx, thread, options)
+}
+
+func (s *Server) persistSessionConfigSnapshotBestEffort(
+	ctx context.Context,
+	thread storage.Thread,
+	options []agents.ConfigOption,
+) {
+	s.persistSessionConfigSnapshotForSessionIDBestEffort(ctx, thread, threadSessionID(thread.AgentOptionsJSON), options)
+}
+
+func (s *Server) persistSessionConfigSnapshotForSessionIDBestEffort(
+	ctx context.Context,
+	thread storage.Thread,
+	sessionID string,
+	options []agents.ConfigOption,
+) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+
+	configOptionsJSON, err := encodeStoredConfigOptions(options)
+	if err != nil {
+		s.logger.Warn("thread.session_config_encode_failed",
+			"threadId", thread.ThreadID,
+			"agent", thread.AgentID,
+			"sessionId", sessionID,
+			"reason", err.Error(),
+		)
+		return
+	}
+
+	if err := s.store.UpsertSessionConfigCache(ctx, storage.UpsertSessionConfigCacheParams{
+		AgentID:           thread.AgentID,
+		CWD:               thread.CWD,
+		SessionID:         sessionID,
+		ConfigOptionsJSON: configOptionsJSON,
+	}); err != nil {
+		s.logger.Warn("thread.session_config_persist_failed",
+			"threadId", thread.ThreadID,
+			"agent", thread.AgentID,
+			"sessionId", sessionID,
+			"reason", err.Error(),
+		)
+	}
+}
+
+func (s *Server) persistSessionLoadConfigSnapshotBestEffort(
+	ctx context.Context,
+	thread *storage.Thread,
+	sessionID string,
+	options []agents.ConfigOption,
+) {
+	if thread == nil {
+		return
+	}
+
+	normalized := acpmodel.NormalizeConfigOptions(options)
+	if len(normalized) == 0 {
+		return
+	}
+
+	if threadSessionID(thread.AgentOptionsJSON) == strings.TrimSpace(sessionID) {
+		s.persistThreadConfigSnapshotBestEffort(ctx, thread, normalized)
+		return
+	}
+
+	if err := s.persistAgentConfigCatalog(ctx, thread.AgentID, thread.AgentOptionsJSON, normalized); err != nil {
+		s.logger.Warn("config_catalog.persist_failed",
+			"threadId", thread.ThreadID,
+			"agent", thread.AgentID,
+			"sessionId", sessionID,
+			"reason", err.Error(),
+		)
+	}
+	s.persistSessionConfigSnapshotForSessionIDBestEffort(ctx, *thread, sessionID, normalized)
+}
+
 func (s *Server) persistAgentSlashCommands(
 	ctx context.Context,
 	agentID string,
@@ -2859,6 +3030,25 @@ func withThreadConfigState(agentOptionsJSON, modelID string, options []agents.Co
 	} else {
 		objectValue["configOverrides"] = configOverrides
 	}
+
+	normalized, err := json.Marshal(objectValue)
+	if err != nil {
+		return "", err
+	}
+	return string(normalized), nil
+}
+
+func withoutThreadConfigState(agentOptionsJSON string) (string, error) {
+	objectValue := map[string]any{}
+	trimmed := strings.TrimSpace(agentOptionsJSON)
+	if trimmed != "" {
+		if err := json.Unmarshal([]byte(trimmed), &objectValue); err != nil {
+			return "", err
+		}
+	}
+
+	delete(objectValue, "modelId")
+	delete(objectValue, "configOverrides")
 
 	normalized, err := json.Marshal(objectValue)
 	if err != nil {
@@ -3064,7 +3254,25 @@ func isSessionOnlyAgentOptionsUpdate(currentAgentOptionsJSON, nextAgentOptionsJS
 	if err != nil {
 		return false, err
 	}
-	return currentWithoutSessionID == nextWithoutSessionID, nil
+	if currentWithoutSessionID == nextWithoutSessionID {
+		return threadSessionID(currentAgentOptionsJSON) != threadSessionID(nextAgentOptionsJSON) ||
+			threadFreshSessionRequested(currentAgentOptionsJSON) != threadFreshSessionRequested(nextAgentOptionsJSON), nil
+	}
+
+	currentComparable, err := withoutThreadConfigState(currentWithoutSessionID)
+	if err != nil {
+		return false, err
+	}
+	nextComparable, err := withoutThreadConfigState(nextWithoutSessionID)
+	if err != nil {
+		return false, err
+	}
+	if currentComparable != nextComparable {
+		return false, nil
+	}
+
+	return threadSessionID(currentAgentOptionsJSON) != threadSessionID(nextAgentOptionsJSON) ||
+		threadFreshSessionRequested(currentAgentOptionsJSON) != threadFreshSessionRequested(nextAgentOptionsJSON), nil
 }
 
 func withThreadSessionID(agentOptionsJSON, sessionID string) (string, bool, error) {
@@ -3164,6 +3372,14 @@ func applyThreadConfigSelections(
 	}
 
 	return acpmodel.NormalizeConfigOptions(cloned)
+}
+
+func modelOnlyThreadConfigOptions(options []agents.ConfigOption) []agents.ConfigOption {
+	modelOption, ok := acpmodel.FindModelConfigOption(options)
+	if !ok {
+		return nil
+	}
+	return acpmodel.NormalizeConfigOptions([]agents.ConfigOption{modelOption})
 }
 
 func isPathAllowed(path string, roots []string) bool {

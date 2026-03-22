@@ -118,4 +118,18 @@ var migrations = []migration{
 			);`,
 		},
 	},
+	{
+		version: 9,
+		name:    "create_session_config_cache",
+		sql: []string{
+			`CREATE TABLE IF NOT EXISTS session_config_cache (
+				agent_id TEXT NOT NULL,
+				cwd TEXT NOT NULL,
+				session_id TEXT NOT NULL,
+				config_options_json TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (agent_id, cwd, session_id)
+			);`,
+		},
+	},
 }

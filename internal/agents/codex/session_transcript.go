@@ -2,12 +2,14 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/beyond5959/acp-adapter/pkg/codexacp"
 	"github.com/beyond5959/ngent/internal/agents"
+	"github.com/beyond5959/ngent/internal/agents/acpmodel"
 	"github.com/beyond5959/ngent/internal/observability"
 )
 
@@ -119,11 +121,12 @@ func (c *Client) collectSessionReplay(
 	defer unsubscribe()
 
 	type loadResult struct {
-		err error
+		err    error
+		result json.RawMessage
 	}
 	loadDone := make(chan loadResult, 1)
 	go func() {
-		_, err := c.clientRequest(ctx, runtime, "session/load", map[string]any{
+		rawResult, err := c.clientRequest(ctx, runtime, "session/load", map[string]any{
 			"sessionId":  sessionID,
 			"cwd":        c.Dir(),
 			"mcpServers": []any{},
@@ -132,7 +135,7 @@ func (c *Client) collectSessionReplay(
 			loadDone <- loadResult{err: fmt.Errorf("codex: session/load failed: %w", err)}
 			return
 		}
-		loadDone <- loadResult{}
+		loadDone <- loadResult{result: rawResult.Result}
 	}()
 
 	for {
@@ -146,7 +149,9 @@ func (c *Client) collectSessionReplay(
 			if err := drainCodexReplayUpdates(collector, updates); err != nil {
 				return agents.SessionTranscriptResult{}, err
 			}
-			return collector.Result(), nil
+			replay := collector.Result()
+			replay.ConfigOptions = acpmodel.ExtractConfigOptions(result.result)
+			return agents.CloneSessionTranscriptResult(replay), nil
 		case msg, ok := <-updates:
 			if !ok {
 				if ctx.Err() != nil {

@@ -1296,3 +1296,56 @@ Use this template for new decisions.
   - leave the wrappers duplicated because they are small (rejected: unnecessary repetition across multiple providers).
   - leave the param builders local because they are short (rejected: they were identical across four providers and changed together conceptually).
   - move the local-config branch into `acpcli` as well (rejected: that behavior is provider-specific and should stay in `kimi`).
+
+## ADR-053: Learn model/reasoning metadata only from real session lifecycle events
+
+- Status: Accepted
+- Date: 2026-03-22
+- Context:
+  - ngent had accumulated several probe-only metadata paths for model/reasoning discovery:
+    - startup config-catalog refresh
+    - `GET /v1/threads/{threadId}/config-options` live fallback
+    - `GET /v1/agents/{agentId}/models` live fallback
+  - for ACP-backed providers, those paths ultimately used `session/new`, which created provider-side empty sessions even when the user had not actually started or resumed a conversation.
+  - the old agent-scoped "default catalog" assumption was also too coarse once threads could point at arbitrary existing sessions; two threads without explicit `modelId` could legitimately load different actual session configs.
+- Decision:
+  - treat user-initiated `session/new` / `session/load` as the authoritative source for model/reasoning metadata.
+  - add a shared config snapshot callback so providers can report the `configOptions` returned by those session lifecycle calls.
+  - persist those real snapshots immediately into sqlite:
+    - update the thread row with the session's actual current `modelId` / `configOverrides`
+    - update the agent config catalog under the actual current model id
+  - remove proactive startup refresh and stop `/config-options` / `/models` endpoints from opening probe sessions just to discover metadata.
+  - when a thread switches to an existing session, clear stale thread-local model/reasoning selections first so the next user-triggered `session/load` can repopulate the real values.
+- Consequences:
+  - ngent no longer creates empty provider sessions just because the UI opened a thread or the server started up.
+  - fresh threads now show no model/reasoning metadata until at least one real turn (or resumed session turn) reports it.
+  - model/reasoning controls in the Web UI become session-driven instead of agent-default-driven, which avoids cross-thread leakage from a shared default snapshot.
+  - `/v1/agents/{agentId}/models` may legitimately return an empty list until sqlite has learned at least one real config snapshot for that agent.
+- Alternatives considered:
+  - keep proactive refresh and only hide the frontend controls (rejected: still creates empty upstream sessions and keeps sqlite detached from real session state).
+  - keep using one shared default catalog row for threads without explicit `modelId` (rejected: stale or unrelated session config can leak between threads).
+  - update only the agent catalog and leave thread rows untouched (rejected: thread-level model/reasoning state would stay ambiguous when multiple sessions of the same agent differ).
+
+## ADR-054: Persist learned config snapshots per provider session
+
+- Status: Accepted
+- Date: 2026-03-22
+- Context:
+  - ADR-053 removed probe sessions and made real `session/new` / `session/load` the only source of config metadata.
+  - ngent persisted those learned snapshots into the thread row and `agent_config_catalogs`, but a later switch to another existing session intentionally clears stale thread-local `modelId` / `configOverrides`.
+  - when the user switched back to the original session before sending another turn, ngent only had the `sessionId`; the learned model/reasoning snapshot was no longer addressable, so the Web UI hid the controls again.
+- Decision:
+  - add sqlite table `session_config_cache(agent_id, cwd, session_id, config_options_json, updated_at)`.
+  - whenever a user-triggered turn/session load reports config for a bound session, persist the normalized snapshot under that `agent + cwd + sessionId` key in addition to the thread row and `agent_config_catalogs`.
+  - if a fresh session reports config before `session_bound`, replay the already persisted thread/model snapshot into `session_config_cache` as soon as the session id becomes known.
+  - when `/v1/threads/{threadId}/session-history?sessionId=...` is served from cached transcript data but the destination session still has no cached config snapshot, bypass the transcript-only short circuit and perform one live `session/load` so that user-triggered session switching can still teach sqlite that session's config.
+  - change `GET /v1/threads/{threadId}/config-options` to restore from session cache when the thread currently points at a known session but has no thread-local `modelId`.
+- Consequences:
+  - switching away from a learned session and then back to it restores model/reasoning controls immediately without requiring another turn.
+  - switching directly onto an unseen existing session can now also reveal model/reasoning controls immediately when that session's user-triggered `session/load` returns config metadata.
+  - session-specific config state no longer depends on thread-local mirrors surviving every session change.
+  - unseen sessions still legitimately return no config metadata until one real turn (or other real session lifecycle event during a turn) teaches ngent that session's snapshot.
+- Alternatives considered:
+  - keep only thread-local state and accept that switching back requires another turn (rejected: poor UX and contradicts the intent of session-driven discovery).
+  - repopulate by proactively calling `session/load` on session switch (rejected: reintroduces probe-style metadata fetches outside real turn flow).
+  - key everything only by `agent + model` (rejected: multiple sessions can share a model id but differ in other config values such as reasoning/mode).

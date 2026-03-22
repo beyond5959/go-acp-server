@@ -640,3 +640,30 @@ and upstream ACP schema:
   - path/location lists
   - raw JSON input/output blocks
 - Unsupported non-text ACP tool-call payload shapes are still shown via generic JSON fallback so the information is visible even when no richer renderer exists yet.
+
+### 18.4 Session-Driven Config Discovery
+
+- ngent no longer opens probe-only `session/new` calls during startup or while serving `GET /v1/threads/{threadId}/config-options` / `GET /v1/agents/{agentId}/models`.
+- Model/reasoning metadata now comes only from real user-triggered session lifecycle events:
+  - stdio ACP providers extract `configOptions` from the actual `session/new` / `session/load` response used by `Stream()`.
+  - embedded `codex` / `claude` do the same inside their runtime initialization path and emit the same shared callback.
+  - session-transcript replay paths (`GET /v1/threads/{threadId}/session-history?sessionId=...`) may also extract `configOptions` from their user-triggered `session/load` response when the provider returns them.
+- The HTTP turn handler treats that callback as authoritative and persists the snapshot immediately:
+  - thread `agentOptions.modelId` / `agentOptions.configOverrides` are rewritten to match the session's actual current config.
+  - the normalized snapshot is stored in `agent_config_catalogs` under the actual current model id.
+  - when a `sessionId` is already known, the same normalized snapshot is also stored in `session_config_cache(agent_id, cwd, session_id, config_options_json, updated_at)`.
+  - if config arrives before `session_bound`, ngent writes the session cache entry immediately after binding by replaying the just-learned thread/model snapshot onto the new `sessionId`.
+- Existing-session selection clears stale thread-local model/reasoning selections before the next user-triggered `session/load`, so the loaded session's real state can repopulate the thread instead of inheriting the previous session's config.
+- `GET /v1/threads/{threadId}/config-options` is now stored-only:
+  - if the thread already has a concrete `modelId` and sqlite has a matching catalog row, return that row overlaid with the thread's current selections.
+  - otherwise, if the thread points at a concrete `sessionId` and sqlite has a matching `session_config_cache` row, return that session snapshot directly.
+  - otherwise return an empty `configOptions` list instead of probing upstream.
+- `GET /v1/threads/{threadId}/session-history` keeps using cached transcript replay when possible, except:
+  - if transcript cache exists but `session_config_cache` is still missing for the requested session, ngent performs one live `session/load` so that the user-triggered session switch can learn config metadata.
+- `POST /v1/threads/{threadId}/config-options` now requires the thread to have already learned a concrete config snapshot; before that point it returns `409 CONFLICT` rather than opening a probe session.
+- `/v1/agents/{agentId}/models` now returns only models already learned into sqlite; it may be empty for a brand-new agent until at least one real turn reports config metadata.
+- The Web UI follows the same lifecycle:
+  - model/reasoning controls stay hidden until the thread has a real config snapshot.
+  - after a turn completes (or fails/disconnects after session init), the UI reloads stored config options and reveals the controls if metadata is now known.
+  - switching to a different session clears the thread-local config cache so stale controls do not linger before the destination session cache or next user-triggered `session/load` repopulates the controls.
+  - after session-history replay finishes for the selected session, the UI refreshes stored config options again so controls can appear immediately if that replay taught sqlite a new session snapshot.

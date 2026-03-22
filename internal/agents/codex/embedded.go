@@ -394,6 +394,12 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 		if err := c.notifyCachedSlashCommands(ctx); err != nil {
 			return agents.StopReasonEndTurn, fmt.Errorf("codex: report slash commands: %w", err)
 		}
+		c.mu.Lock()
+		configOptions := acpmodel.CloneConfigOptions(c.configOptions)
+		c.mu.Unlock()
+		if err := agents.NotifyConfigOptions(ctx, configOptions); err != nil {
+			return agents.StopReasonEndTurn, fmt.Errorf("codex: report config options: %w", err)
+		}
 		requestedSessionID := c.CurrentSessionID()
 		deferInitialBinding := codexShouldDeferInitialSessionBinding(requestedSessionID, sessionID, stableSessionID)
 		if c.supportsLoadSession() && !deferInitialBinding {
@@ -840,15 +846,17 @@ func (c *Client) ensureInitialized(ctx context.Context) (*codexacp.EmbeddedRunti
 		}
 		sessionID = codexLoadSessionID(session)
 		stableSessionID = session.SessionID
-		if _, err := c.clientRequest(startCtx, runtime, "session/load", map[string]any{
+		loadResp, err := c.clientRequest(startCtx, runtime, "session/load", map[string]any{
 			"sessionId":  sessionID,
 			"cwd":        c.Dir(),
 			"mcpServers": []any{},
-		}); err != nil {
+		})
+		if err != nil {
 			c.clearUpdateMonitor()
 			_ = runtime.Close()
 			return nil, "", "", fmt.Errorf("codex: session/load failed: %w", err)
 		}
+		configOptions = acpmodel.ExtractConfigOptions(loadResp.Result)
 	} else {
 		newParams := map[string]any{
 			"cwd": c.Dir(),
@@ -886,6 +894,7 @@ func (c *Client) ensureInitialized(ctx context.Context) (*codexacp.EmbeddedRunti
 		_ = runtime.Close()
 		return nil, "", "", err
 	}
+	c.ApplyConfigOptionsSnapshot(configOptions)
 
 	c.mu.Lock()
 	if c.closed {

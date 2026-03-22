@@ -251,21 +251,6 @@ func main() {
 		Logger:             logger,
 		FrontendHandler:    webui.Handler(),
 	})
-	refreshCtx, refreshCancel := context.WithCancel(context.Background())
-	defer refreshCancel()
-	startAgentConfigCatalogRefresh(refreshCtx, buildAgentConfigCatalogRefresher(
-		store,
-		logger,
-		allowedAgentIDs,
-		modelDiscoveryDir,
-		codexRuntimeConfig,
-		codexPreflightErr,
-		opencodePreflightErr,
-		geminiPreflightErr,
-		kimiPreflightErr,
-		qwenPreflightErr,
-		claudePreflightErr,
-	))
 	defer func() {
 		if closeErr := handler.Close(); closeErr != nil {
 			logger.Error("shutdown.httpapi_close_failed", "error", closeErr.Error())

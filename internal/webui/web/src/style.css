@@ -49,7 +49,7 @@
   --opencode-icon-image: url('/opencode-icon.png');
 
   /* Dimensions */
-  --sidebar-w:      228px;
+  --sidebar-w:      216px;
   --session-sidebar-collapsed-w: 48px;
   --session-sidebar-w: 272px;
   --header-h:       54px;
@@ -277,6 +277,11 @@ body {
   user-select: none;
 }
 
+.thread-item-avatar--icon {
+  background: transparent;
+  color: inherit;
+}
+
 .thread-item-avatar--inactive {
   background: var(--bg-3);
   color: var(--text-2);
@@ -315,12 +320,20 @@ body {
 
 .thread-item-actions {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   align-self: flex-start;
   gap: 6px;
   flex-shrink: 0;
   margin-top: 1px;
   position: relative;
+}
+
+.thread-item-action-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
 }
 
 .thread-item-title {
@@ -336,13 +349,18 @@ body {
 .thread-item-foot {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   margin-top: 3px;
 }
 
 .thread-item-time {
   font-size: var(--font-size-xs);
   color: var(--text-3);
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.thread-item-time--actions {
+  text-align: center;
 }
 
 .thread-status-indicator {
@@ -368,16 +386,31 @@ body {
 }
 
 .thread-item-menu-trigger {
-  min-width: 34px;
-  padding: 5px 8px;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0;
+  border-radius: 6px;
   color: var(--text-3);
-  letter-spacing: 0.08em;
+  line-height: 0;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity var(--t-fast), visibility var(--t-fast), background var(--t-fast), color var(--t-fast), box-shadow var(--t-fast);
+}
+
+.thread-item-menu-trigger svg {
+  display: block;
+  width: 16px;
+  height: 16px;
 }
 
 .thread-item:hover .thread-item-menu-trigger,
 .thread-item:focus-within .thread-item-menu-trigger,
-.thread-item--active .thread-item-menu-trigger,
 .thread-item--menu-open .thread-item-menu-trigger {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
   color: var(--text-1);
 }
 
@@ -913,6 +946,11 @@ body {
   min-width: 0;
   max-width: min(36vw, 240px);
   flex: 0 1 auto;
+}
+
+.thread-model-switch[hidden],
+.thread-model-menu[hidden] {
+  display: none !important;
 }
 
 .thread-model-trigger {

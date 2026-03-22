@@ -297,9 +297,11 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 		if !caps.CanLoad {
 			return agents.StopReasonEndTurn, agents.ErrSessionLoadUnsupported
 		}
-		if _, err := conn.Call(ctx, "session/load", c.hooks.SessionLoadParams(sessionID)); err != nil {
+		loadResult, err := conn.Call(ctx, "session/load", c.hooks.SessionLoadParams(sessionID))
+		if err != nil {
 			return agents.StopReasonEndTurn, fmt.Errorf("%s: session/load: %w", c.nameForError(), err)
 		}
+		initialOptions = acpmodel.ExtractConfigOptions(loadResult)
 	} else {
 		newResult, err := conn.Call(ctx, "session/new", c.hooks.SessionNewParams(modelID))
 		if err != nil {
@@ -319,8 +321,13 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 		}
 		initialOptions = selectedOptions
 	}
-	if _, err := c.applyConfigOverrides(ctx, conn, sessionID, initialOptions, configOverrides); err != nil {
+	initialOptions, err = c.applyConfigOverrides(ctx, conn, sessionID, initialOptions, configOverrides)
+	if err != nil {
 		return agents.StopReasonEndTurn, err
+	}
+	c.ApplyConfigOptionsSnapshot(initialOptions)
+	if err := agents.NotifyConfigOptions(streamCtx, initialOptions); err != nil {
+		return agents.StopReasonEndTurn, fmt.Errorf("%s: report config options: %w", c.nameForError(), err)
 	}
 	if caps.CanLoad {
 		c.SetSessionID(sessionID)
@@ -440,10 +447,13 @@ func (c *Client) LoadSessionTranscript(
 		return collector.HandleRawUpdate(msg.Params)
 	})
 
-	if _, err := conn.Call(ctx, "session/load", c.hooks.SessionLoadParams(session.SessionID)); err != nil {
+	loadResult, err := conn.Call(ctx, "session/load", c.hooks.SessionLoadParams(session.SessionID))
+	if err != nil {
 		return agents.SessionTranscriptResult{}, fmt.Errorf("%s: session/load: %w", c.nameForError(), err)
 	}
-	return collector.Result(), nil
+	result := collector.Result()
+	result.ConfigOptions = acpmodel.ExtractConfigOptions(loadResult)
+	return agents.CloneSessionTranscriptResult(result), nil
 }
 
 // RunConfigSession executes one ACP config query/update session.
