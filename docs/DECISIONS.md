@@ -1399,3 +1399,24 @@ Use this template for new decisions.
   - ignore non-text assistant blocks outside tool calls (rejected: visibly loses model output).
   - stringify image/resource payloads into `message_delta` (rejected: destroys structure and produces poor UI).
   - change `responseText` into a heterogeneous rich-content blob (rejected: larger API break and unnecessary when turn events already provide the ordered detail).
+
+## ADR-056: Preserve exact provider permission options through the hub permission flow
+
+- Status: Accepted
+- Date: 2026-03-22
+- Context:
+  - ngent's permission UI and HTTP endpoint originally collapsed every permission request into a binary `approved` / `declined` choice.
+  - real ACP-backed providers such as Kimi, Qwen, and OpenCode can advertise richer permission option sets such as `allow_once`, `allow_always`, `reject_once`, and `reject_always`, each with a distinct `optionId`.
+  - once the hub reduced those requests to a generic outcome, the Web UI could no longer present the provider's real choices and the backend could only approximate the response by picking a default allow/reject option.
+- Decision:
+  - extend the shared permission request model so provider-advertised `options[]` are preserved and forwarded in the `permission_required` SSE payload.
+  - extend `POST /v1/permissions/{permissionId}` to accept `optionId` alongside the existing generic `outcome`.
+  - when a client submits an exact `optionId`, prefer forwarding that exact selection back to option-aware providers; keep generic outcome fallback behavior for providers that still only understand `approved` / `declined` / `cancelled`.
+  - keep fail-closed behavior unchanged: missing, invalid, timed-out, or disconnected permission decisions still default to deny.
+- Consequences:
+  - the Web UI can render all provider permission choices instead of hard-coding `Allow` / `Deny`.
+  - Kimi/Qwen/OpenCode-style permission flows preserve provider-specific semantics such as `allow always` vs `allow once`.
+  - existing outcome-only clients and generic providers remain compatible.
+- Alternatives considered:
+  - keep the UI binary and continue mapping approvals to the first allow/reject option (rejected: loses provider semantics and hides real choices from the user).
+  - expose provider options in SSE but keep the HTTP endpoint outcome-only (rejected: UI would still be unable to return the exact selected option).

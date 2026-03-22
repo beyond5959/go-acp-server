@@ -42,6 +42,13 @@ type ConfigOption struct {
 	Options      []ConfigOptionValue `json:"options,omitempty"`
 }
 
+// PermissionOption is one selectable permission option advertised by a provider.
+type PermissionOption struct {
+	OptionID string `json:"optionId"`
+	Name     string `json:"name,omitempty"`
+	Kind     string `json:"kind,omitempty"`
+}
+
 // ConfigOptionManager exposes ACP session config option querying/updating.
 type ConfigOptionManager interface {
 	ConfigOptions(ctx context.Context) ([]ConfigOption, error)
@@ -65,12 +72,14 @@ type PermissionRequest struct {
 	RequestID string
 	Approval  string
 	Command   string
+	Options   []PermissionOption
 	RawParams map[string]any
 }
 
 // PermissionResponse returns the outcome back to the provider.
 type PermissionResponse struct {
-	Outcome PermissionOutcome
+	Outcome          PermissionOutcome
+	SelectedOptionID string
 }
 
 // PermissionHandler is called by providers when user approval is needed.

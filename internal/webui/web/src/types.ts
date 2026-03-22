@@ -143,7 +143,13 @@ export interface Message {
 
 export type PermissionApproval = 'command' | 'file' | 'network' | 'mcp'
 
-export type PermissionStatus = 'pending' | 'approved' | 'declined' | 'timeout'
+export type PermissionStatus = 'pending' | 'approved' | 'declined' | 'cancelled' | 'timeout'
+
+export interface PermissionOption {
+  optionId: string
+  name?: string
+  kind?: string
+}
 
 export interface PermissionRequest {
   permissionId: string
@@ -151,6 +157,7 @@ export interface PermissionRequest {
   approval: PermissionApproval
   command: string
   requestId: string
+  options: PermissionOption[]
   status: PermissionStatus
   /** Unix ms — client-side deadline for countdown display */
   deadlineMs: number

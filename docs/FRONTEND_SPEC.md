@@ -21,7 +21,9 @@
 │  │──────────────│  │          fmt.Println("hi")                ││
 │  │ ○ Thread C   │  │          ```                       [copy] ││
 │  │   Codex · 3h │  │                                           ││
-│  │              │  │  [perm]  ⚠ Run: ls /home  [Allow][Deny]  ││
+│  │              │  │  [perm]  ⚠ Run: ls /home                 ││
+│  │              │  │          [Allow once][Allow always]      ││
+│  │              │  │          [Reject once][Reject always]    ││
 │  │              │  │          Timeout in 12s                   ││
 │  │              │  │                                           ││
 │  │              │  │  ···  (streaming)                         ││
@@ -46,7 +48,7 @@
 | SSE 流式显示 | 实时追加 `message_delta`，有打字指示动画 |
 | 消息气泡 | 用户消息靠右，Agent 消息靠左，时间戳显示 |
 | 取消 Turn | 流式进行中显示 Cancel 按钮，调用 cancel 接口 |
-| 权限请求 UI | 内联卡片显示权限详情，含 Allow / Deny 按钮和倒计时 |
+| 权限请求 UI | 内联卡片显示权限详情，按 agent 返回的选项动态渲染按钮，并显示倒计时 |
 | 历史加载 | 切换会话时调用 `/history` 还原完整消息列表 |
 | 错误展示 | API 错误和 SSE error 事件以醒目方式内联显示 |
 | Client ID | 自动生成 UUID，存 localStorage，所有请求携带 |
@@ -187,7 +189,7 @@ run: build-web
 | 切换会话 | `GET /v1/threads/{threadId}/history` |
 | 发送消息 | `POST /v1/threads/{threadId}/turns`（SSE） |
 | 取消 Turn | `POST /v1/turns/{turnId}/cancel` |
-| 响应权限 | `POST /v1/permissions/{permissionId}` |
+| 响应权限 | `POST /v1/permissions/{permissionId}`（提交 `outcome` 和/或 `optionId`） |
 | 触发 Compact | `POST /v1/threads/{threadId}/compact` |
 
 ## 8. 设计原则

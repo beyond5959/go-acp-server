@@ -136,6 +136,9 @@ func handlePermissionRequest(
 	if err != nil {
 		return buildPermissionResponse("reject_once")
 	}
+	if optionID := strings.TrimSpace(resp.SelectedOptionID); optionID != "" {
+		return buildPermissionResponse(optionID)
+	}
 	switch resp.Outcome {
 	case agents.PermissionOutcomeApproved:
 		return buildPermissionResponse("allow_once")

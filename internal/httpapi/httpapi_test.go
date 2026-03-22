@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -3220,6 +3221,113 @@ func TestTurnPermissionApprovedContinuesAndCompletes(t *testing.T) {
 	}
 }
 
+func TestTurnPermissionSelectedOptionFlowsThroughExactAgentChoice(t *testing.T) {
+	root := t.TempDir()
+	streamer := &permissionOptionStreamer{
+		request: agents.PermissionRequest{
+			RequestID: "provider-request-42",
+			Approval:  "command",
+			Command:   "Run shell command",
+			Options: []agents.PermissionOption{
+				{OptionID: "allow_once_opt", Name: "Allow once", Kind: "allow_once"},
+				{OptionID: "allow_always_opt", Name: "Allow always", Kind: "allow_always"},
+				{OptionID: "reject_once_opt", Name: "Reject once", Kind: "reject_once"},
+				{OptionID: "reject_always_opt", Name: "Reject always", Kind: "reject_always"},
+			},
+		},
+	}
+	h := newTestServer(t, testServerOptions{
+		allowedRoots:      []string{root},
+		agent:             streamer,
+		permissionTimeout: 2 * time.Second,
+	})
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	threadID := createThreadHTTP(t, ts.URL, "client-a", root)
+
+	streamResultCh := make(chan httpTurnStreamResult, 1)
+	go func() {
+		streamResultCh <- runTurnStreamRequest(t, ts.URL, "client-a", threadID, "need exact option")
+	}()
+
+	var permissionData map[string]any
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		history := getHistoryWithEventsHTTP(t, ts.URL, "client-a", threadID)
+		if len(history.Turns) == 0 {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		lastTurn := history.Turns[len(history.Turns)-1]
+		for _, event := range lastTurn.Events {
+			if event.Type != "permission_required" {
+				continue
+			}
+			permissionData = event.Data
+			break
+		}
+		if permissionData != nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if permissionData == nil {
+		t.Fatalf("failed to observe permission_required before timeout")
+	}
+
+	if got := stringField(permissionData, "permissionId"); got == "" {
+		t.Fatalf("permission_required.permissionId is empty")
+	}
+	rawOptions, ok := permissionData["options"].([]any)
+	if !ok {
+		t.Fatalf("permission_required.options type = %T, want []any", permissionData["options"])
+	}
+	if len(rawOptions) != 4 {
+		t.Fatalf("len(permission_required.options) = %d, want %d", len(rawOptions), 4)
+	}
+	secondOption, ok := rawOptions[1].(map[string]any)
+	if !ok {
+		t.Fatalf("permission_required.options[1] type = %T, want map[string]any", rawOptions[1])
+	}
+	if got := stringField(secondOption, "optionId"); got != "allow_always_opt" {
+		t.Fatalf("permission_required.options[1].optionId = %q, want %q", got, "allow_always_opt")
+	}
+	if got := stringField(secondOption, "name"); got != "Allow always" {
+		t.Fatalf("permission_required.options[1].name = %q, want %q", got, "Allow always")
+	}
+
+	permissionID := stringField(permissionData, "permissionId")
+	permissionStatus, permissionBody := postPermissionSelection(t, ts.URL, "client-a", permissionID, "allow_always_opt")
+	if permissionStatus != http.StatusOK {
+		t.Fatalf("permission selection status = %d, want %d, body=%s", permissionStatus, http.StatusOK, permissionBody)
+	}
+
+	streamResult := <-streamResultCh
+	if streamResult.StatusCode != http.StatusOK {
+		t.Fatalf("turn stream status = %d, want %d", streamResult.StatusCode, http.StatusOK)
+	}
+
+	response := streamer.Response()
+	if response.SelectedOptionID != "allow_always_opt" {
+		t.Fatalf("permission response optionId = %q, want %q", response.SelectedOptionID, "allow_always_opt")
+	}
+	if response.Outcome != agents.PermissionOutcomeApproved {
+		t.Fatalf("permission response outcome = %q, want %q", response.Outcome, agents.PermissionOutcomeApproved)
+	}
+
+	events := parseSSEEvents(t, streamResult.Body)
+	lastStopReason := ""
+	for _, event := range events {
+		if event.Event == "turn_completed" {
+			lastStopReason = stringField(event.Data, "stopReason")
+		}
+	}
+	if lastStopReason != "end_turn" {
+		t.Fatalf("turn_completed.stopReason = %q, want %q", lastStopReason, "end_turn")
+	}
+}
+
 func TestTurnPermissionTimeoutFailClosed(t *testing.T) {
 	root := t.TempDir()
 	h := newTestServer(t, testServerOptions{
@@ -3784,6 +3892,52 @@ func (s *reasoningStreamer) Stream(ctx context.Context, input string, onDelta fu
 		return agents.StopReasonEndTurn, err
 	}
 	return agents.StopReasonEndTurn, nil
+}
+
+type permissionOptionStreamer struct {
+	request agents.PermissionRequest
+
+	mu       sync.Mutex
+	response agents.PermissionResponse
+}
+
+func (s *permissionOptionStreamer) Name() string {
+	return "permission-option-streamer"
+}
+
+func (s *permissionOptionStreamer) Stream(ctx context.Context, input string, onDelta func(delta string) error) (agents.StopReason, error) {
+	_ = input
+	if err := onDelta("before-permission "); err != nil {
+		return agents.StopReasonEndTurn, err
+	}
+
+	handler, ok := agents.PermissionHandlerFromContext(ctx)
+	if !ok {
+		return agents.StopReasonCancelled, errors.New("permission handler missing")
+	}
+
+	response, err := handler(ctx, s.request)
+	if err != nil {
+		return agents.StopReasonCancelled, err
+	}
+
+	s.mu.Lock()
+	s.response = response
+	s.mu.Unlock()
+
+	if err := onDelta("selected:" + response.SelectedOptionID); err != nil {
+		return agents.StopReasonEndTurn, err
+	}
+	if response.Outcome == agents.PermissionOutcomeApproved {
+		return agents.StopReasonEndTurn, nil
+	}
+	return agents.StopReasonCancelled, nil
+}
+
+func (s *permissionOptionStreamer) Response() agents.PermissionResponse {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.response
 }
 
 type toolCallStreamer struct{}
@@ -4369,6 +4523,17 @@ func postPermissionDecision(t *testing.T, baseURL, clientID, permissionID, outco
 		http.MethodPost,
 		baseURL+"/v1/permissions/"+permissionID,
 		map[string]any{"outcome": outcome},
+		map[string]string{"X-Client-ID": clientID},
+	)
+}
+
+func postPermissionSelection(t *testing.T, baseURL, clientID, permissionID, optionID string) (int, string) {
+	t.Helper()
+	return doJSON(
+		t,
+		http.MethodPost,
+		baseURL+"/v1/permissions/"+permissionID,
+		map[string]any{"optionId": optionID},
 		map[string]string{"X-Client-ID": clientID},
 	)
 }

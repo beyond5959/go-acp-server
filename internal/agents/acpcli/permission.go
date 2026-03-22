@@ -8,6 +8,7 @@ import (
 // PermissionOption describes one selectable permission option from an ACP provider.
 type PermissionOption struct {
 	OptionID string `json:"optionId"`
+	Name     string `json:"name,omitempty"`
 	Kind     string `json:"kind"`
 }
 

@@ -261,7 +261,7 @@ All errors use:
   - `turn_started`: `{"turnId":"..."}`
   - `message_delta`: `{"turnId":"...","delta":"..."}`
   - `plan_update`: `{"turnId":"...","entries":[{"content":"...","status":"pending|in_progress|completed","priority":"low|medium|high"}]}`
-  - `permission_required`: `{"turnId":"...","permissionId":"...","approval":"command|file|network|mcp","command":"...","requestId":"..."}`
+  - `permission_required`: `{"turnId":"...","permissionId":"...","approval":"command|file|network|mcp","command":"...","requestId":"...","options":[{"optionId":"...","name":"...","kind":"allow_once|allow_always|reject_once|reject_always|..."}]}`
   - `turn_completed`: `{"turnId":"...","stopReason":"end_turn|cancelled|error"}`
   - `error`: `{"turnId":"...","code":"...","message":"..."}`
   - for ACP `sessionUpdate == "plan"`, the server emits `plan_update` and treats each payload as a full replacement of the current plan list.
@@ -329,6 +329,19 @@ All errors use:
   "outcome": "approved"
 }
 ```
+
+Or submit the provider's exact option id when the permission request advertised options:
+
+```json
+{
+  "optionId": "allow_always_opt"
+}
+```
+
+- Behavior:
+  - `outcome` remains supported for generic approve / decline / cancel flows.
+  - `optionId` lets clients return the provider's exact permission choice when multiple options are available.
+  - clients may send both `outcome` and `optionId`; when `optionId` is present, the server forwards that exact selection back to option-aware providers.
 
 10. `POST /v1/threads/{threadId}/compact`
 - Headers: `X-Client-ID` (required), optional bearer auth if enabled.

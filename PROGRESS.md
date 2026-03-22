@@ -993,3 +993,16 @@ This file is the source of milestone progress, validation commands, and next act
   - executed validation:
     - pass: `cd internal/webui/web && npm run build`
     - pass: `env GOCACHE=/tmp/ngent-gocache GOFLAGS=-p=1 /usr/local/go/bin/go test ./... -count=1`
+
+- 2026-03-22: preserved exact provider permission options end-to-end instead of collapsing every request into `Allow` / `Deny`.
+  - root cause: the Web UI hard-coded two buttons and `POST /v1/permissions/{permissionId}` only carried a generic outcome, so multi-option ACP permission requests from providers such as Kimi could not round-trip `allow once` / `allow always` / `reject once` / `reject always` exactly.
+  - extended the shared permission model to keep provider `options[]` and an exact `SelectedOptionID`, and taught the ACP permission bridge to prefer that exact option id when replying to option-aware providers.
+  - `permission_required` SSE payloads now include advertised permission options, `POST /v1/permissions/{permissionId}` now accepts `optionId` alongside the existing `outcome`, and the HTTP permission bridge infers the generic fallback outcome from the selected option kind when possible.
+  - updated the Web UI permission card to render all advertised options dynamically, fall back to `Allow` / `Deny` only when no options are provided, and show the selected option label in the resolved state.
+  - added regression coverage for exact option pass-through at the HTTP layer and for Kimi's structured permission handler preserving non-default selected option ids.
+  - updated API / spec / frontend docs and acceptance criteria to describe dynamic permission options.
+  - executed validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `env GOCACHE=/tmp/ngent-gocache GOFLAGS=-p=1 /usr/local/go/bin/go test ./internal/agents/kimi -run 'TestHandlePermissionRequest(ParsesRichToolCallPayload|HonorsSelectedOptionID)' -count=1`
+    - pass: `env GOCACHE=/tmp/ngent-gocache GOFLAGS=-p=1 /usr/local/go/bin/go test ./internal/httpapi -run 'TestTurnPermission(RequiredSSEEvent|ApprovedContinuesAndCompletes|SelectedOptionFlowsThroughExactAgentChoice|TimeoutFailClosed|SSEDisconnectFailClosed)' -count=1`
+    - pass: `env GOCACHE=/tmp/ngent-gocache GOFLAGS=-p=1 /usr/local/go/bin/go test ./... -count=1`

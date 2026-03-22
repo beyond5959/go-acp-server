@@ -51,11 +51,12 @@ This checklist defines executable acceptance checks for requirements 1-16.
 ## Requirement 7: Permission forwarding and fail-closed
 
 - Operation: trigger permission-required flow; test approved, timeout, and disconnect cases.
-- Expected: `permission_required` emitted; timeout/disconnect fails closed.
+- Expected: `permission_required` emitted; when the provider advertises permission `options[]`, the SSE payload preserves them and `/v1/permissions/{permissionId}` can submit an exact `optionId`; timeout/disconnect still fail closed.
   - embedded codex command-approval flow should not fail with adapter-side `-32601 method not found` when using updated app-server request methods.
 - Verification command:
   - `go test ./internal/httpapi -run TestTurnPermissionRequiredSSEEvent -count=1`
   - `go test ./internal/httpapi -run TestTurnPermissionApprovedContinuesAndCompletes -count=1`
+  - `go test ./internal/httpapi -run TestTurnPermissionSelectedOptionFlowsThroughExactAgentChoice -count=1`
   - `go test ./internal/httpapi -run TestTurnPermissionTimeoutFailClosed -count=1`
   - `go test ./internal/httpapi -run TestTurnPermissionSSEDisconnectFailClosed -count=1`
 

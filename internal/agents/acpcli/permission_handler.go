@@ -3,6 +3,7 @@ package acpcli
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/beyond5959/ngent/internal/agents"
@@ -33,6 +34,9 @@ func StructuredPermissionRequestHandler(
 		resp, err := handler(permCtx, req.ToAgentPermissionRequest())
 		if err != nil {
 			return buildDeclinedPermissionResponse(req.Options)
+		}
+		if optionID := strings.TrimSpace(resp.SelectedOptionID); optionID != "" {
+			return BuildSelectedPermissionResponse(optionID)
 		}
 
 		switch resp.Outcome {

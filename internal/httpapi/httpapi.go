@@ -833,7 +833,7 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 
 	turnCtx = agents.WithPermissionHandler(turnCtx, func(permissionCtx context.Context, req agents.PermissionRequest) (agents.PermissionResponse, error) {
 		permissionID := s.nextPermissionID(req.RequestID)
-		pending := newPendingPermission(clientID)
+		pending := newPendingPermission(clientID, req.Options)
 		s.registerPermission(permissionID, pending)
 		defer s.unregisterPermission(permissionID, pending)
 
@@ -844,13 +844,15 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 			"command":      req.Command,
 			"requestId":    req.RequestID,
 		}
+		if len(req.Options) > 0 {
+			payload["options"] = req.Options
+		}
 		if err := emit("permission_required", payload); err != nil {
-			pending.Resolve(agents.PermissionOutcomeDeclined)
-			return agents.PermissionResponse{Outcome: agents.PermissionOutcomeDeclined}, err
+			pending.Resolve(permissionFailClosedResponse())
+			return permissionFailClosedResponse(), err
 		}
 
-		outcome := s.waitPermissionOutcome(permissionCtx, pending)
-		return agents.PermissionResponse{Outcome: outcome}, nil
+		return s.waitPermissionResponse(permissionCtx, pending), nil
 	})
 	turnCtx = agents.WithPlanHandler(turnCtx, func(planCtx context.Context, entries []agents.PlanEntry) error {
 		_ = planCtx
@@ -1237,24 +1239,52 @@ func (s *Server) handlePermissionDecision(w http.ResponseWriter, r *http.Request
 	}
 
 	var req struct {
-		Outcome string `json:"outcome"`
+		Outcome  string `json:"outcome"`
+		OptionID string `json:"optionId"`
 	}
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid JSON body", map[string]any{"reason": err.Error()})
 		return
 	}
 
-	outcome, ok := normalizePermissionOutcome(req.Outcome)
-	if !ok {
-		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "outcome must be approved, declined, or cancelled", map[string]any{
+	response := agents.PermissionResponse{
+		SelectedOptionID: strings.TrimSpace(req.OptionID),
+	}
+	if rawOutcome := strings.TrimSpace(req.Outcome); rawOutcome != "" {
+		outcome, ok := normalizePermissionOutcome(rawOutcome)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "outcome must be approved, declined, or cancelled", map[string]any{
+				"field": "outcome",
+			})
+			return
+		}
+		response.Outcome = outcome
+	}
+	if response.Outcome == "" && response.SelectedOptionID == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "outcome or optionId is required", map[string]any{
 			"field": "outcome",
 		})
 		return
 	}
 
-	if err := s.resolvePermission(permissionID, clientID, outcome); err != nil {
+	resolvedResponse, err := s.resolvePermission(permissionID, clientID, response)
+	if err != nil {
 		if errors.Is(err, errPermissionNotFound) {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "permission not found", map[string]any{})
+			return
+		}
+		if errors.Is(err, errPermissionInvalidOption) {
+			writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "optionId must match one of the advertised permission options", map[string]any{
+				"field":        "optionId",
+				"permissionId": permissionID,
+			})
+			return
+		}
+		if errors.Is(err, errPermissionOutcomeRequired) {
+			writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "outcome is required for this permission selection", map[string]any{
+				"field":        "outcome",
+				"permissionId": permissionID,
+			})
 			return
 		}
 		if errors.Is(err, errPermissionAlreadyResolved) {
@@ -1269,11 +1299,15 @@ func (s *Server) handlePermissionDecision(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"permissionId": permissionID,
 		"status":       "recorded",
-		"outcome":      string(outcome),
-	})
+		"outcome":      string(resolvedResponse.Outcome),
+	}
+	if resolvedResponse.SelectedOptionID != "" {
+		payload["optionId"] = resolvedResponse.SelectedOptionID
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (s *Server) handleThreadHistory(w http.ResponseWriter, r *http.Request, clientID, threadID string) {
@@ -2308,12 +2342,16 @@ type eventHistoryResponse struct {
 var (
 	errPermissionNotFound        = errors.New("permission not found")
 	errPermissionAlreadyResolved = errors.New("permission already resolved")
+	errPermissionInvalidOption   = errors.New("permission option is invalid")
+	errPermissionOutcomeRequired = errors.New("permission outcome is required")
 )
 
 type pendingPermission struct {
 	clientID string
 
-	ch   chan agents.PermissionOutcome
+	options map[string]agents.PermissionOption
+
+	ch   chan agents.PermissionResponse
 	once sync.Once
 }
 
@@ -2331,21 +2369,55 @@ type threadConfigSelectionState interface {
 	CurrentConfigOverrides() map[string]string
 }
 
-func newPendingPermission(clientID string) *pendingPermission {
+func newPendingPermission(clientID string, options []agents.PermissionOption) *pendingPermission {
+	optionMap := make(map[string]agents.PermissionOption, len(options))
+	for _, option := range options {
+		optionID := strings.TrimSpace(option.OptionID)
+		if optionID == "" {
+			continue
+		}
+		optionMap[optionID] = agents.PermissionOption{
+			OptionID: optionID,
+			Name:     strings.TrimSpace(option.Name),
+			Kind:     strings.TrimSpace(option.Kind),
+		}
+	}
 	return &pendingPermission{
 		clientID: clientID,
-		ch:       make(chan agents.PermissionOutcome, 1),
+		options:  optionMap,
+		ch:       make(chan agents.PermissionResponse, 1),
 	}
 }
 
-func (p *pendingPermission) Resolve(outcome agents.PermissionOutcome) bool {
+func (p *pendingPermission) Resolve(response agents.PermissionResponse) bool {
 	resolved := false
 	p.once.Do(func() {
-		p.ch <- outcome
+		p.ch <- normalizePermissionResponse(response)
 		close(p.ch)
 		resolved = true
 	})
 	return resolved
+}
+
+func (p *pendingPermission) normalizeDecision(response agents.PermissionResponse) (agents.PermissionResponse, error) {
+	response = normalizePermissionResponse(response)
+	if response.SelectedOptionID != "" {
+		if len(p.options) > 0 {
+			option, ok := p.options[response.SelectedOptionID]
+			if !ok {
+				return agents.PermissionResponse{}, errPermissionInvalidOption
+			}
+			if response.Outcome == "" {
+				if inferred, ok := permissionOutcomeForOptionKind(option.Kind); ok {
+					response.Outcome = inferred
+				}
+			}
+		}
+	}
+	if response.Outcome == "" {
+		return agents.PermissionResponse{}, errPermissionOutcomeRequired
+	}
+	return response, nil
 }
 
 func toThreadResponse(thread storage.Thread) (threadResponse, error) {
@@ -2438,6 +2510,19 @@ func normalizePermissionOutcome(raw string) (agents.PermissionOutcome, bool) {
 	}
 }
 
+func permissionOutcomeForOptionKind(raw string) (agents.PermissionOutcome, bool) {
+	switch strings.TrimSpace(strings.ToLower(raw)) {
+	case "allow", "allow_once", "allow_always", "approve", "approved":
+		return agents.PermissionOutcomeApproved, true
+	case "deny", "denied", "decline", "declined", "reject", "reject_once", "reject_always":
+		return agents.PermissionOutcomeDeclined, true
+	case "cancel", "cancelled", "canceled":
+		return agents.PermissionOutcomeCancelled, true
+	default:
+		return "", false
+	}
+}
+
 func (s *Server) nextPermissionID(requestID string) string {
 	seq := atomic.AddUint64(&s.permissionSeq, 1)
 	safeRequestID := sanitizePermissionIDComponent(requestID)
@@ -2485,7 +2570,27 @@ func (s *Server) unregisterPermission(permissionID string, pending *pendingPermi
 	s.permissionsMu.Unlock()
 }
 
-func (s *Server) waitPermissionOutcome(ctx context.Context, pending *pendingPermission) agents.PermissionOutcome {
+func permissionFailClosedResponse() agents.PermissionResponse {
+	return agents.PermissionResponse{Outcome: agents.PermissionOutcomeDeclined}
+}
+
+func normalizePermissionResponse(response agents.PermissionResponse) agents.PermissionResponse {
+	response.SelectedOptionID = strings.TrimSpace(response.SelectedOptionID)
+	if response.Outcome == "" {
+		return response
+	}
+	switch response.Outcome {
+	case agents.PermissionOutcomeApproved, agents.PermissionOutcomeDeclined, agents.PermissionOutcomeCancelled:
+		return response
+	default:
+		return agents.PermissionResponse{
+			Outcome:          agents.PermissionOutcomeDeclined,
+			SelectedOptionID: response.SelectedOptionID,
+		}
+	}
+}
+
+func (s *Server) waitPermissionResponse(ctx context.Context, pending *pendingPermission) agents.PermissionResponse {
 	timeout := s.permissionTimeout
 	if timeout <= 0 {
 		timeout = defaultPermissionTimeout
@@ -2494,38 +2599,42 @@ func (s *Server) waitPermissionOutcome(ctx context.Context, pending *pendingPerm
 	defer timer.Stop()
 
 	select {
-	case outcome := <-pending.ch:
-		if outcome == "" {
-			return agents.PermissionOutcomeDeclined
+	case response := <-pending.ch:
+		if response.Outcome == "" {
+			return permissionFailClosedResponse()
 		}
-		return outcome
+		return response
 	case <-timer.C:
-		pending.Resolve(agents.PermissionOutcomeDeclined)
+		pending.Resolve(permissionFailClosedResponse())
 	case <-ctx.Done():
-		pending.Resolve(agents.PermissionOutcomeDeclined)
+		pending.Resolve(permissionFailClosedResponse())
 	}
 
-	outcome, ok := <-pending.ch
-	if !ok || outcome == "" {
-		return agents.PermissionOutcomeDeclined
+	response, ok := <-pending.ch
+	if !ok || response.Outcome == "" {
+		return permissionFailClosedResponse()
 	}
-	return outcome
+	return response
 }
 
-func (s *Server) resolvePermission(permissionID, clientID string, outcome agents.PermissionOutcome) error {
+func (s *Server) resolvePermission(permissionID, clientID string, response agents.PermissionResponse) (agents.PermissionResponse, error) {
 	s.permissionsMu.Lock()
 	pending, ok := s.permissions[permissionID]
 	s.permissionsMu.Unlock()
 	if !ok {
-		return errPermissionNotFound
+		return agents.PermissionResponse{}, errPermissionNotFound
 	}
 	if pending.clientID != clientID {
-		return errPermissionNotFound
+		return agents.PermissionResponse{}, errPermissionNotFound
 	}
-	if !pending.Resolve(outcome) {
-		return errPermissionAlreadyResolved
+	normalized, err := pending.normalizeDecision(response)
+	if err != nil {
+		return agents.PermissionResponse{}, err
 	}
-	return nil
+	if !pending.Resolve(normalized) {
+		return agents.PermissionResponse{}, errPermissionAlreadyResolved
+	}
+	return normalized, nil
 }
 
 func (s *Server) loadStoredAgentModels(ctx context.Context, agentID string) ([]agents.ModelOption, bool, error) {

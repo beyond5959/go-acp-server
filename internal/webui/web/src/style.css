@@ -2035,6 +2035,8 @@ body {
 .permission-actions {
   display: flex;
   gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 /* Permission type badges */
@@ -2069,14 +2071,17 @@ body {
 }
 
 .permission-card--declined,
+.permission-card--cancelled,
 .permission-card--timeout {
   border-color: var(--error);
 }
 .permission-card--declined .permission-card-header,
+.permission-card--cancelled .permission-card-header,
 .permission-card--timeout  .permission-card-header {
   background: var(--error-bg);
 }
 .permission-card--declined .permission-card-title,
+.permission-card--cancelled .permission-card-title,
 .permission-card--timeout  .permission-card-title {
   color: var(--error);
 }
@@ -2087,6 +2092,8 @@ body {
   font-weight: 600;
 }
 .permission-resolved--approved { color: var(--success); }
+.permission-resolved--selected { color: var(--text-2); }
+.permission-resolved--cancelled,
 .permission-resolved--declined,
 .permission-resolved--timeout  { color: var(--error); }
 

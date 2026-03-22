@@ -61,9 +61,9 @@ Flow:
 
 1. agent emits permission request event.
 2. server persists event and forwards it to client stream/API.
-   - SSE emits `permission_required` with `permissionId`.
+   - SSE emits `permission_required` with `permissionId` and any provider-advertised `options[]`.
 3. turn waits for explicit decision.
-   - client submits `POST /v1/permissions/{permissionId}` with outcome.
+   - client submits `POST /v1/permissions/{permissionId}` with `outcome`, `optionId`, or both.
 4. if decision is missing/late/invalid, default is deny (fail-closed).
 
 Turn-side auxiliary callbacks:
@@ -187,9 +187,11 @@ and upstream ACP schema:
   - map `update.sessionUpdate == "plan"` into hub `plan_update` SSE events; each `entries[]` payload replaces the current plan list.
 - permission request/response:
   - handle `session/request_permission` request from provider.
+  - preserve provider option ids all the way through the hub permission flow when `options[]` are present.
   - reply with ACP outcome shape:
-    - approve: `{outcome:{outcome:"selected", optionId:<allow option>}}`
-    - decline: `{outcome:{outcome:"selected", optionId:<reject option>}}`
+    - exact selected option: `{outcome:{outcome:"selected", optionId:<selected option>}}`
+    - generic approve fallback: `{outcome:{outcome:"selected", optionId:<allow option>}}`
+    - generic decline fallback: `{outcome:{outcome:"selected", optionId:<reject option>}}`
     - cancel: `{outcome:{outcome:"cancelled"}}`
   - default deny if hub decision is missing/invalid/timeout.
 - cancellation:

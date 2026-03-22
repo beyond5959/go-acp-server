@@ -1,4 +1,4 @@
-import type { PlanEntry } from './types.ts'
+import type { PermissionOption, PlanEntry } from './types.ts'
 
 // ── SSE event payloads (mirror server API contract) ───────────────────────
 
@@ -60,6 +60,7 @@ export interface PermissionRequiredPayload {
   approval: string
   command: string
   requestId: string
+  options?: PermissionOption[]
 }
 
 // ── Callbacks ─────────────────────────────────────────────────────────────

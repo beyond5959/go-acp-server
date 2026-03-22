@@ -63,7 +63,7 @@ All files live under `internal/webui/web/src/`.
 | `main.ts` | App entry: `renderShell()`, `init()`, all DOM wiring. See patterns below. |
 | `components/settings-panel.ts` | Slide-in drawer: Client ID display/copy/reset, Bearer Token, Server URL, Light/Dark/System theme toggle. |
 | `components/new-thread-modal.ts` | Modal: agent card grid (radio, disabled for unavailable), absolute-path CWD validation, optional title, collapsible JSON agent-options textarea. |
-| `components/permission-card.ts` | `mountPermissionCard(listEl, event)`: appends ephemeral card with 15 s countdown, Allow/Deny buttons, resolved states. Calls `api.resolvePermission()`; ignores 409. |
+| `components/permission-card.ts` | `mountPermissionCard(listEl, event)`: appends ephemeral card with a 15 s countdown, renders all agent-advertised permission options (falls back to Allow/Deny when none are provided), and shows resolved states. Calls `api.resolvePermission()`; ignores 409. |
 | `style.css` | All styles. CSS custom properties (`--bg`, `--accent`, etc.) with `[data-theme="dark"]` override block. hljs tokens use CSS variables (`--hljs-fg`, `--hljs-kw`, …). |
 
 ### Key patterns in `main.ts`

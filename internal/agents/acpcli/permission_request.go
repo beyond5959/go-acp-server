@@ -75,8 +75,31 @@ func (p PermissionRequestPayload) ToAgentPermissionRequest() agents.PermissionRe
 	return agents.PermissionRequest{
 		Approval:  normalizePermissionApproval(p.ToolCall),
 		Command:   normalizePermissionCommand(p.ToolCall),
+		Options:   toAgentPermissionOptions(p.Options),
 		RawParams: rawParams,
 	}
+}
+
+func toAgentPermissionOptions(options []PermissionOption) []agents.PermissionOption {
+	if len(options) == 0 {
+		return nil
+	}
+	converted := make([]agents.PermissionOption, 0, len(options))
+	for _, option := range options {
+		optionID := strings.TrimSpace(option.OptionID)
+		if optionID == "" {
+			continue
+		}
+		converted = append(converted, agents.PermissionOption{
+			OptionID: optionID,
+			Name:     strings.TrimSpace(option.Name),
+			Kind:     strings.TrimSpace(option.Kind),
+		})
+	}
+	if len(converted) == 0 {
+		return nil
+	}
+	return converted
 }
 
 func (p PermissionRequestPayload) firstPath() string {

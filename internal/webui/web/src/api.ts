@@ -244,9 +244,12 @@ class ApiClient {
   /** POST /v1/permissions/{permissionId} */
   async resolvePermission(
     permissionId: string,
-    outcome: 'approved' | 'declined' | 'cancelled',
+    decision: {
+      outcome?: 'approved' | 'declined' | 'cancelled'
+      optionId?: string
+    },
   ): Promise<void> {
-    await this.request('POST', `/v1/permissions/${encodeURIComponent(permissionId)}`, { outcome })
+    await this.request('POST', `/v1/permissions/${encodeURIComponent(permissionId)}`, decision)
   }
 
   /** GET /v1/path-search?q={query} */
