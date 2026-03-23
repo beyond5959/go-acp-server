@@ -15,6 +15,15 @@
 
 ## Open Issues
 
+- ID: KI-034
+- Title: Human-readable stderr logs are less machine-friendly than JSON logs
+- Status: Open
+- Severity: Low
+- Affects: deployments that ingest ngent stderr into pipelines expecting one JSON object per line
+- Symptom: request/access logs and ACP debug traces are emitted as readable text lines, so strict JSON log collectors cannot parse them directly
+- Workaround: use a text log parser in the collector pipeline, or pin an earlier revision if JSON log envelopes are a hard requirement
+- Follow-up plan: consider an opt-in `--log-format=json|pretty` switch if operator demand for machine-readable logs returns
+
 - ID: KI-001
 - Title: SSE disconnect during long-running turn
 - Status: Open

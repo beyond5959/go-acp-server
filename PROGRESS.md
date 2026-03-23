@@ -13,6 +13,15 @@ This file is the source of milestone progress, validation commands, and next act
 
 ## Latest Update (2026-03-23)
 
+- `Post-M8` human-readable stderr logger rollout completed:
+  - replaced the previous `slog` JSON logger with a repo-local leveled logger in `internal/observability`, keeping the existing `Debug/Info/Warn/Error` call shape while switching output to readable text lines on `stderr`.
+  - changed HTTP request completion logs to a compact nginx-style access-log format such as `INFO: 2026-03-23 15:30:45 127.0.0.1 - "GET /v1/threads HTTP/1.1" 200 OK 12.4ms`.
+  - kept ACP `--debug` tracing and secret redaction intact; debug traces now render as readable text with sanitized embedded JSON payloads instead of JSON log envelopes.
+  - enabled ANSI color for level/status segments only when `stderr` is a TTY, so redirected output remains plain text.
+  - validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
 - `Post-M8` Cursor CLI ACP integration completed:
   - added `internal/agents/cursor` on top of the shared `acpcli` driver, with startup fallback across `agent acp` and `cursor-agent acp`.
   - wired `cursor` into startup preflight, `/v1/agents`, thread allowlist, turn factory, and agent-model discovery flow.

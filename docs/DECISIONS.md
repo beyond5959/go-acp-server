@@ -2,6 +2,7 @@
 
 ## ADR Index
 
+- ADR-053: Replace `slog` JSON output with a human-readable stderr logger and colored access logs. (Accepted)
 - ADR-001: HTTP/JSON API with SSE streaming transport. (Accepted)
 - ADR-002: Client identity via `X-Client-ID` header. (Accepted)
 - ADR-003: SQLite append-only events table as interaction source of truth. (Accepted)
@@ -52,6 +53,33 @@
 - ADR-050: Keep the left agent rail permanently expanded. (Accepted)
 - ADR-051: BLACKBOX AI ACP provider integration via shared ACP CLI driver. (Accepted)
 - ADR-052: Cursor CLI ACP provider integration with explicit ACP authentication. (Accepted)
+
+## ADR-053: Replace `slog` JSON Output With A Human-Readable Stderr Logger And Colored Access Logs
+
+- Status: Accepted
+- Date: 2026-03-23
+- Context:
+  - the previous stderr logger emitted JSON `slog` envelopes for every runtime event and HTTP request.
+  - operators reviewing ngent locally primarily read logs in a terminal, and the JSON shape made common request traffic harder to scan quickly.
+  - the product still needs the existing safety properties:
+    - stderr-only logging.
+    - leveled output with debug gating.
+    - secret redaction in errors and ACP traces.
+- Decision:
+  - replace the shared `slog` logger with a repo-local human-readable logger in `internal/observability`.
+  - keep the current logging call sites on a simple leveled API (`Debug/Info/Warn/Error`) to minimize churn outside the observability package.
+  - emit HTTP completion logs in a compact access-log shape:
+    - `INFO: <local-time> <client-ip> - "<method> <path> <proto>" <status> <statusText> <duration>`
+  - keep ACP debug tracing behind `--debug=true`, but print it as readable text fields with the sanitized RPC payload embedded as JSON.
+  - enable ANSI colors only when stderr is attached to a TTY, so redirected output remains plain text.
+- Consequences:
+  - local terminal logs are easier to scan, especially for high-volume request traffic.
+  - stderr output is no longer one-JSON-object-per-line, so external log collectors may need a text parser if they ingest ngent logs directly.
+  - secret redaction remains centralized in `internal/observability`, so changing the presentation layer does not weaken the fail-closed logging policy.
+- Alternatives considered:
+  - keep JSON `slog` and only add a prettier startup banner (rejected: request traffic would remain noisy).
+  - keep `slog` but swap in a custom pretty handler (rejected: the desired output is simpler as a small repo-local logger than as a `slog` compatibility layer).
+  - add a new pretty logger only for access logs and leave everything else as JSON (rejected: mixed formats on stderr would be inconsistent and harder to reason about).
 
 ## ADR-052: Cursor CLI ACP Provider Integration With Explicit ACP Authentication
 

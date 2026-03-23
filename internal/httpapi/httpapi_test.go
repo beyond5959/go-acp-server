@@ -8,11 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -23,6 +23,7 @@ import (
 	"github.com/beyond5959/ngent/internal/agents"
 	"github.com/beyond5959/ngent/internal/agents/acp"
 	"github.com/beyond5959/ngent/internal/agents/acpmodel"
+	"github.com/beyond5959/ngent/internal/observability"
 	runtimectl "github.com/beyond5959/ngent/internal/runtime"
 	"github.com/beyond5959/ngent/internal/storage"
 )
@@ -51,7 +52,7 @@ func TestHealthz(t *testing.T) {
 
 func TestRequestCompletionLogIncludesPathIPAndStatus(t *testing.T) {
 	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+	logger := observability.NewLoggerWithWriter(&logBuf, observability.LevelInfo)
 	h := newTestServer(t, testServerOptions{logger: logger})
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -63,52 +64,10 @@ func TestRequestCompletionLogIncludesPathIPAndStatus(t *testing.T) {
 		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusOK)
 	}
 
-	lines := strings.Split(strings.TrimSpace(logBuf.String()), "\n")
-	entry := map[string]any{}
-	found := false
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		candidate := map[string]any{}
-		if err := json.Unmarshal([]byte(line), &candidate); err != nil {
-			continue
-		}
-		if candidate["msg"] == "http.request.completed" {
-			entry = candidate
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("missing http.request.completed log entry, logs:\n%s", logBuf.String())
-	}
-
-	if got := fmt.Sprintf("%v", entry["method"]); got != http.MethodGet {
-		t.Fatalf("log method = %q, want %q", got, http.MethodGet)
-	}
-	if got := fmt.Sprintf("%v", entry["path"]); got != "/healthz" {
-		t.Fatalf("log path = %q, want %q", got, "/healthz")
-	}
-	if got := fmt.Sprintf("%v", entry["ip"]); got != "198.51.100.23" {
-		t.Fatalf("log ip = %q, want %q", got, "198.51.100.23")
-	}
-	if got := int(entry["status"].(float64)); got != http.StatusOK {
-		t.Fatalf("log status = %d, want %d", got, http.StatusOK)
-	}
-	if got := fmt.Sprintf("%v", entry["req_time"]); strings.TrimSpace(got) == "" {
-		t.Fatalf("log req_time is empty")
-	}
-	reqTimeRaw := fmt.Sprintf("%v", entry["req_time"])
-	if strings.Contains(reqTimeRaw, ".") {
-		t.Fatalf("log req_time includes sub-second precision: %q", reqTimeRaw)
-	}
-	reqTime, err := time.Parse(time.DateTime, reqTimeRaw)
-	if err != nil {
-		t.Fatalf("log req_time parse error: %v (value=%q)", err, reqTimeRaw)
-	}
-	if !reqTime.Equal(reqTime.Truncate(time.Second)) {
-		t.Fatalf("log req_time is not second precision: %q", reqTimeRaw)
+	logLine := strings.TrimSpace(logBuf.String())
+	pattern := regexp.MustCompile(`^INFO: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} 198\.51\.100\.23 - "GET /healthz HTTP/1\.1" 200 OK (0ms|[0-9]+us|[0-9]+\.[0-9]ms|[0-9]+\.[0-9]{3}s)$`)
+	if !pattern.MatchString(logLine) {
+		t.Fatalf("unexpected access log:\n%s", logBuf.String())
 	}
 }
 
@@ -3603,7 +3562,7 @@ type testServerOptions struct {
 	agentModelsFactory AgentModelsFactory
 	agentIdleTTL       time.Duration
 	permissionTimeout  time.Duration
-	logger             *slog.Logger
+	logger             *observability.Logger
 }
 
 func newTestServer(t *testing.T, opt testServerOptions) *Server {

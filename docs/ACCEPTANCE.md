@@ -75,10 +75,10 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - `go test ./cmd/ngent -count=1`
   - manual run: `go run ./cmd/ngent`
 
-## Requirement 10: Unified errors and structured logs
+## Requirement 10: Unified errors and readable access logs
 
 - Operation: trigger auth failure/path policy failure and inspect request completion logs.
-- Expected: `UNAUTHORIZED` and `FORBIDDEN` error envelopes are stable; request logs include `req_time`, `path`, `ip`, and `status`.
+- Expected: `UNAUTHORIZED` and `FORBIDDEN` error envelopes are stable; request logs emit one readable line with local-time request timestamp, remote address, request line, HTTP status text, and elapsed duration.
 - Verification command:
   - `go test ./internal/httpapi -run TestV1AuthToggle -count=1`
   - `go test ./internal/httpapi -run TestCreateThreadValidationCWDAllowedRoots -count=1`

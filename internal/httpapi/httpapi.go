@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -23,6 +22,7 @@ import (
 
 	"github.com/beyond5959/ngent/internal/agents"
 	"github.com/beyond5959/ngent/internal/agents/acpmodel"
+	"github.com/beyond5959/ngent/internal/observability"
 	"github.com/beyond5959/ngent/internal/runtime"
 	"github.com/beyond5959/ngent/internal/sse"
 	"github.com/beyond5959/ngent/internal/storage"
@@ -81,7 +81,7 @@ type Config struct {
 	TurnAgentFactory   TurnAgentFactory
 	AgentModelsFactory AgentModelsFactory
 	AgentIdleTTL       time.Duration
-	Logger             *slog.Logger
+	Logger             *observability.Logger
 	ContextRecentTurns int
 	ContextMaxChars    int
 	CompactMaxChars    int
@@ -102,7 +102,7 @@ type Server struct {
 	turnAgentFactory   TurnAgentFactory
 	agentModelsFactory AgentModelsFactory
 	agentIdleTTL       time.Duration
-	logger             *slog.Logger
+	logger             *observability.Logger
 	contextRecentTurns int
 	contextMaxChars    int
 	compactMaxChars    int
@@ -213,7 +213,7 @@ func New(cfg Config) *Server {
 
 	logger := cfg.Logger
 	if logger == nil {
-		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
+		logger = observability.NewLoggerWithWriter(io.Discard, observability.LevelError)
 	}
 
 	server := &Server{
@@ -299,17 +299,15 @@ func (s *Server) logRequestCompletion(r *http.Request, w *loggingResponseWriter,
 	if s.logger == nil {
 		return
 	}
-
-	s.logger.Info(
-		"http.request.completed",
-		"req_time", startedAt.UTC().Truncate(time.Second).Format(time.DateTime),
-		"method", r.Method,
-		"path", r.URL.Path,
-		"ip", requestClientIP(r),
-		"status", w.StatusCode(),
-		"duration_ms", time.Since(startedAt).Milliseconds(),
-		"resp_bytes", w.BytesWritten(),
-	)
+	s.logger.HTTPRequest(observability.HTTPRequestLogEntry{
+		RemoteAddr:  requestClientAddr(r),
+		Method:      r.Method,
+		Path:        requestLogPath(r),
+		Proto:       r.Proto,
+		Status:      w.StatusCode(),
+		RequestTime: startedAt,
+		Duration:    time.Since(startedAt),
+	})
 }
 
 func (s *Server) routeV1(w http.ResponseWriter, r *http.Request, clientID string) {
@@ -3633,7 +3631,7 @@ func (w *loggingResponseWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
 
-func requestClientIP(r *http.Request) string {
+func requestClientAddr(r *http.Request) string {
 	if r == nil {
 		return "unknown"
 	}
@@ -3657,10 +3655,26 @@ func requestClientIP(r *http.Request) string {
 	}
 
 	host, _, err := net.SplitHostPort(remoteAddr)
-	if err == nil && host != "" {
-		return host
+	if err == nil && strings.TrimSpace(host) != "" {
+		return strings.TrimSpace(host)
 	}
+
 	return remoteAddr
+}
+
+func requestLogPath(r *http.Request) string {
+	if r == nil || r.URL == nil {
+		return "/"
+	}
+
+	path := strings.TrimSpace(r.URL.RequestURI())
+	if path == "" {
+		path = strings.TrimSpace(r.URL.Path)
+	}
+	if path == "" {
+		path = "/"
+	}
+	return observability.RedactString(path)
 }
 
 func (s *Server) isAuthorized(r *http.Request) bool {

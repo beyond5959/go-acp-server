@@ -23,7 +23,7 @@ Modules:
 - `internal/context`: prompt injection strategy assembled in HTTP/runtime path from summary + recent turns + current input.
 - `internal/sse`: event formatting, stream fanout, resume helpers.
 - `internal/storage`: SQLite repository and migration management.
-- `internal/observability`: structured JSON logging and redaction helpers.
+- `internal/observability`: human-readable stderr logging, access-log formatting, ANSI-color helpers, and redaction helpers.
 
 ## 3. Concurrency Model
 
@@ -122,8 +122,9 @@ See `docs/API.md` for endpoint and schema contracts.
   - agent must be allowlisted.
   - cwd must be absolute.
 - thread option updates that change shared thread state are rejected while any session on that thread is active; session-only selection updates are allowed while a different session is running.
-- logs are JSON on stderr and redact sensitive data.
+- logs are human-readable on stderr and redact sensitive data.
 - `--debug=true` raises log verbosity to debug level and emits sanitized ACP JSON-RPC request/response traces on stderr.
+- access logs use a compact `INFO: <local-time> <client-ip> - "<method> <path> <proto>" <status> <text> <duration>` shape; ANSI colors are only used when stderr is a TTY.
 - HTTP payloads contain protocol data only.
 
 ## 10A. Shared ACP CLI Driver
@@ -168,7 +169,7 @@ See `docs/API.md` for concrete schema and codes.
   - one active turn per `(thread, session)` scope.
   - fail-closed permission workflow.
   - allowlisted `agent` and absolute+allowed `cwd` validation.
-  - protocol-only stdout/HTTP payloads, JSON logs on stderr.
+  - protocol-only stdout/HTTP payloads, human-readable logs on stderr.
 
 ### 11.2 Qwen ACP Protocol Profile
 
@@ -269,7 +270,7 @@ and upstream ACP schema:
   - one active turn per `(thread, session)` scope.
   - fail-closed permission workflow.
   - allowlisted `agent` and absolute+allowed `cwd` validation.
-  - protocol-only stdout/HTTP payloads, JSON logs on stderr.
+  - protocol-only stdout/HTTP payloads, human-readable logs on stderr.
 
 ### 13.2 Kimi ACP Protocol Profile
 
@@ -330,7 +331,7 @@ and upstream ACP schema:
   - one active turn per `(thread, session)` scope.
   - fail-closed permission workflow.
   - allowlisted `agent` and absolute+allowed `cwd` validation.
-  - protocol-only stdout/HTTP payloads, JSON logs on stderr.
+  - protocol-only stdout/HTTP payloads, human-readable logs on stderr.
 
 ### 14.2 Observed BLACKBOX ACP Protocol Profile
 

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/beyond5959/ngent/internal/observability"
 	"github.com/beyond5959/ngent/internal/runtime"
 )
 
@@ -88,7 +88,7 @@ func TestResolveListenAddr(t *testing.T) {
 func TestLogStartupPreflight(t *testing.T) {
 	t.Run("skip missing binary warning", func(t *testing.T) {
 		var buf bytes.Buffer
-		logger := slog.New(slog.NewJSONHandler(&buf, nil))
+		logger := observability.NewLoggerWithWriter(&buf, observability.LevelInfo)
 
 		logStartupPreflight(logger, "startup.qwen_unavailable", &exec.Error{Name: "qwen", Err: exec.ErrNotFound})
 
@@ -99,18 +99,18 @@ func TestLogStartupPreflight(t *testing.T) {
 
 	t.Run("warn on other preflight error", func(t *testing.T) {
 		var buf bytes.Buffer
-		logger := slog.New(slog.NewJSONHandler(&buf, nil))
+		logger := observability.NewLoggerWithWriter(&buf, observability.LevelInfo)
 
 		logStartupPreflight(logger, "startup.qwen_unavailable", errors.New("permission denied"))
 
 		got := buf.String()
-		if !strings.Contains(got, `"level":"WARN"`) {
+		if !strings.Contains(got, "WARN:") {
 			t.Fatalf("log output = %q, want WARN level", got)
 		}
-		if !strings.Contains(got, `"msg":"startup.qwen_unavailable"`) {
+		if !strings.Contains(got, "startup.qwen_unavailable") {
 			t.Fatalf("log output = %q, want startup event", got)
 		}
-		if !strings.Contains(got, `"error":"permission denied"`) {
+		if !strings.Contains(got, `error="permission denied"`) {
 			t.Fatalf("log output = %q, want error payload", got)
 		}
 	})
@@ -254,7 +254,7 @@ func TestGracefulShutdownForceCancelsTurns(t *testing.T) {
 		t.Fatalf("Activate() unexpected error: %v", err)
 	}
 
-	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	logger := observability.NewLoggerWithWriter(io.Discard, observability.LevelInfo)
 	gracefulShutdown(context.Background(), logger, &http.Server{}, controller, 50*time.Millisecond)
 
 	select {

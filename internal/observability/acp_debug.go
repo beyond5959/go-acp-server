@@ -3,7 +3,6 @@ package observability
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -11,7 +10,7 @@ import (
 
 var (
 	acpDebugEnabled atomic.Bool
-	acpDebugLogger  atomic.Pointer[slog.Logger]
+	acpDebugLogger  atomic.Pointer[Logger]
 )
 
 var (
@@ -20,14 +19,14 @@ var (
 )
 
 // ConfigureACPDebug toggles verbose ACP tracing on the shared logger.
-func ConfigureACPDebug(logger *slog.Logger, enabled bool) {
+func ConfigureACPDebug(logger *Logger, enabled bool) {
 	if !enabled {
 		acpDebugEnabled.Store(false)
 		acpDebugLogger.Store(nil)
 		return
 	}
 	if logger == nil {
-		logger = NewJSONLogger(slog.LevelDebug)
+		logger = NewLogger(LevelDebug)
 	}
 	acpDebugLogger.Store(logger)
 	acpDebugEnabled.Store(true)

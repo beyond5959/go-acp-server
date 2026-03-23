@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -37,7 +36,7 @@ import (
 )
 
 func main() {
-	logger := observability.NewJSONLogger(slog.LevelInfo)
+	logger := observability.NewLogger(observability.LevelInfo)
 
 	defaultDBPath, err := resolveDefaultDBPath()
 	if err != nil {
@@ -57,11 +56,11 @@ func main() {
 	shutdownGraceTimeout := flag.Duration("shutdown-grace-timeout", 8*time.Second, "graceful shutdown timeout for active turns")
 	flag.Parse()
 
-	logLevel := slog.LevelInfo
+	logLevel := observability.LevelInfo
 	if *debugFlag {
-		logLevel = slog.LevelDebug
+		logLevel = observability.LevelDebug
 	}
-	logger = observability.NewJSONLogger(logLevel)
+	logger = observability.NewLogger(logLevel)
 	observability.ConfigureACPDebug(logger, *debugFlag)
 
 	codexRuntimeConfig := codexagent.DefaultRuntimeConfig()
@@ -467,7 +466,7 @@ func resolveListenAddr(port int, allowPublic bool) (string, int, error) {
 	return listenAddr, port, nil
 }
 
-func logStartupPreflight(logger *slog.Logger, event string, err error) {
+func logStartupPreflight(logger *observability.Logger, event string, err error) {
 	if logger == nil || err == nil {
 		return
 	}
@@ -479,7 +478,7 @@ func logStartupPreflight(logger *slog.Logger, event string, err error) {
 
 func gracefulShutdown(
 	baseCtx context.Context,
-	logger *slog.Logger,
+	logger *observability.Logger,
 	srv *http.Server,
 	turns *runtime.TurnController,
 	timeout time.Duration,
@@ -488,7 +487,7 @@ func gracefulShutdown(
 		baseCtx = context.Background()
 	}
 	if logger == nil {
-		logger = observability.NewJSONLogger(slog.LevelInfo)
+		logger = observability.NewLogger(observability.LevelInfo)
 	}
 	if timeout <= 0 {
 		timeout = 8 * time.Second

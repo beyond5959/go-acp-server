@@ -20,7 +20,7 @@ ACP protocol reference: <https://agentclientprotocol.com/>
   - cancel must take effect quickly.
   - permission workflow is fail-closed by default.
 - MUST keep stdout and HTTP output protocol-only.
-- MUST send logs to stderr with JSON `slog`.
+- MUST send logs to stderr using the repo's human-readable logger; access logs should be easy to scan at a glance and ACP debug logs must still redact secrets.
 - MUST redact sensitive information in logs and errors.
 
 ## Long-Term Memory Rules
