@@ -132,4 +132,13 @@ var migrations = []migration{
 			);`,
 		},
 	},
+	{
+		version: 10,
+		name:    "rename_default_agent_config_catalog_model_id",
+		sql: []string{
+			`UPDATE agent_config_catalogs
+			SET model_id = '__ngent_default__'
+			WHERE model_id = '__' || 'agent' || '_' || 'hub' || '_default__';`,
+		},
+	},
 }

@@ -69,12 +69,10 @@ class ApiClient {
     return `${store.get().serverUrl}${path}`
   }
 
-  private headers(): Record<string, string> {
+  private headers(contentType: string | null = 'application/json'): Record<string, string> {
     const { clientId, authToken } = store.get()
-    const h: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'X-Client-ID': clientId,
-    }
+    const h: Record<string, string> = { 'X-Client-ID': clientId }
+    if (contentType) h['Content-Type'] = contentType
     if (authToken) h['Authorization'] = `Bearer ${authToken}`
     return h
   }
@@ -229,9 +227,31 @@ class ApiClient {
    * POST /v1/threads/{threadId}/turns — opens an SSE stream.
    * Starts the stream immediately and returns the TurnStream handle.
    */
-  startTurn(threadId: string, input: string, callbacks: TurnStreamCallbacks): TurnStream {
+  startTurn(
+    threadId: string,
+    params: { input: string; attachments?: File[] },
+    callbacks: TurnStreamCallbacks,
+  ): TurnStream {
     const url = this.url(`/v1/threads/${encodeURIComponent(threadId)}/turns`)
-    const stream = new TurnStream(url, this.headers(), { input, stream: true }, callbacks)
+    const attachments = params.attachments ?? []
+    let body: FormData | Record<string, unknown> = {
+      input: params.input,
+      stream: true,
+    }
+    let headers = this.headers()
+
+    if (attachments.length) {
+      const formData = new FormData()
+      formData.set('input', params.input)
+      formData.set('stream', 'true')
+      attachments.forEach(file => {
+        formData.append('attachments', file, file.name)
+      })
+      body = formData
+      headers = this.headers(null)
+    }
+
+    const stream = new TurnStream(url, headers, body, callbacks)
     void stream.start()
     return stream
   }

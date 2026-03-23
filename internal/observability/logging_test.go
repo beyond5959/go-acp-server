@@ -2,46 +2,42 @@ package observability
 
 import (
 	"bytes"
-	"encoding/json"
-	"fmt"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestNewJSONHandlerUsesSecondPrecisionTimestamp(t *testing.T) {
+func TestLoggerFormatsInfoLine(t *testing.T) {
 	var buf bytes.Buffer
-	logger := slog.New(NewJSONHandler(&buf, slog.LevelInfo))
+	logger := NewLoggerWithWriter(&buf, LevelInfo)
 
-	logger.Info("test.log", "k", "v")
+	logger.Info("startup.ready", "port", 8686, "allowPublic", false)
 
-	line := strings.TrimSpace(buf.String())
-	if line == "" {
-		t.Fatal("empty log output")
+	got := strings.TrimSpace(buf.String())
+	want := "INFO: startup.ready port=8686 allowPublic=false"
+	if got != want {
+		t.Fatalf("log output = %q, want %q", got, want)
 	}
-	entry := map[string]any{}
-	if err := json.Unmarshal([]byte(line), &entry); err != nil {
-		t.Fatalf("unmarshal log: %v", err)
-	}
+}
 
-	timeVal, ok := entry["time"].(string)
-	if !ok {
-		t.Fatalf("time type = %T, want string", entry["time"])
-	}
-	timeRaw := strings.TrimSpace(timeVal)
-	if timeRaw == "" {
-		t.Fatal("time is empty")
-	}
-	if strings.Contains(timeRaw, ".") {
-		t.Fatalf("time includes sub-second precision: %q", timeRaw)
-	}
-	parsed, err := time.Parse(time.DateTime, timeRaw)
-	if err != nil {
-		t.Fatalf("time parse error: %v (value=%q)", err, timeRaw)
-	}
-	if !parsed.Equal(parsed.UTC()) {
-		t.Fatalf("time is not UTC: %q", timeRaw)
+func TestHTTPRequestFormatsAccessLog(t *testing.T) {
+	var buf bytes.Buffer
+	logger := NewLoggerWithWriter(&buf, LevelInfo)
+
+	logger.HTTPRequest(HTTPRequestLogEntry{
+		RemoteAddr:  "127.0.0.1",
+		Method:      "GET",
+		Path:        "/api/sessions/?limit=100&offset=0",
+		Proto:       "HTTP/1.1",
+		Status:      200,
+		RequestTime: time.Date(2026, time.March, 23, 15, 30, 45, 0, time.FixedZone("UTC+8", 8*60*60)),
+		Duration:    1250 * time.Microsecond,
+	})
+
+	got := strings.TrimSpace(buf.String())
+	want := `INFO: 2026-03-23 15:30:45 127.0.0.1 - "GET /api/sessions/?limit=100&offset=0 HTTP/1.1" 200 OK 1.2ms`
+	if got != want {
+		t.Fatalf("access log = %q, want %q", got, want)
 	}
 }
 
@@ -49,7 +45,7 @@ func TestLogACPMessageDisabledDoesNotEmit(t *testing.T) {
 	ConfigureACPDebug(nil, false)
 
 	var buf bytes.Buffer
-	logger := slog.New(NewJSONHandler(&buf, slog.LevelDebug))
+	logger := NewLoggerWithWriter(&buf, LevelDebug)
 	ConfigureACPDebug(logger, false)
 
 	LogACPMessage("codex-embedded", "outbound", map[string]any{
@@ -68,7 +64,7 @@ func TestLogACPMessageDisabledDoesNotEmit(t *testing.T) {
 
 func TestLogACPMessageSanitizesSensitiveFields(t *testing.T) {
 	var buf bytes.Buffer
-	logger := slog.New(NewJSONHandler(&buf, slog.LevelDebug))
+	logger := NewLoggerWithWriter(&buf, LevelDebug)
 	ConfigureACPDebug(logger, true)
 	t.Cleanup(func() {
 		ConfigureACPDebug(nil, false)
@@ -89,50 +85,31 @@ func TestLogACPMessageSanitizesSensitiveFields(t *testing.T) {
 	if line == "" {
 		t.Fatal("empty debug log output")
 	}
-
-	entry := map[string]any{}
-	if err := json.Unmarshal([]byte(line), &entry); err != nil {
-		t.Fatalf("unmarshal log: %v", err)
+	if !strings.Contains(line, "DEBUG: acp.message") {
+		t.Fatalf("missing debug prefix in %q", line)
 	}
-	if got := fmt.Sprintf("%v", entry["msg"]); got != "acp.message" {
-		t.Fatalf("msg = %q, want %q", got, "acp.message")
+	if !strings.Contains(line, "component=codex-embedded") {
+		t.Fatalf("component missing from %q", line)
 	}
-	if got := fmt.Sprintf("%v", entry["component"]); got != "codex-embedded" {
-		t.Fatalf("component = %q, want %q", got, "codex-embedded")
+	if !strings.Contains(line, "direction=outbound") {
+		t.Fatalf("direction missing from %q", line)
 	}
-	if got := fmt.Sprintf("%v", entry["direction"]); got != "outbound" {
-		t.Fatalf("direction = %q, want %q", got, "outbound")
+	if !strings.Contains(line, "rpcType=request") {
+		t.Fatalf("rpcType missing from %q", line)
 	}
-	if got := fmt.Sprintf("%v", entry["rpcType"]); got != "request" {
-		t.Fatalf("rpcType = %q, want %q", got, "request")
+	if !strings.Contains(line, "method=session/prompt") {
+		t.Fatalf("method missing from %q", line)
 	}
-	if got := fmt.Sprintf("%v", entry["method"]); got != "session/prompt" {
-		t.Fatalf("method = %q, want %q", got, "session/prompt")
+	if !strings.Contains(line, `"authToken":"[REDACTED]"`) {
+		t.Fatalf("authToken not redacted in %q", line)
 	}
-
-	rpc, ok := entry["rpc"].(map[string]any)
-	if !ok {
-		t.Fatalf("rpc type = %T, want map[string]any", entry["rpc"])
+	if !strings.Contains(line, `"api_key":"[REDACTED]"`) {
+		t.Fatalf("nested api_key not redacted in %q", line)
 	}
-	params, ok := rpc["params"].(map[string]any)
-	if !ok {
-		t.Fatalf("params type = %T, want map[string]any", rpc["params"])
+	if strings.Contains(line, "secret-token") {
+		t.Fatalf("secret token still present in %q", line)
 	}
-	if got := fmt.Sprintf("%v", params["authToken"]); got != "[REDACTED]" {
-		t.Fatalf("authToken = %q, want %q", got, "[REDACTED]")
-	}
-	nested, ok := params["nested"].(map[string]any)
-	if !ok {
-		t.Fatalf("nested type = %T, want map[string]any", params["nested"])
-	}
-	if got := fmt.Sprintf("%v", nested["api_key"]); got != "[REDACTED]" {
-		t.Fatalf("nested api_key = %q, want %q", got, "[REDACTED]")
-	}
-	prompt, _ := params["prompt"].(string)
-	if strings.Contains(prompt, "secret-token") {
-		t.Fatalf("prompt still contains bearer token: %q", prompt)
-	}
-	if strings.Contains(prompt, "sk-abcdef") {
-		t.Fatalf("prompt still contains API key: %q", prompt)
+	if strings.Contains(line, "sk-abcdef") {
+		t.Fatalf("openai key still present in %q", line)
 	}
 }

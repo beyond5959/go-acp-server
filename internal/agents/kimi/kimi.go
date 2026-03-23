@@ -147,11 +147,8 @@ func initializeParams() map[string]any {
 	}
 }
 
-func promptParams(sessionID, input, modelID string) map[string]any {
-	params := map[string]any{
-		"sessionId": strings.TrimSpace(sessionID),
-		"prompt":    []map[string]any{{"type": "text", "text": input}},
-	}
+func promptParams(sessionID string, prompt agents.Prompt, modelID string) map[string]any {
+	params := acpcli.ACPPromptParams(sessionID, prompt)
 	if modelID = strings.TrimSpace(modelID); modelID != "" {
 		params["model"] = modelID
 	}
@@ -202,6 +199,23 @@ func (s commandSpec) args(modelID, thinkingArg string) []string {
 		args = append(args, "acp")
 	}
 	return args
+}
+
+const (
+	reasoningConfigID      = "reasoning"
+	reasoningValueEnabled  = "enabled"
+	reasoningValueDisabled = "disabled"
+)
+
+func normalizeThinkingValue(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case reasoningValueEnabled, "true", "on", "thinking":
+		return reasoningValueEnabled, true
+	case reasoningValueDisabled, "false", "off", "standard":
+		return reasoningValueDisabled, true
+	default:
+		return "", false
+	}
 }
 
 func kimiThinkingArg(configOverrides map[string]string) string {

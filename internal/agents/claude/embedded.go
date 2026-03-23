@@ -280,6 +280,11 @@ func (c *Client) Close() error {
 
 // Stream sends one prompt to the embedded Claude runtime and emits deltas.
 func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta string) error) (agents.StopReason, error) {
+	return c.StreamPrompt(ctx, agents.TextPrompt(input), onDelta)
+}
+
+// StreamPrompt sends one structured prompt to the embedded Claude runtime and emits deltas.
+func (c *Client) StreamPrompt(ctx context.Context, prompt agents.Prompt, onDelta func(delta string) error) (agents.StopReason, error) {
 	if c == nil {
 		return agents.StopReasonEndTurn, errors.New("claude: nil client")
 	}
@@ -289,6 +294,7 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	prompt = agents.NormalizePrompt(prompt)
 
 	const maxAttempts = 2
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -311,7 +317,7 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 			}
 		}
 
-		stopReason, streamErr := c.streamOnce(ctx, runtime, sessionID, input, onDelta)
+		stopReason, streamErr := c.streamOnce(ctx, runtime, sessionID, prompt, onDelta)
 		if streamErr == nil {
 			return stopReason, nil
 		}
@@ -329,7 +335,7 @@ func (c *Client) streamOnce(
 	ctx context.Context,
 	runtime *claudeacp.EmbeddedRuntime,
 	sessionID string,
-	input string,
+	prompt agents.Prompt,
 	onDelta func(delta string) error,
 ) (agents.StopReason, error) {
 	updates, unsubscribe := runtime.SubscribeUpdates(256)
@@ -360,10 +366,14 @@ func (c *Client) streamOnce(
 		err      error
 	}
 	promptDone := make(chan promptResult, 1)
+	promptContent := prompt.ACPContent()
+	if promptContent == nil {
+		promptContent = []map[string]any{}
+	}
 	go func() {
 		resp, reqErr := c.clientRequest(promptCtx, runtime, methodSessionPrompt, map[string]any{
 			"sessionId": sessionID,
-			"prompt":    input,
+			"prompt":    promptContent,
 		})
 		promptDone <- promptResult{response: resp, err: reqErr}
 	}()

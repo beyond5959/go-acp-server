@@ -20,7 +20,7 @@ ACP protocol reference: <https://agentclientprotocol.com/>
   - cancel must take effect quickly.
   - permission workflow is fail-closed by default.
 - MUST keep stdout and HTTP output protocol-only.
-- MUST send logs to stderr with JSON `slog`.
+- MUST send logs to stderr using the repo's human-readable logger; access logs should be easy to scan at a glance and ACP debug logs must still redact secrets.
 - MUST redact sensitive information in logs and errors.
 
 ## Long-Term Memory Rules
@@ -56,7 +56,7 @@ All files live under `internal/webui/web/src/`.
 |---|---|
 | `types.ts` | All TypeScript interfaces: `AgentInfo`, `Thread`, `Turn`, `TurnEvent`, `Message`, `PermissionRequest`, `StreamState`, `AppState`. |
 | `utils.ts` | `generateUUID`, `formatTimestamp`, `formatRelativeTime`, `isAbsolutePath`, `escHtml`, `debounce`. |
-| `store.ts` | Singleton `AppStore`: `get()` / `set(patch)` / `subscribe(fn) → unsub`. Persists `clientId`, `authToken`, `serverUrl`, `theme` to `localStorage` (keys `agent-hub:*`). Never persists runtime data. |
+| `store.ts` | Singleton `AppStore`: `get()` / `set(patch)` / `subscribe(fn) → unsub`. Persists `clientId`, `authToken`, `serverUrl`, `theme` to `localStorage` (keys `ngent:*`). Never persists runtime data. |
 | `api.ts` | `ApiClient` singleton (`api`): reads `serverUrl`/`clientId`/`authToken` from store on every call. Methods: `getAgents`, `getThreads`, `getHistory`, `createThread`, `startTurn`, `cancelTurn`, `resolvePermission`. |
 | `sse.ts` | `TurnStream` class: POST SSE via `fetch` + `ReadableStream` (not `EventSource` — lacks POST/custom-header support). Parses `event:\ndata:\n\n` blocks. Callbacks: `onTurnStarted`, `onDelta`, `onCompleted`, `onError`, `onPermissionRequired`, `onDisconnect`. `abort()` sets `terminated=true` and aborts fetch. |
 | `markdown.ts` | Configures `marked` renderer: `html()` → `escHtml()` (XSS guard); `code()` → `.code-block` with hljs highlight, copy button, optional "Show all N lines" fold (>20 lines). Exports `renderMarkdown(text)` and `bindMarkdownControls(container)` (idempotent, `data-bound` guard). |

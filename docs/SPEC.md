@@ -2,12 +2,12 @@
 
 ## 1. Goal
 
-Build a local-first Code Agent Hub Server that:
+Build a local-first Ngent Server that:
 
 - serves HTTP/JSON APIs.
 - streams turn events via SSE (`text/event-stream`).
 - supports multi-client and multi-thread execution.
-- is designed to support ACP-compatible agents (for example Claude Code, Gemini, Kimi, OpenCode, Qwen, BLACKBOX AI, Codex).
+- is designed to support ACP-compatible agents (for example Claude Code, Cursor CLI, Gemini, Kimi, OpenCode, Qwen, BLACKBOX AI, Codex).
 - persists interaction state/events in SQLite.
 - forwards runtime permissions to the owning client with fail-closed behavior.
 
@@ -19,11 +19,11 @@ Modules:
 - `internal/runtime`: thread controller, turn state machine, cancellation coordination.
 - `internal/agents`: agent providers (fake + ACP-compatible implementations), plus context-bound permission/reasoning/session/plan callback bridges.
   - per-turn provider resolution selects implementation by thread metadata (agent id + cwd).
-  - `internal/agents/acpcli` is the shared ACP CLI driver used by `qwen`, `opencode`, `gemini`, `kimi`, and `blackbox`; provider-specific hooks own command startup, request parameter shaping, permission mapping, and cancel quirks.
+  - `internal/agents/acpcli` is the shared ACP CLI driver used by `qwen`, `opencode`, `gemini`, `kimi`, `blackbox`, and `cursor`; provider-specific hooks own command startup, request parameter shaping, permission mapping, auth/model quirks, and cancel behavior.
 - `internal/context`: prompt injection strategy assembled in HTTP/runtime path from summary + recent turns + current input.
 - `internal/sse`: event formatting, stream fanout, resume helpers.
 - `internal/storage`: SQLite repository and migration management.
-- `internal/observability`: structured JSON logging and redaction helpers.
+- `internal/observability`: human-readable stderr logging, access-log formatting, ANSI-color helpers, and redaction helpers.
 
 ## 3. Concurrency Model
 
@@ -40,7 +40,7 @@ Modules:
 - On server boot: no agent process is started.
 - On first thread usage: runtime requests provider instance for that thread.
 - On first turn execution for embedded-provider thread (currently `codex`): server creates the in-process runtime and initializes ACP session lazily.
-- Process-per-operation ACP CLI providers (`qwen`, `opencode`, `gemini`, `kimi`, `blackbox`) reuse the shared `acpcli` driver; each provider opens a fresh ACP stdio process per stream/config/list/discovery/transcript operation while keeping provider-specific startup hooks.
+- Process-per-operation ACP CLI providers (`qwen`, `opencode`, `gemini`, `kimi`, `blackbox`, `cursor`) reuse the shared `acpcli` driver; each provider opens a fresh ACP stdio process per stream/config/list/discovery/transcript operation while keeping provider-specific startup hooks.
 - Embedded runtime `session/new` is created with `cwd=thread.cwd` (validated as absolute path at thread creation).
 - If `thread.agent_options_json` contains `modelId` / `configOverrides`, those values are the persisted desired session config for the thread.
 - Provider instances are cached per thread + session/fresh-session scope and reclaimed by idle TTL (`--agent-idle-ttl`) when that scope has no active turn.
@@ -122,8 +122,9 @@ See `docs/API.md` for endpoint and schema contracts.
   - agent must be allowlisted.
   - cwd must be absolute.
 - thread option updates that change shared thread state are rejected while any session on that thread is active; session-only selection updates are allowed while a different session is running.
-- logs are JSON on stderr and redact sensitive data.
+- logs are human-readable on stderr and redact sensitive data.
 - `--debug=true` raises log verbosity to debug level and emits sanitized ACP JSON-RPC request/response traces on stderr.
+- access logs use a compact `INFO: <local-time> <client-ip> - "<method> <path> <proto>" <status> <text> <duration>` shape; ANSI colors are only used when stderr is a TTY.
 - HTTP payloads contain protocol data only.
 
 ## 10A. Shared ACP CLI Driver
@@ -140,7 +141,10 @@ See `docs/API.md` for endpoint and schema contracts.
   - request parameter schemas
   - permission-request response encoding
   - cancel strategy
-  - provider quirks such as Kimi model/reasoning startup hints and Gemini/BLACKBOX stdout-noise filtering
+  - provider quirks such as:
+    - Kimi model/reasoning startup hints
+    - Gemini/BLACKBOX stdout-noise filtering
+    - Cursor ACP `authenticate(cursor_login)` and model selection via `session/set_config_option("model", ...)`
 - `internal/agents/acpstdio` now supports opt-in stdout-noise tolerance so providers like Gemini can ignore non-JSON stdout lines without maintaining a separate transport implementation.
 
 ## 10. Error Contract
@@ -165,7 +169,7 @@ See `docs/API.md` for concrete schema and codes.
   - one active turn per `(thread, session)` scope.
   - fail-closed permission workflow.
   - allowlisted `agent` and absolute+allowed `cwd` validation.
-  - protocol-only stdout/HTTP payloads, JSON logs on stderr.
+  - protocol-only stdout/HTTP payloads, human-readable logs on stderr.
 
 ### 11.2 Qwen ACP Protocol Profile
 
@@ -266,7 +270,7 @@ and upstream ACP schema:
   - one active turn per `(thread, session)` scope.
   - fail-closed permission workflow.
   - allowlisted `agent` and absolute+allowed `cwd` validation.
-  - protocol-only stdout/HTTP payloads, JSON logs on stderr.
+  - protocol-only stdout/HTTP payloads, human-readable logs on stderr.
 
 ### 13.2 Kimi ACP Protocol Profile
 
@@ -327,7 +331,7 @@ and upstream ACP schema:
   - one active turn per `(thread, session)` scope.
   - fail-closed permission workflow.
   - allowlisted `agent` and absolute+allowed `cwd` validation.
-  - protocol-only stdout/HTTP payloads, JSON logs on stderr.
+  - protocol-only stdout/HTTP payloads, human-readable logs on stderr.
 
 ### 14.2 Observed BLACKBOX ACP Protocol Profile
 
@@ -721,3 +725,32 @@ The integration follows the official ACP startup form `blackbox --experimental-a
   - after a turn completes (or fails/disconnects after session init), the UI reloads stored config options and reveals the controls if metadata is now known.
   - switching to a different session clears the thread-local config cache so stale controls do not linger before the destination session cache or next user-triggered `session/load` repopulates the controls.
   - after session-history replay finishes for the selected session, the UI refreshes stored config options again so controls can appear immediately if that replay taught sqlite a new session snapshot.
+
+### 18.5 Web UI Uploads and ACP `resource_link`
+
+- The turn pipeline now accepts structured user prompt content:
+  - text blocks
+  - ACP `resource_link` blocks with local `file://` URIs
+- HTTP request handling:
+  - `POST /v1/threads/{threadId}/turns` continues to accept JSON `{input,stream}` for text-only callers.
+  - the same endpoint also accepts `multipart/form-data` with:
+    - `input`: optional text
+    - `stream=true`
+    - one or more `attachments` file parts
+  - each uploaded file is persisted into the local temp directory and converted into one normalized prompt item:
+    - `type=resource_link`
+    - `uri=file:///...`
+    - `name=<original base filename>`
+    - `mimeType=<parsed/sniffed MIME>`
+    - `size=<bytes copied>`
+- Prompt assembly:
+  - the agent layer now uses a shared structured prompt model instead of forcing every turn through one string.
+  - when ngent injects summary/recent-turn context, it rewrites only the text portion of the prompt and preserves resource links as separate items.
+  - non-ACP/fallback streamers still receive a plain-text representation that includes an `[Attached Resources]` section.
+- Persistence:
+  - `turns.request_text` stores the plain-text fallback representation so context-compaction and non-ACP flows still retain attachment references.
+  - turns with uploaded resources also persist a `user_prompt` event containing the original structured prompt array for history/UI reconstruction.
+- Web UI:
+  - the composer footer order is `Attachment -> Model -> Reasoning` on the left, mirrored by `Send` on the right.
+  - attachments are held in thread-local in-memory draft state until send, with image previews when possible.
+  - the transcript renders sent user attachments as cards and rebuilds them from `user_prompt` history events after reload.

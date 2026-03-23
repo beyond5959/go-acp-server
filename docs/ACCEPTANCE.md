@@ -75,10 +75,10 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - `go test ./cmd/ngent -count=1`
   - manual run: `go run ./cmd/ngent`
 
-## Requirement 10: Unified errors and structured logs
+## Requirement 10: Unified errors and readable access logs
 
 - Operation: trigger auth failure/path policy failure and inspect request completion logs.
-- Expected: `UNAUTHORIZED` and `FORBIDDEN` error envelopes are stable; request logs include `req_time`, `path`, `ip`, and `status`.
+- Expected: `UNAUTHORIZED` and `FORBIDDEN` error envelopes are stable; request logs emit one readable line with local-time request timestamp, remote address, request line, HTTP status text, and elapsed duration.
 - Verification command:
   - `go test ./internal/httpapi -run TestV1AuthToggle -count=1`
   - `go test ./internal/httpapi -run TestCreateThreadValidationCWDAllowedRoots -count=1`
@@ -192,6 +192,26 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - fake-process/unit path: pending this change set's validation run
   - real smoke: not run in the restricted sandbox environment used for this implementation pass
 
+## Requirement 16C: Cursor CLI Agent
+
+- Operation: verify Cursor provider is listed and can complete ACP handshakes/turn lifecycle through ngent.
+- Expected:
+  - `GET /v1/agents` includes `{"id":"cursor","name":"Cursor CLI","status":"available"}` when either `agent` or `cursor-agent` is in PATH, and omits `cursor` when neither binary is available.
+  - thread creation accepts `agent=cursor`.
+  - provider performs ACP `authenticate` with `methodId="cursor_login"` before `session/new` / `session/load`.
+  - selected `agentOptions.modelId` is applied via ACP `session/set_config_option("model", ...)`.
+  - turn streaming emits standard `message_delta` events and finishes with `turn_completed` (or explicit upstream error envelope).
+- Verification commands:
+  - `go test ./internal/agents/cursor -count=1`
+  - `go test ./internal/agents/acpcli -run TestPickPermissionOptionIDNormalizesKinds -count=1`
+  - `go test ./cmd/ngent -run TestSupportedAgentsOnlyIncludesAvailableAgents -count=1`
+- Latest observed validation (2026-03-23):
+  - official docs + local ACP probe: `initialize -> authenticate(cursor_login) -> session/new` confirmed against the installed Cursor CLI
+  - local probe: `session/new.model` / `session/new.modelId` were ignored, while `session/set_config_option("model", ...)` updated the active model
+  - fake-process/unit path: pass
+  - full repository gate: pass (`cd internal/webui/web && npm run build`, `go test ./...`)
+  - real prompt smoke: not recorded as a stable acceptance gate because the local Cursor account can return plan/quota gating text unrelated to ngent's transport integration
+
 ## Requirement 17: Thread Delete Lifecycle
 
 - Operation: delete an existing thread from API/UI, verify ownership behavior, conflict behavior, and provider cleanup.
@@ -256,7 +276,6 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - `go test ./internal/httpapi -run TestThreadConfigOptionsPersistConfigOverrides -count=1`
   - `go test ./internal/httpapi -run TestV1AgentModelsUsesStoredCatalog -count=1`
   - `go test ./internal/agents/acpmodel -count=1`
-  - `go test ./cmd/ngent -run TestAgentConfigCatalogRefresher -count=1`
   - `go test ./cmd/ngent -run TestExtractConfigOverrides -count=1`
   - `cd internal/webui/web && npm run build`
   - `go test ./...`
@@ -479,11 +498,6 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - `go test ./internal/httpapi -run 'Test(V1AgentModels|V1AgentModelsUsesStoredCatalog|V1AgentModelsEmptyWhenNoStoredCatalog|ThreadConfigOptionsGetAndSetModel|ThreadConfigOptionsGetUsesStoredCatalog|ThreadConfigOptionsPersistConfigOverrides|ThreadConfigOptionsRestoreFromSessionCacheAfterSessionSwitch|ThreadSessionHistoryEndpointPersistsConfigOptionsForSelectedSession|ThreadSessionHistoryEndpointReloadsLiveWhenTranscriptCachedButConfigMissing|ThreadConfigOptionsUnsupportedManager)$' -count=1`
   - `cd internal/webui/web && npm run build`
   - `go test ./...`
-  - real Kimi Web UI validation:
-    - run `go run ./cmd/ngent -db-path /tmp/ngent-session-config.db -port 8687 --debug`
-    - send one real message to create a fresh session and learn model metadata
-    - switch to an older session and confirm the model button hides when that session has no cached snapshot
-    - switch back to the fresh learned session and confirm the model button reappears immediately without sending another turn
   - real Codex Web UI validation:
     - run `go run ./cmd/ngent -db-path /tmp/ngent-session-load-config.db -port 8687 --debug`
     - without sending any turn, click an existing Codex session from the sidebar
@@ -508,5 +522,25 @@ This checklist defines executable acceptance checks for requirements 1-16.
 - Verification commands (executed 2026-03-22):
   - `go test ./internal/agents -run 'TestParseACPUpdateAgentMessageChunkKeepsNonTextContent|TestNewACPNotificationHandlerRoutesStructuredMessageContent' -count=1`
   - `go test ./internal/httpapi -run 'TestTurnsSSEIncludesStructuredMessageContentAndPersistsHistory' -count=1`
+  - `cd internal/webui/web && npm run build`
+  - `go test ./...`
+
+## Requirement 28: Web UI Attachment Uploads Flow Through ACP Resource Links
+
+- Operation:
+  - open the Web UI composer on a thread for an ACP-backed agent.
+  - attach one file or image from the new attachment button in the lower-left composer footer; optionally also enter text.
+  - send the turn and observe the live SSE stream plus persisted turn history.
+  - reload the page or refetch `GET /v1/threads/{threadId}/history?includeEvents=true`.
+- Expected:
+  - the composer footer order is `Attachment`, `Model`, `Reasoning` on the left and `Send` on the right.
+  - the Web UI allows attachment-only sends as well as text+attachment sends, shows removable attachment chips/previews before send, and accepts clipboard file/image paste (`Cmd+V` on macOS) into the current composer.
+  - `POST /v1/threads/{threadId}/turns` accepts `multipart/form-data` and persists uploaded files into the local temp directory before dispatching the turn.
+  - ACP-backed agents receive `session/prompt.prompt[]` with ordinary text items plus `resource_link` items containing `uri`, `name`, `mimeType`, and `size`.
+  - ngent persists a readable `requestText` summary plus a structured `user_prompt` history event so attachment cards can be reconstructed after reload.
+  - the Web UI renders uploaded user attachments as cards in the transcript both immediately after send and after history reload.
+- Verification commands (executed 2026-03-23):
+  - `go test ./internal/httpapi -run 'Test(MultipartTurnUploadsAttachmentsAsResourceLinks|BuildInjectedPromptKeepsResourceLinksWhenInjectingContext)' -count=1`
+  - `go test ./internal/agents/opencode -run 'TestStreamPromptSendsResourceLinks' -count=1`
   - `cd internal/webui/web && npm run build`
   - `go test ./...`

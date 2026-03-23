@@ -32,12 +32,12 @@
 - [ ] 在 `internal/httpapi/httpapi.go` 注册前端路由（优先级低于 `/v1/*` 和 `/healthz`）
 - [ ] Makefile 新增 `build-web`（`cd web && npm ci && npm run build`），更新 `run` 依赖
 - [ ] `.gitignore` 排除 `web/node_modules`；`web/dist` 提交到仓库（供无 Node 环境使用）
-- [ ] 提交占位 `index.html`（显示"Agent Hub"标题），验证 embed 流程通端到端
+- [ ] 提交占位 `index.html`（显示"Ngent"标题），验证 embed 流程通端到端
 
 ### 验收标准
 
-- `make build-web && make run` 后，浏览器访问 `http://127.0.0.1:8686/` 返回 200，内容包含 "Agent Hub"。
-- `make build-web && make run` 后，局域网设备扫描启动输出中的二维码可打开 Web UI（页面包含 "Agent Hub"）。
+- `make build-web && make run` 后，浏览器访问 `http://127.0.0.1:8686/` 返回 200，内容包含 "Ngent"。
+- `make build-web && make run` 后，局域网设备扫描启动输出中的二维码可打开 Web UI（页面包含 "Ngent"）。
 - `curl http://127.0.0.1:8686/v1/agents -H 'X-Client-ID: test'` 仍返回正确 JSON（API 路由不受影响）。
 - `go test ./...` 全部通过（含 webui 包单测：验证 Handler 对 `/` 返回 200 且 Content-Type 为 `text/html`）。
 

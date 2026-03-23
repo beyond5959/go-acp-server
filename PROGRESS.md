@@ -2,16 +2,43 @@
 
 ## Project Overview
 
-Code Agent Hub Server is a Go service that exposes HTTP/JSON APIs and SSE streaming for multi-client, multi-thread agent turns.
+Ngent Server is a Go service that exposes HTTP/JSON APIs and SSE streaming for multi-client, multi-thread agent turns.
 The system targets ACP-compatible agent providers, lazily starts per-thread agents, persists interaction history in SQLite, and bridges runtime permission requests back to clients.
-Current built-in providers are `codex`, `claude`, `opencode`, `gemini`, `kimi`, `qwen`, and `blackbox`.
+Current built-in providers are `codex`, `claude`, `cursor`, `opencode`, `gemini`, `kimi`, `qwen`, and `blackbox`.
 This file is the source of milestone progress, validation commands, and next actions.
 
 ## Current Milestone
 
 - `Post-M8` ACP multi-agent readiness and maintenance.
 
-## Latest Update (2026-03-22)
+## Latest Update (2026-03-23)
+
+- `Post-M8` human-readable stderr logger rollout completed:
+  - replaced the previous `slog` JSON logger with a repo-local leveled logger in `internal/observability`, keeping the existing `Debug/Info/Warn/Error` call shape while switching output to readable text lines on `stderr`.
+  - changed HTTP request completion logs to a compact nginx-style access-log format such as `INFO: 2026-03-23 15:30:45 127.0.0.1 - "GET /v1/threads HTTP/1.1" 200 OK 12.4ms`.
+  - kept ACP `--debug` tracing and secret redaction intact; debug traces now render as readable text with sanitized embedded JSON payloads instead of JSON log envelopes.
+  - enabled ANSI color for level/status segments only when `stderr` is a TTY, so redirected output remains plain text.
+  - validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
+- `Post-M8` Cursor CLI ACP integration completed:
+  - added `internal/agents/cursor` on top of the shared `acpcli` driver, with startup fallback across `agent acp` and `cursor-agent acp`.
+  - wired `cursor` into startup preflight, `/v1/agents`, thread allowlist, turn factory, and agent-model discovery flow.
+  - verified against the local installed Cursor CLI and the official ACP docs that Cursor requires an ACP `authenticate` call with `methodId="cursor_login"` after `initialize`; without that step, real `session/new` does not respond.
+  - confirmed by local probing that Cursor model selection is exposed through ACP `configOptions` and must be applied via `session/set_config_option("model", ...)`; `session/new.model` and `session/new.modelId` are ignored by the real CLI.
+  - normalized generic ACP permission-option matching so providers advertising hyphenated kinds such as `allow-once` / `reject-once` still flow through ngent's fail-closed default decision path.
+  - added fake-process coverage for:
+    - authenticated ACP stream startup.
+    - model selection through `session/set_config_option`.
+    - model discovery after ACP authentication.
+    - session transcript replay after ACP authentication.
+  - validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./internal/agents/cursor ./internal/agents/acpcli ./cmd/ngent`
+    - pass: `go test ./...`
+
+## Previous Update (2026-03-22)
 
 - `Post-M8` ACP assistant image/resource content rendering completed:
   - extended shared ACP `agent_message_chunk` parsing so non-text assistant payloads are preserved as structured content blocks instead of being dropped when they are not `{type:"text",text:...}` deltas.
@@ -228,7 +255,6 @@ This file is the source of milestone progress, validation commands, and next act
   - migrated `gemini`, `opencode`, `qwen`, `kimi`, `codex`, and `claude` to reuse the shared state helper instead of keeping duplicated per-provider copies of model/config override logic.
   - kept protocol/runtime behavior provider-specific; only constructor validation and common mutable state handling were unified.
 - Web UI Kimi icon completed:
-  - downloaded the provided Kimi PNG asset into `internal/webui/web/public/kimi-icon.png`.
   - wired `kimi` avatar rendering in the Web UI to use the new asset with the existing `--contain` image treatment.
   - fixed the remaining New Thread modal agent-card icon map so Kimi now renders consistently there as well.
   - removed the forced white background from all `--contain` agent icons in message/thread views and from the modal's Kimi/OpenCode icon markup.
@@ -307,7 +333,7 @@ This file is the source of milestone progress, validation commands, and next act
   - added root `README.md` in English with project goal, `go install` instructions, and startup examples (local/public/auth) using default DB home `$HOME/.ngent`.
   - removed manual `mkdir` steps from README startup examples and documented that server auto-creates `$HOME/.ngent` for default db path.
 - `Post-M8` db-path default improvement completed:
-  - changed default `--db-path` from relative `./agent-hub.db` to `$HOME/.ngent/ngent.db`.
+  - changed default `--db-path` from relative `./ngent.db` to `$HOME/.ngent/ngent.db`.
   - added startup auto-create for db parent directory so users can run without explicitly passing `--db-path`.
   - added unit tests for default path resolution and db parent directory creation.
 - `Post-M8` cwd policy simplification completed:
@@ -894,7 +920,6 @@ This file is the source of milestone progress, validation commands, and next act
   - extended the frontend message model with ordered `segments`, rebuilt finalized assistant messages from persisted turn events (`message_delta`, `reasoning_delta`, `tool_call`, `tool_call_update`), and tracked the same segment timeline during SSE streaming.
   - tool-call updates now keep their original timeline position by merging later `tool_call_update` payloads into the first segment for that `toolCallId`, while message/reasoning deltas append new segments only when the stream actually switches modes.
   - kept plan cards as a separate block, but assistant content / thought / tool activity now render in the same chronological order the agent emitted them.
-  - adjusted assistant content segments to render as flat answer blocks instead of agent chat bubbles, matching Kimi web's timeline style more closely when normal answer text alternates with thought/tool steps.
   - removed the IM-style left/right chat alignment for the transcript pane; user prompts now render as the top line of a single-column turn flow and agent output follows directly underneath in the same reading column.
   - during an in-flight turn, only the currently growing thought segment stays expanded; once a later answer/tool/plan event arrives, the completed thought segment immediately switches to the collapsed finalized-panel state instead of waiting for full turn completion.
   - completed answer segments now switch to finalized markdown rendering as soon as the stream moves on, so tables and other block markdown render immediately instead of staying as raw text until the whole turn finishes.
@@ -955,10 +980,6 @@ This file is the source of milestone progress, validation commands, and next act
     - if transcript cache exists but session config cache is still missing, ngent performs one live `session/load` instead of stopping at cached transcript data
     - if that `session/load` returns `configOptions`, ngent persists them into thread state (when the thread is currently bound to that session), `agent_config_catalogs`, and `session_config_cache`
     - the Web UI refreshes config controls again after session-history replay finishes, so model/reasoning buttons can appear immediately after switching sessions without needing a new turn
-  - added regression coverage for the exact switch-away/switch-back path and verified the real Kimi Web UI flow:
-    - new Kimi session learned `kimi-for-coding (thinking)`
-    - switched to an older session with no model control
-    - switched back to the learned session and confirmed the model button reappeared immediately without sending another turn
   - additionally verified the session-load-only path with a fresh Codex thread on a fresh sqlite database:
     - created the thread without sending any turn
     - switched directly to an existing Codex session
@@ -966,6 +987,16 @@ This file is the source of milestone progress, validation commands, and next act
   - executed validation:
     - pass: `cd internal/webui/web && npm run build`
     - pass: `env GOCACHE=/tmp/ngent-gocache GOFLAGS=-p=1 /usr/local/go/bin/go test ./... -count=1`
+
+- 2026-03-23: added Web UI attachment upload support that flows through ACP `resource_link` prompt content.
+  - introduced a shared structured prompt model in the agent layer so HTTP turns can carry text plus ACP `resource_link` items instead of being limited to one plain string.
+  - `POST /v1/threads/{threadId}/turns` now accepts `multipart/form-data`; uploaded files are persisted into the local temp directory, converted into `file://` resource links, and preserved in history via a new `user_prompt` turn event.
+  - ACP CLI and embedded providers now send structured `session/prompt` content arrays, while non-ACP/fallback streamers still receive a readable plain-text representation.
+  - updated the Web UI composer to support attachment picking/removal, attachment-only sends, text+attachment sends, left-footer ordering `Attachment -> Model -> Reasoning`, and user-message attachment cards reconstructed from history.
+  - executed validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./internal/httpapi ./internal/agents/...`
+    - pass: `go test ./...`
 
 - 2026-03-22: fixed the composer model/reasoning dropdowns so they remain clickable after session-history refresh updates them in place.
   - root cause: `bindThreadConfigSwitches()` can run more than once on the same composer DOM after a session switch; repeated `addEventListener('click', ...)` bindings caused one listener to open the menu and the next listener to close it immediately in the same click.

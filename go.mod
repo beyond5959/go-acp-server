@@ -3,7 +3,8 @@ module github.com/beyond5959/ngent
 go 1.24
 
 require (
-	github.com/beyond5959/acp-adapter v0.3.4
+	github.com/beyond5959/acp-adapter v0.3.5-0.20260323142004-9b5f86eab631
+	github.com/mattn/go-isatty v0.0.16
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	modernc.org/sqlite v1.18.2
 )
@@ -11,7 +12,6 @@ require (
 require (
 	github.com/google/uuid v1.3.0 // indirect
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect
-	github.com/mattn/go-isatty v0.0.16 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20200410134404-eec4a21b6bb0 // indirect
 	golang.org/x/mod v0.3.0 // indirect
 	golang.org/x/sys v0.34.0 // indirect

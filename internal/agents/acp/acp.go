@@ -88,12 +88,18 @@ func (c *Client) Close() error {
 
 // Stream runs one ACP lifecycle turn over stdio JSON-RPC.
 func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta string) error) (agents.StopReason, error) {
+	return c.StreamPrompt(ctx, agents.TextPrompt(input), onDelta)
+}
+
+// StreamPrompt runs one ACP lifecycle turn over stdio JSON-RPC from a structured prompt.
+func (c *Client) StreamPrompt(ctx context.Context, prompt agents.Prompt, onDelta func(delta string) error) (agents.StopReason, error) {
 	if c == nil {
 		return agents.StopReasonEndTurn, errors.New("acp: nil client")
 	}
 	if onDelta == nil {
 		return agents.StopReasonEndTurn, errors.New("acp: onDelta callback is required")
 	}
+	prompt = agents.NormalizePrompt(prompt)
 
 	cmd := exec.Command(c.command, c.args...)
 	if c.dir != "" {
@@ -190,9 +196,13 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 		return c.handlePermissionRequest(ctx, conn, msg)
 	})
 
+	promptContent := prompt.ACPContent()
+	if promptContent == nil {
+		promptContent = []map[string]any{}
+	}
 	promptResult, err := conn.Call(ctx, "session/prompt", map[string]any{
 		"sessionId": sessionID,
-		"input":     input,
+		"prompt":    promptContent,
 	})
 	if err != nil {
 		if ctx.Err() != nil {

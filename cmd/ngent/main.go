@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -18,13 +17,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/beyond5959/acp-adapter/pkg/codexacp"
 	agentimpl "github.com/beyond5959/ngent/internal/agents"
-	"github.com/beyond5959/ngent/internal/agents/acpmodel"
 	"github.com/beyond5959/ngent/internal/agents/agentutil"
 	blackboxagent "github.com/beyond5959/ngent/internal/agents/blackbox"
 	claudeagent "github.com/beyond5959/ngent/internal/agents/claude"
 	codexagent "github.com/beyond5959/ngent/internal/agents/codex"
+	cursoragent "github.com/beyond5959/ngent/internal/agents/cursor"
 	geminiagent "github.com/beyond5959/ngent/internal/agents/gemini"
 	kimiagent "github.com/beyond5959/ngent/internal/agents/kimi"
 	opencodeagent "github.com/beyond5959/ngent/internal/agents/opencode"
@@ -38,7 +36,7 @@ import (
 )
 
 func main() {
-	logger := observability.NewJSONLogger(slog.LevelInfo)
+	logger := observability.NewLogger(observability.LevelInfo)
 
 	defaultDBPath, err := resolveDefaultDBPath()
 	if err != nil {
@@ -58,11 +56,11 @@ func main() {
 	shutdownGraceTimeout := flag.Duration("shutdown-grace-timeout", 8*time.Second, "graceful shutdown timeout for active turns")
 	flag.Parse()
 
-	logLevel := slog.LevelInfo
+	logLevel := observability.LevelInfo
 	if *debugFlag {
-		logLevel = slog.LevelDebug
+		logLevel = observability.LevelDebug
 	}
-	logger = observability.NewJSONLogger(logLevel)
+	logger = observability.NewLogger(logLevel)
 	observability.ConfigureACPDebug(logger, *debugFlag)
 
 	codexRuntimeConfig := codexagent.DefaultRuntimeConfig()
@@ -73,6 +71,7 @@ func main() {
 	qwenPreflightErr := qwenagent.Preflight()
 	blackboxPreflightErr := blackboxagent.Preflight()
 	claudePreflightErr := claudeagent.Preflight()
+	cursorPreflightErr := cursoragent.Preflight()
 
 	if *contextRecentTurns <= 0 {
 		logger.Error("startup.invalid_context_recent_turns", "value", *contextRecentTurns)
@@ -102,6 +101,7 @@ func main() {
 	qwenAvailable := qwenPreflightErr == nil
 	blackboxAvailable := blackboxPreflightErr == nil
 	claudeAvailable := claudePreflightErr == nil
+	cursorAvailable := cursorPreflightErr == nil
 	logStartupPreflight(logger, "startup.codex_embedded_unavailable", codexPreflightErr)
 	logStartupPreflight(logger, "startup.opencode_unavailable", opencodePreflightErr)
 	logStartupPreflight(logger, "startup.gemini_unavailable", geminiPreflightErr)
@@ -109,6 +109,7 @@ func main() {
 	logStartupPreflight(logger, "startup.qwen_unavailable", qwenPreflightErr)
 	logStartupPreflight(logger, "startup.blackbox_unavailable", blackboxPreflightErr)
 	logStartupPreflight(logger, "startup.claude_unavailable", claudePreflightErr)
+	logStartupPreflight(logger, "startup.cursor_unavailable", cursorPreflightErr)
 	if *debugFlag {
 		logger.Info("startup.debug_enabled", "acpTrace", true)
 	}
@@ -120,6 +121,7 @@ func main() {
 		qwenAvailable,
 		blackboxAvailable,
 		claudeAvailable,
+		cursorAvailable,
 	)
 	allowedAgentIDs := agentIDsFromInfos(agents)
 
@@ -216,6 +218,13 @@ func main() {
 					ConfigOverrides: configOverrides,
 					Name:            "claude-embedded",
 				})
+			case agentimpl.AgentIDCursor:
+				return cursoragent.New(cursoragent.Config{
+					Dir:             thread.CWD,
+					ModelID:         modelID,
+					SessionID:       sessionID,
+					ConfigOverrides: configOverrides,
+				})
 			default:
 				return nil, fmt.Errorf("unsupported thread agent %q", thread.AgentID)
 			}
@@ -264,6 +273,11 @@ func main() {
 					return nil, opencodePreflightErr
 				}
 				return opencodeagent.DiscoverModels(ctx, opencodeagent.Config{Dir: modelDiscoveryDir})
+			case agentimpl.AgentIDCursor:
+				if cursorPreflightErr != nil {
+					return nil, cursorPreflightErr
+				}
+				return cursoragent.DiscoverModels(ctx, cursoragent.Config{Dir: modelDiscoveryDir})
 			default:
 				return nil, fmt.Errorf("unsupported agent %q", agentID)
 			}
@@ -309,378 +323,6 @@ func main() {
 	}
 
 	logger.Info("shutdown.complete", "stoppedAt", time.Now().UTC().Format(time.RFC3339Nano))
-}
-
-const agentConfigCatalogRefreshTimeout = 20 * time.Second
-
-type agentConfigCatalogStore interface {
-	UpsertAgentConfigCatalog(ctx context.Context, params storage.UpsertAgentConfigCatalogParams) error
-	ReplaceAgentConfigCatalogs(ctx context.Context, agentID string, params []storage.UpsertAgentConfigCatalogParams) error
-}
-
-type agentConfigCatalogRefresher struct {
-	store              agentConfigCatalogStore
-	logger             *slog.Logger
-	agentIDs           []string
-	fetchConfigOptions func(ctx context.Context, agentID, modelID string) ([]agentimpl.ConfigOption, error)
-	discoverModels     func(ctx context.Context, agentID string, defaultOptions []agentimpl.ConfigOption) ([]agentimpl.ModelOption, error)
-}
-
-func startAgentConfigCatalogRefresh(ctx context.Context, refresher *agentConfigCatalogRefresher) {
-	if refresher == nil {
-		return
-	}
-	go refresher.Refresh(ctx)
-}
-
-func buildAgentConfigCatalogRefresher(
-	store *storage.Store,
-	logger *slog.Logger,
-	agentIDs []string,
-	modelDiscoveryDir string,
-	codexRuntimeConfig codexacp.RuntimeConfig,
-	codexPreflightErr error,
-	opencodePreflightErr error,
-	geminiPreflightErr error,
-	kimiPreflightErr error,
-	qwenPreflightErr error,
-	blackboxPreflightErr error,
-	claudePreflightErr error,
-) *agentConfigCatalogRefresher {
-	if store == nil {
-		return nil
-	}
-	if logger == nil {
-		logger = observability.NewJSONLogger(slog.LevelInfo)
-	}
-
-	return &agentConfigCatalogRefresher{
-		store:    store,
-		logger:   logger,
-		agentIDs: append([]string(nil), agentIDs...),
-		fetchConfigOptions: func(ctx context.Context, agentID, modelID string) ([]agentimpl.ConfigOption, error) {
-			switch agentID {
-			case agentimpl.AgentIDCodex:
-				if codexPreflightErr != nil {
-					return nil, codexPreflightErr
-				}
-				client, err := codexagent.New(codexagent.Config{
-					Dir:           modelDiscoveryDir,
-					ModelID:       modelID,
-					Name:          "codex-embedded",
-					RuntimeConfig: codexRuntimeConfig,
-				})
-				if err != nil {
-					return nil, err
-				}
-				return queryAgentConfigOptions(ctx, client)
-			case agentimpl.AgentIDClaude:
-				if claudePreflightErr != nil {
-					return nil, claudePreflightErr
-				}
-				client, err := claudeagent.New(claudeagent.Config{
-					Dir:     modelDiscoveryDir,
-					ModelID: modelID,
-					Name:    "claude-embedded",
-				})
-				if err != nil {
-					return nil, err
-				}
-				return queryAgentConfigOptions(ctx, client)
-			case agentimpl.AgentIDGemini:
-				if geminiPreflightErr != nil {
-					return nil, geminiPreflightErr
-				}
-				client, err := geminiagent.New(geminiagent.Config{
-					Dir:     modelDiscoveryDir,
-					ModelID: modelID,
-				})
-				if err != nil {
-					return nil, err
-				}
-				return queryAgentConfigOptions(ctx, client)
-			case agentimpl.AgentIDKimi:
-				if kimiPreflightErr != nil {
-					return nil, kimiPreflightErr
-				}
-				client, err := kimiagent.New(kimiagent.Config{
-					Dir:     modelDiscoveryDir,
-					ModelID: modelID,
-				})
-				if err != nil {
-					return nil, err
-				}
-				return queryAgentConfigOptions(ctx, client)
-			case agentimpl.AgentIDQwen:
-				if qwenPreflightErr != nil {
-					return nil, qwenPreflightErr
-				}
-				client, err := qwenagent.New(qwenagent.Config{
-					Dir:     modelDiscoveryDir,
-					ModelID: modelID,
-				})
-				if err != nil {
-					return nil, err
-				}
-				return queryAgentConfigOptions(ctx, client)
-			case agentimpl.AgentIDBlackbox:
-				if blackboxPreflightErr != nil {
-					return nil, blackboxPreflightErr
-				}
-				client, err := blackboxagent.New(blackboxagent.Config{
-					Dir:     modelDiscoveryDir,
-					ModelID: modelID,
-				})
-				if err != nil {
-					return nil, err
-				}
-				return queryAgentConfigOptions(ctx, client)
-			case agentimpl.AgentIDOpencode:
-				if opencodePreflightErr != nil {
-					return nil, opencodePreflightErr
-				}
-				client, err := opencodeagent.New(opencodeagent.Config{
-					Dir:     modelDiscoveryDir,
-					ModelID: modelID,
-				})
-				if err != nil {
-					return nil, err
-				}
-				return queryAgentConfigOptions(ctx, client)
-			default:
-				return nil, fmt.Errorf("unsupported agent %q", agentID)
-			}
-		},
-		discoverModels: func(ctx context.Context, agentID string, defaultOptions []agentimpl.ConfigOption) ([]agentimpl.ModelOption, error) {
-			if models := modelOptionsFromConfigOptions(defaultOptions); len(models) > 0 {
-				return models, nil
-			}
-
-			switch agentID {
-			case "codex":
-				if codexPreflightErr != nil {
-					return nil, codexPreflightErr
-				}
-				return codexagent.DiscoverModels(ctx, codexagent.Config{
-					Dir:           modelDiscoveryDir,
-					Name:          "codex-embedded",
-					RuntimeConfig: codexRuntimeConfig,
-				})
-			case "claude":
-				if claudePreflightErr != nil {
-					return nil, claudePreflightErr
-				}
-				return claudeagent.DiscoverModels(ctx, claudeagent.Config{
-					Dir:  modelDiscoveryDir,
-					Name: "claude-embedded",
-				})
-			case "gemini":
-				if geminiPreflightErr != nil {
-					return nil, geminiPreflightErr
-				}
-				return geminiagent.DiscoverModels(ctx, geminiagent.Config{Dir: modelDiscoveryDir})
-			case "kimi":
-				if kimiPreflightErr != nil {
-					return nil, kimiPreflightErr
-				}
-				return kimiagent.DiscoverModels(ctx, kimiagent.Config{Dir: modelDiscoveryDir})
-			case "qwen":
-				if qwenPreflightErr != nil {
-					return nil, qwenPreflightErr
-				}
-				return qwenagent.DiscoverModels(ctx, qwenagent.Config{Dir: modelDiscoveryDir})
-			case "blackbox":
-				if blackboxPreflightErr != nil {
-					return nil, blackboxPreflightErr
-				}
-				return blackboxagent.DiscoverModels(ctx, blackboxagent.Config{Dir: modelDiscoveryDir})
-			case "opencode":
-				if opencodePreflightErr != nil {
-					return nil, opencodePreflightErr
-				}
-				return opencodeagent.DiscoverModels(ctx, opencodeagent.Config{Dir: modelDiscoveryDir})
-			default:
-				return nil, fmt.Errorf("unsupported agent %q", agentID)
-			}
-		},
-	}
-}
-
-func (r *agentConfigCatalogRefresher) Refresh(ctx context.Context) {
-	if r == nil || r.store == nil {
-		return
-	}
-
-	for _, agentID := range r.agentIDs {
-		if err := ctx.Err(); err != nil {
-			return
-		}
-		if err := r.refreshAgent(ctx, agentID); err != nil {
-			r.logger.Warn("config_catalog.refresh_failed",
-				"agent", agentID,
-				"reason", err.Error(),
-			)
-		}
-	}
-}
-
-func (r *agentConfigCatalogRefresher) refreshAgent(ctx context.Context, agentID string) error {
-	defaultOptions, err := r.fetchOptionsWithTimeout(ctx, agentID, "")
-	if err != nil {
-		return err
-	}
-
-	entries := make([]storage.UpsertAgentConfigCatalogParams, 0, 4)
-	defaultEntry, err := newAgentConfigCatalogEntry(agentID, storage.DefaultAgentConfigCatalogModelID, defaultOptions)
-	if err != nil {
-		return err
-	}
-	entries = append(entries, defaultEntry)
-
-	models, err := r.discoverModelsWithTimeout(ctx, agentID, defaultOptions)
-	if err != nil {
-		if upsertErr := r.store.UpsertAgentConfigCatalog(ctx, defaultEntry); upsertErr != nil {
-			return fmt.Errorf("discover models: %w (default upsert failed: %v)", err, upsertErr)
-		}
-		return fmt.Errorf("discover models: %w", err)
-	}
-
-	incomplete := false
-	for _, model := range models {
-		modelID := strings.TrimSpace(model.ID)
-		if modelID == "" {
-			continue
-		}
-		options, err := r.fetchOptionsWithTimeout(ctx, agentID, modelID)
-		if err != nil {
-			incomplete = true
-			r.logger.Warn("config_catalog.refresh_model_failed",
-				"agent", agentID,
-				"modelId", modelID,
-				"reason", err.Error(),
-			)
-			continue
-		}
-		entry, err := newAgentConfigCatalogEntry(agentID, modelID, options)
-		if err != nil {
-			incomplete = true
-			r.logger.Warn("config_catalog.encode_failed",
-				"agent", agentID,
-				"modelId", modelID,
-				"reason", err.Error(),
-			)
-			continue
-		}
-		entries = append(entries, entry)
-	}
-
-	if incomplete {
-		for _, entry := range entries {
-			if err := r.store.UpsertAgentConfigCatalog(ctx, entry); err != nil {
-				return fmt.Errorf("partial upsert model %q: %w", entry.ModelID, err)
-			}
-		}
-		r.logger.Info("config_catalog.refresh_partial",
-			"agent", agentID,
-			"storedEntries", len(entries),
-		)
-		return nil
-	}
-
-	if err := r.store.ReplaceAgentConfigCatalogs(ctx, agentID, entries); err != nil {
-		return fmt.Errorf("replace catalogs: %w", err)
-	}
-	r.logger.Info("config_catalog.refresh_complete",
-		"agent", agentID,
-		"storedEntries", len(entries),
-	)
-	return nil
-}
-
-func (r *agentConfigCatalogRefresher) fetchOptionsWithTimeout(
-	ctx context.Context,
-	agentID string,
-	modelID string,
-) ([]agentimpl.ConfigOption, error) {
-	if r.fetchConfigOptions == nil {
-		return nil, errors.New("config option fetcher is not configured")
-	}
-	callCtx, cancel := context.WithTimeout(ctx, agentConfigCatalogRefreshTimeout)
-	defer cancel()
-	options, err := r.fetchConfigOptions(callCtx, agentID, modelID)
-	if err != nil {
-		return nil, err
-	}
-	return acpmodel.NormalizeConfigOptions(options), nil
-}
-
-func (r *agentConfigCatalogRefresher) discoverModelsWithTimeout(
-	ctx context.Context,
-	agentID string,
-	defaultOptions []agentimpl.ConfigOption,
-) ([]agentimpl.ModelOption, error) {
-	if r.discoverModels == nil {
-		return modelOptionsFromConfigOptions(defaultOptions), nil
-	}
-	callCtx, cancel := context.WithTimeout(ctx, agentConfigCatalogRefreshTimeout)
-	defer cancel()
-	models, err := r.discoverModels(callCtx, agentID, defaultOptions)
-	if err != nil {
-		return nil, err
-	}
-	return acpmodel.NormalizeModelOptions(models), nil
-}
-
-func newAgentConfigCatalogEntry(
-	agentID string,
-	modelID string,
-	options []agentimpl.ConfigOption,
-) (storage.UpsertAgentConfigCatalogParams, error) {
-	encoded, err := json.Marshal(acpmodel.NormalizeConfigOptions(options))
-	if err != nil {
-		return storage.UpsertAgentConfigCatalogParams{}, fmt.Errorf("encode config catalog: %w", err)
-	}
-	return storage.UpsertAgentConfigCatalogParams{
-		AgentID:           agentID,
-		ModelID:           modelID,
-		ConfigOptionsJSON: string(encoded),
-	}, nil
-}
-
-func queryAgentConfigOptions(ctx context.Context, manager agentimpl.ConfigOptionManager) ([]agentimpl.ConfigOption, error) {
-	if manager == nil {
-		return nil, errors.New("config option manager is nil")
-	}
-	if closer, ok := manager.(io.Closer); ok {
-		defer func() {
-			_ = closer.Close()
-		}()
-	}
-	return manager.ConfigOptions(ctx)
-}
-
-func modelOptionsFromConfigOptions(options []agentimpl.ConfigOption) []agentimpl.ModelOption {
-	modelConfig, ok := acpmodel.FindModelConfigOption(options)
-	if !ok {
-		return nil
-	}
-
-	models := make([]agentimpl.ModelOption, 0, len(modelConfig.Options)+1)
-	for _, value := range modelConfig.Options {
-		modelID := strings.TrimSpace(value.Value)
-		if modelID == "" {
-			continue
-		}
-		name := strings.TrimSpace(value.Name)
-		if name == "" {
-			name = modelID
-		}
-		models = append(models, agentimpl.ModelOption{ID: modelID, Name: name})
-	}
-	if current := strings.TrimSpace(modelConfig.CurrentValue); current != "" {
-		models = append(models, agentimpl.ModelOption{ID: current, Name: current})
-	}
-	return acpmodel.NormalizeModelOptions(models)
 }
 
 // extractModelID reads an optional "modelId" string from a JSON agentOptions blob.
@@ -751,7 +393,8 @@ func supportedAgents(
 	kimiAvailable,
 	qwenAvailable,
 	blackboxAvailable,
-	claudeAvailable bool,
+	claudeAvailable,
+	cursorAvailable bool,
 ) []httpapi.AgentInfo {
 	agents := make([]httpapi.AgentInfo, 0, len(agentimpl.AllAgentIDs()))
 	appendIfAvailable := func(available bool, agentID, name string) {
@@ -772,6 +415,7 @@ func supportedAgents(
 	appendIfAvailable(qwenAvailable, agentimpl.AgentIDQwen, "Qwen Code")
 	appendIfAvailable(opencodeAvailable, agentimpl.AgentIDOpencode, "OpenCode")
 	appendIfAvailable(blackboxAvailable, agentimpl.AgentIDBlackbox, "BLACKBOX AI")
+	appendIfAvailable(cursorAvailable, agentimpl.AgentIDCursor, "Cursor CLI")
 
 	return agents
 }
@@ -822,7 +466,7 @@ func resolveListenAddr(port int, allowPublic bool) (string, int, error) {
 	return listenAddr, port, nil
 }
 
-func logStartupPreflight(logger *slog.Logger, event string, err error) {
+func logStartupPreflight(logger *observability.Logger, event string, err error) {
 	if logger == nil || err == nil {
 		return
 	}
@@ -834,7 +478,7 @@ func logStartupPreflight(logger *slog.Logger, event string, err error) {
 
 func gracefulShutdown(
 	baseCtx context.Context,
-	logger *slog.Logger,
+	logger *observability.Logger,
 	srv *http.Server,
 	turns *runtime.TurnController,
 	timeout time.Duration,
@@ -843,7 +487,7 @@ func gracefulShutdown(
 		baseCtx = context.Background()
 	}
 	if logger == nil {
-		logger = observability.NewJSONLogger(slog.LevelInfo)
+		logger = observability.NewLogger(observability.LevelInfo)
 	}
 	if timeout <= 0 {
 		timeout = 8 * time.Second

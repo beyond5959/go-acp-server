@@ -18,6 +18,19 @@ type Streamer interface {
 	Stream(ctx context.Context, input string, onDelta func(delta string) error) (StopReason, error)
 }
 
+// PromptStreamer emits message deltas from one structured ACP prompt payload.
+type PromptStreamer interface {
+	StreamPrompt(ctx context.Context, prompt Prompt, onDelta func(delta string) error) (StopReason, error)
+}
+
+// StreamPrompt dispatches a prompt through the richer PromptStreamer path when available.
+func StreamPrompt(ctx context.Context, streamer Streamer, prompt Prompt, onDelta func(delta string) error) (StopReason, error) {
+	if promptStreamer, ok := streamer.(PromptStreamer); ok {
+		return promptStreamer.StreamPrompt(ctx, prompt, onDelta)
+	}
+	return streamer.Stream(ctx, prompt.LegacyText(), onDelta)
+}
+
 // ModelOption describes one selectable model entry reported by an agent.
 type ModelOption struct {
 	ID   string

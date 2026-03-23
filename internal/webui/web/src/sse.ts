@@ -95,7 +95,7 @@ export class TurnStream {
   constructor(
     private readonly fetchUrl: string,
     private readonly fetchHeaders: Record<string, string>,
-    private readonly body: unknown,
+    private readonly body: FormData | Record<string, unknown>,
     private readonly callbacks: TurnStreamCallbacks,
   ) {}
 
@@ -106,7 +106,7 @@ export class TurnStream {
       res = await fetch(this.fetchUrl, {
         method: 'POST',
         headers: this.fetchHeaders,
-        body: JSON.stringify(this.body),
+        body: this.body instanceof FormData ? this.body : JSON.stringify(this.body),
         signal: this.aborter.signal,
       })
     } catch {

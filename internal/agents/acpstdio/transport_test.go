@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -172,7 +171,7 @@ func TestConnAllowStdoutNoiseSkipsNonJSONAndParsesPrefixedJSON(t *testing.T) {
 
 func TestConnDebugLogsInboundAndOutboundMessages(t *testing.T) {
 	var logBuf bytes.Buffer
-	logger := slog.New(observability.NewJSONHandler(&logBuf, slog.LevelDebug))
+	logger := observability.NewLoggerWithWriter(&logBuf, observability.LevelDebug)
 	observability.ConfigureACPDebug(logger, true)
 	t.Cleanup(func() {
 		observability.ConfigureACPDebug(nil, false)
@@ -215,24 +214,20 @@ func TestConnDebugLogsInboundAndOutboundMessages(t *testing.T) {
 		if line == "" {
 			continue
 		}
-		entry := map[string]any{}
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			t.Fatalf("unmarshal log: %v", err)
-		}
-		if entry["msg"] != "acp.message" {
+		if !strings.Contains(line, "acp.message") {
 			continue
 		}
-		if entry["component"] != "acpstdio-test" {
-			t.Fatalf("component = %v, want %q", entry["component"], "acpstdio-test")
+		if !strings.Contains(line, "component=acpstdio-test") {
+			t.Fatalf("component missing from %q", line)
 		}
 
-		switch entry["direction"] {
-		case "outbound":
-			if entry["method"] == "initialize" {
+		switch {
+		case strings.Contains(line, "direction=outbound"):
+			if strings.Contains(line, "method=initialize") {
 				foundOutbound = true
 			}
-		case "inbound":
-			if entry["rpcType"] == "response" {
+		case strings.Contains(line, "direction=inbound"):
+			if strings.Contains(line, "rpcType=response") {
 				foundInbound = true
 			}
 		}

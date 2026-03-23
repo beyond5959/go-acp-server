@@ -2,7 +2,7 @@
 
 ## 1. 目标
 
-为 Code Agent Hub Server 提供内嵌的 Web 前端，通过 Go `embed` 包随服务二进制分发。
+为 Ngent Server 提供内嵌的 Web 前端，通过 Go `embed` 包随服务二进制分发。
 前端提供类 IM 的会话界面，让用户无需 CLI 或独立客户端即可与 Agent 交互。
 
 ## 2. UI 布局
@@ -10,7 +10,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  ┌──────────────┐  ┌───────────────────────────────────────────┐│
-│  │ Agent Hub    │  │ Thread: My Project  [Codex] /home/proj    ││
+│  │ Ngent        │  │ Thread: My Project  [Codex] /home/proj    ││
 │  │           [+]│  │                    [Compact] [Cancel]     ││
 │  ├──────────────┤  ├───────────────────────────────────────────┤│
 │  │ ● Thread A   │  │                                           ││
@@ -159,7 +159,7 @@ GET /assets/*  → serve Vite 打包的 JS/CSS/font 资源
 `printStartupSummary` 增加 `Web` 行：
 
 ```
-Agent Hub Server started
+Ngent Server started
   [QR Code]
 Port: 8686
 URL:  http://192.168.1.10:8686/

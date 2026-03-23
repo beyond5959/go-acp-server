@@ -113,6 +113,95 @@ for line in sys.stdin:
 	}
 }
 
+func TestStreamPromptSendsResourceLinks(t *testing.T) {
+	python3, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not in PATH")
+	}
+
+	fakeScript := fmt.Sprintf(`#!%s
+import sys, json
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    method = req.get("method", "")
+    rid = req.get("id")
+    if method == "initialize":
+        send({"jsonrpc":"2.0","id":rid,"result":{
+            "protocolVersion":1,
+            "agentInfo":{"name":"FakeOpenCode","version":"0.0.1"},
+            "agentCapabilities":{},"authMethods":[]
+        }})
+    elif method == "session/new":
+        send({"jsonrpc":"2.0","id":rid,"result":{"sessionId":"ses_prompt_resource"}})
+    elif method == "session/prompt":
+        params = req.get("params", {})
+        prompt = params.get("prompt", [])
+        if len(prompt) != 2 or prompt[0].get("type") != "text" or prompt[1].get("type") != "resource_link":
+            send({"jsonrpc":"2.0","id":rid,"error":{"code":-32000,"message":"invalid prompt payload"}})
+            sys.exit(0)
+        if prompt[1].get("uri") != "file:///tmp/document.pdf":
+            send({"jsonrpc":"2.0","id":rid,"error":{"code":-32000,"message":"wrong resource uri"}})
+            sys.exit(0)
+        send({"jsonrpc":"2.0","method":"session/update","params":{
+            "sessionId":"ses_prompt_resource",
+            "update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"resource ok"}}
+        }})
+        send({"jsonrpc":"2.0","id":rid,"result":{"stopReason":"end_turn","usage":{}}})
+        sys.exit(0)
+`, python3)
+
+	tmpDir := t.TempDir()
+	fakeBin := tmpDir + "/opencode"
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", tmpDir+":"+origPath)
+
+	client, err := opencode.New(opencode.Config{Dir: tmpDir})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var deltas []string
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	reason, err := client.StreamPrompt(ctx, agents.Prompt{
+		Content: []agents.PromptContent{
+			{Type: agents.PromptContentTypeText, Text: "Analyze the file."},
+			{
+				Type:     agents.PromptContentTypeResourceLink,
+				URI:      "file:///tmp/document.pdf",
+				Name:     "document.pdf",
+				MimeType: "application/pdf",
+				Size:     1234,
+			},
+		},
+	}, func(delta string) error {
+		deltas = append(deltas, delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamPrompt: %v", err)
+	}
+	if reason != agents.StopReasonEndTurn {
+		t.Fatalf("StopReason = %q, want %q", reason, agents.StopReasonEndTurn)
+	}
+	if got := strings.Join(deltas, ""); got != "resource ok" {
+		t.Fatalf("deltas = %q, want %q", got, "resource ok")
+	}
+}
+
 func TestStreamCapturesSlashCommandsEmittedBeforePrompt(t *testing.T) {
 	python3, err := exec.LookPath("python3")
 	if err != nil {

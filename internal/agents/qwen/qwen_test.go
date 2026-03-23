@@ -667,7 +667,7 @@ func TestQwenE2ESessionTranscriptReplay(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	marker := fmt.Sprintf("QWEN_TRANSCRIPT_%d", time.Now().UnixNano())
+	marker := fmt.Sprintf("QWEN_TRANSCRIPT_%d", time.Now().UnixMicro())
 	prompt := fmt.Sprintf("Reply with exactly %s and nothing else.", marker)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

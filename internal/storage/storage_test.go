@@ -46,6 +46,50 @@ func TestMigrateIdempotent(t *testing.T) {
 	}
 }
 
+func TestMigrateRenamesLegacyDefaultAgentConfigCatalogModelID(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "hub.db")
+
+	store, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New() seed open: %v", err)
+	}
+
+	legacyModelID := legacyDefaultAgentConfigCatalogModelID()
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO agent_config_catalogs (agent_id, model_id, config_options_json, updated_at)
+		VALUES (?, ?, ?, ?)
+	`, "codex", legacyModelID, `[{"id":"model","currentValue":"gpt-5"}]`, "2026-03-23T10:00:00Z"); err != nil {
+		t.Fatalf("insert legacy config catalog: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version = 10`); err != nil {
+		t.Fatalf("delete schema_migrations version 10: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() seed store: %v", err)
+	}
+
+	store2, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New() migrated open: %v", err)
+	}
+	defer func() {
+		_ = store2.Close()
+	}()
+
+	catalog, err := store2.GetAgentConfigCatalog(ctx, "codex", DefaultAgentConfigCatalogModelID)
+	if err != nil {
+		t.Fatalf("GetAgentConfigCatalog(new default id): %v", err)
+	}
+	if got, want := catalog.ModelID, DefaultAgentConfigCatalogModelID; got != want {
+		t.Fatalf("catalog.model_id = %q, want %q", got, want)
+	}
+
+	if _, err := store2.GetAgentConfigCatalog(ctx, "codex", legacyModelID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetAgentConfigCatalog(legacy id) err = %v, want ErrNotFound", err)
+	}
+}
+
 func TestCreateListGetThread(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
@@ -704,6 +748,10 @@ func countRows(t *testing.T, db *sql.DB, tableName string) int {
 		t.Fatalf("count rows from %s: %v", tableName, err)
 	}
 	return count
+}
+
+func legacyDefaultAgentConfigCatalogModelID() string {
+	return "__" + "agent" + "_" + "hub" + "_default__"
 }
 
 func loadEventSeqs(t *testing.T, db *sql.DB, turnID string) []int {

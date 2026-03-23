@@ -47,7 +47,7 @@ type Hooks struct {
 	SessionNewParams        func(modelID string) map[string]any
 	SessionLoadParams       func(sessionID string) map[string]any
 	SessionListParams       func(cwd, cursor string) map[string]any
-	PromptParams            func(sessionID, input, modelID string) map[string]any
+	PromptParams            func(sessionID string, prompt agents.Prompt, modelID string) map[string]any
 	DiscoverModelsParams    func(modelID string) map[string]any
 	PrepareConfigSession    func(modelID string, overrides map[string]string, configID, value string) ConfigSessionPlan
 	SelectSessionModel      func(ctx context.Context, conn *acpstdio.Conn, sessionID, modelID string, options []agents.ConfigOption) ([]agents.ConfigOption, error)
@@ -161,6 +161,18 @@ func SessionListParams(dir string) func(string, string) map[string]any {
 	}
 }
 
+// ACPPromptParams returns the common ACP session/prompt params for one prompt payload.
+func ACPPromptParams(sessionID string, prompt agents.Prompt) map[string]any {
+	content := prompt.ACPContent()
+	if content == nil {
+		content = []map[string]any{}
+	}
+	return map[string]any{
+		"sessionId": strings.TrimSpace(sessionID),
+		"prompt":    content,
+	}
+}
+
 // SessionCWD chooses the explicit session cwd when present, otherwise falling back to the provider default dir.
 func SessionCWD(dir, cwd string) string {
 	cwd = strings.TrimSpace(cwd)
@@ -265,6 +277,11 @@ func (c *Client) ListSessions(ctx context.Context, req agents.SessionListRequest
 
 // Stream runs one ACP turn and emits deltas via onDelta.
 func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta string) error) (agents.StopReason, error) {
+	return c.StreamPrompt(ctx, agents.TextPrompt(input), onDelta)
+}
+
+// StreamPrompt runs one ACP turn from a structured prompt payload and emits deltas via onDelta.
+func (c *Client) StreamPrompt(ctx context.Context, prompt agents.Prompt, onDelta func(delta string) error) (agents.StopReason, error) {
 	if c == nil {
 		return agents.StopReasonEndTurn, errors.New(c.nameForError() + ": nil client")
 	}
@@ -274,6 +291,7 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	prompt = agents.NormalizePrompt(prompt)
 
 	modelID := c.CurrentModelID()
 	configOverrides := c.CurrentConfigOverrides()
@@ -359,7 +377,7 @@ func (c *Client) Stream(ctx context.Context, input string, onDelta func(delta st
 	}
 
 	markPromptStarted()
-	promptResult, err := conn.Call(ctx, "session/prompt", c.hooks.PromptParams(sessionID, input, modelID))
+	promptResult, err := conn.Call(ctx, "session/prompt", c.hooks.PromptParams(sessionID, prompt, modelID))
 	if err != nil {
 		if ctx.Err() != nil {
 			if c.hooks.Cancel != nil {

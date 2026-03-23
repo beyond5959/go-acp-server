@@ -4,10 +4,10 @@ import { generateUUID } from './utils.ts'
 // ── Storage keys ───────────────────────────────────────────────────────────
 
 const LS = {
-  clientId:  'agent-hub:clientId',
-  authToken: 'agent-hub:authToken',
-  serverUrl: 'agent-hub:serverUrl',
-  theme:     'agent-hub:theme',
+  clientId:  'ngent:clientId',
+  authToken: 'ngent:authToken',
+  serverUrl: 'ngent:serverUrl',
+  theme:     'ngent:theme',
 } as const
 
 // ── Store ──────────────────────────────────────────────────────────────────
@@ -57,7 +57,7 @@ class AppStore {
 
   private buildInitialState(): AppState {
     // Ensure client ID always exists
-    let clientId = localStorage.getItem(LS.clientId) ?? ''
+    let clientId = localStorage.getItem(LS.clientId) || ''
     if (!clientId) {
       clientId = generateUUID()
       localStorage.setItem(LS.clientId, clientId)
@@ -66,8 +66,8 @@ class AppStore {
     return {
       // Persisted
       clientId,
-      authToken: localStorage.getItem(LS.authToken) ?? '',
-      serverUrl: localStorage.getItem(LS.serverUrl) ?? window.location.origin,
+      authToken: localStorage.getItem(LS.authToken) || '',
+      serverUrl: localStorage.getItem(LS.serverUrl) || window.location.origin,
       theme: (localStorage.getItem(LS.theme) as Theme | null) ?? 'system',
 
       // Runtime (empty until F3+)

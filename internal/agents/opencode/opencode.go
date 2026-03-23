@@ -93,11 +93,8 @@ func initializeParams() map[string]any {
 	}
 }
 
-func promptParams(sessionID, input, modelID string) map[string]any {
-	params := map[string]any{
-		"sessionId": strings.TrimSpace(sessionID),
-		"prompt":    []map[string]any{{"type": "text", "text": input}},
-	}
+func promptParams(sessionID string, prompt agents.Prompt, modelID string) map[string]any {
+	params := acpcli.ACPPromptParams(sessionID, prompt)
 	if modelID = strings.TrimSpace(modelID); modelID != "" {
 		params["modelId"] = modelID
 	}

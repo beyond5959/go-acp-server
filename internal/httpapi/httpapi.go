@@ -10,9 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
+	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,6 +25,7 @@ import (
 
 	"github.com/beyond5959/ngent/internal/agents"
 	"github.com/beyond5959/ngent/internal/agents/acpmodel"
+	"github.com/beyond5959/ngent/internal/observability"
 	"github.com/beyond5959/ngent/internal/runtime"
 	"github.com/beyond5959/ngent/internal/sse"
 	"github.com/beyond5959/ngent/internal/storage"
@@ -81,7 +84,7 @@ type Config struct {
 	TurnAgentFactory   TurnAgentFactory
 	AgentModelsFactory AgentModelsFactory
 	AgentIdleTTL       time.Duration
-	Logger             *slog.Logger
+	Logger             *observability.Logger
 	ContextRecentTurns int
 	ContextMaxChars    int
 	CompactMaxChars    int
@@ -102,7 +105,7 @@ type Server struct {
 	turnAgentFactory   TurnAgentFactory
 	agentModelsFactory AgentModelsFactory
 	agentIdleTTL       time.Duration
-	logger             *slog.Logger
+	logger             *observability.Logger
 	contextRecentTurns int
 	contextMaxChars    int
 	compactMaxChars    int
@@ -127,6 +130,7 @@ const (
 	defaultPermissionTimeout  = 2 * time.Hour
 
 	threadAgentOptionFreshSessionKey = "_ngentFreshSession"
+	eventTypeUserPrompt              = "user_prompt"
 	eventTypeMessageContent          = "message_content"
 	eventTypeReasoningDelta          = "reasoning_delta"
 	eventTypeToolCall                = "tool_call"
@@ -145,6 +149,8 @@ const (
 )
 
 var errThreadConfigOptionsUnavailable = errors.New("thread config options are not available yet")
+
+const maxTurnMultipartMemory = 32 << 20
 
 // New creates a new API server.
 func New(cfg Config) *Server {
@@ -213,7 +219,7 @@ func New(cfg Config) *Server {
 
 	logger := cfg.Logger
 	if logger == nil {
-		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
+		logger = observability.NewLoggerWithWriter(io.Discard, observability.LevelError)
 	}
 
 	server := &Server{
@@ -299,17 +305,15 @@ func (s *Server) logRequestCompletion(r *http.Request, w *loggingResponseWriter,
 	if s.logger == nil {
 		return
 	}
-
-	s.logger.Info(
-		"http.request.completed",
-		"req_time", startedAt.UTC().Truncate(time.Second).Format(time.DateTime),
-		"method", r.Method,
-		"path", r.URL.Path,
-		"ip", requestClientIP(r),
-		"status", w.StatusCode(),
-		"duration_ms", time.Since(startedAt).Milliseconds(),
-		"resp_bytes", w.BytesWritten(),
-	)
+	s.logger.HTTPRequest(observability.HTTPRequestLogEntry{
+		RemoteAddr:  requestClientAddr(r),
+		Method:      r.Method,
+		Path:        requestLogPath(r),
+		Proto:       r.Proto,
+		Status:      w.StatusCode(),
+		RequestTime: startedAt,
+		Duration:    time.Since(startedAt),
+	})
 }
 
 func (s *Server) routeV1(w http.ResponseWriter, r *http.Request, clientID string) {
@@ -744,19 +748,26 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 	}
 
 	var req struct {
-		Input  string `json:"input"`
-		Stream bool   `json:"stream"`
+		Prompt agents.Prompt
+		Stream bool
 	}
-	if err := decodeJSONBody(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid JSON body", map[string]any{"reason": err.Error()})
+	if err := decodeTurnCreateRequest(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid request body", map[string]any{"reason": err.Error()})
 		return
 	}
+	req.Prompt = agents.NormalizePrompt(req.Prompt)
 	if !req.Stream {
 		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "stream must be true", map[string]any{"field": "stream"})
 		return
 	}
+	if len(req.Prompt.Content) == 0 {
+		writeError(w, http.StatusBadRequest, codeInvalidArgument, "input or attachments are required", map[string]any{
+			"fields": []string{"input", "attachments"},
+		})
+		return
+	}
 
-	injectedPrompt, err := s.buildInjectedPrompt(r.Context(), thread, req.Input)
+	injectedPrompt, err := s.buildInjectedPrompt(r.Context(), thread, req.Prompt)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "INTERNAL", "failed to build context window", map[string]any{
 			"reason": err.Error(),
@@ -803,7 +814,7 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 	if _, err := s.store.CreateTurn(r.Context(), storage.CreateTurnParams{
 		TurnID:      turnID,
 		ThreadID:    thread.ThreadID,
-		RequestText: req.Input,
+		RequestText: req.Prompt.LegacyText(),
 		Status:      "running",
 		IsInternal:  false,
 	}); err != nil {
@@ -816,7 +827,6 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusInternalServerError, "INTERNAL", "SSE is not supported by response writer", map[string]any{})
 		return
 	}
-	w.WriteHeader(http.StatusOK)
 
 	aggregated := strings.Builder{}
 
@@ -830,6 +840,24 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 		}
 		return streamWriter.Event(eventType, payload)
 	}
+	appendOnlyEvent := func(eventType string, payload map[string]any) error {
+		dataJSON, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		_, appendErr := s.store.AppendEvent(persistCtx, turnID, eventType, string(dataJSON))
+		return appendErr
+	}
+
+	if req.Prompt.HasResourceLinks() {
+		if err := appendOnlyEvent(eventTypeUserPrompt, req.Prompt.EventPayload(turnID)); err != nil {
+			s.finalizeTurnWithBestEffort(persistCtx, turnID, "failed", "error", "", err.Error())
+			writeError(w, http.StatusInternalServerError, codeInternal, "failed to persist user prompt", map[string]any{"reason": err.Error()})
+			return
+		}
+	}
+
+	w.WriteHeader(http.StatusOK)
 
 	turnCtx = agents.WithPermissionHandler(turnCtx, func(permissionCtx context.Context, req agents.PermissionRequest) (agents.PermissionResponse, error) {
 		permissionID := s.nextPermissionID(req.RequestID)
@@ -967,7 +995,7 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	stopReason, streamErr := streamAgent.Stream(turnCtx, injectedPrompt, func(delta string) error {
+	stopReason, streamErr := agents.StreamPrompt(turnCtx, streamAgent, injectedPrompt, func(delta string) error {
 		aggregated.WriteString(delta)
 		return emit("message_delta", map[string]any{"turnId": turnID, "delta": delta})
 	})
@@ -1891,18 +1919,6 @@ func (s *Server) resolveTurnAgent(thread storage.Thread) (agents.Streamer, error
 	return provider, nil
 }
 
-func (s *Server) resolveThreadConfigOptionManager(thread storage.Thread) (agents.ConfigOptionManager, error) {
-	provider, err := s.resolveTurnAgent(thread)
-	if err != nil {
-		return nil, err
-	}
-	manager, ok := provider.(agents.ConfigOptionManager)
-	if !ok {
-		return nil, fmt.Errorf("agent %q does not support config options", thread.AgentID)
-	}
-	return manager, nil
-}
-
 // Close stops background janitor and closes all cached thread agents.
 func (s *Server) Close() error {
 	select {
@@ -2122,22 +2138,41 @@ func (s *Server) rebindManagedAgentScope(threadID, fromAgentOptionsJSON, toAgent
 	return nil
 }
 
-func (s *Server) buildInjectedPrompt(ctx context.Context, thread storage.Thread, input string) (string, error) {
+func (s *Server) buildInjectedPrompt(ctx context.Context, thread storage.Thread, prompt agents.Prompt) (agents.Prompt, error) {
+	prompt = agents.NormalizePrompt(prompt)
 	if threadSessionID(thread.AgentOptionsJSON) != "" || threadFreshSessionRequested(thread.AgentOptionsJSON) {
-		return strings.TrimSpace(input), nil
+		return prompt, nil
 	}
 
 	recentTurns, err := s.loadRecentVisibleTurns(ctx, thread.ThreadID)
 	if err != nil {
-		return "", err
+		return agents.Prompt{}, err
 	}
 
-	return composeContextPrompt(
+	currentInput := prompt.Text()
+	if strings.TrimSpace(thread.Summary) == "" && len(recentTurns) == 0 && currentInput == "" {
+		return prompt, nil
+	}
+
+	content := make([]agents.PromptContent, 0, len(prompt.Content))
+	injectedText := composeContextPrompt(
 		thread.Summary,
 		recentTurns,
-		input,
+		currentInput,
 		s.contextMaxChars,
-	), nil
+	)
+	if strings.TrimSpace(injectedText) != "" {
+		content = append(content, agents.PromptContent{
+			Type: agents.PromptContentTypeText,
+			Text: injectedText,
+		})
+	}
+	for _, item := range prompt.Content {
+		if item.Type == agents.PromptContentTypeResourceLink {
+			content = append(content, item)
+		}
+	}
+	return agents.NormalizePrompt(agents.Prompt{Content: content}), nil
 }
 
 func (s *Server) buildCompactPrompt(ctx context.Context, thread storage.Thread, maxSummaryChars int) (string, error) {
@@ -3539,17 +3574,17 @@ func sortedAgentIDs(allowed map[string]struct{}) []string {
 func newThreadID() string {
 	buf := make([]byte, 8)
 	if _, err := rand.Read(buf); err != nil {
-		return fmt.Sprintf("th_%d", time.Now().UTC().UnixNano())
+		return fmt.Sprintf("th_%d", time.Now().UTC().UnixMicro())
 	}
-	return fmt.Sprintf("th_%d_%s", time.Now().UTC().UnixNano(), hex.EncodeToString(buf))
+	return fmt.Sprintf("th_%d_%s", time.Now().UTC().UnixMicro(), hex.EncodeToString(buf))
 }
 
 func newTurnID() string {
 	buf := make([]byte, 8)
 	if _, err := rand.Read(buf); err != nil {
-		return fmt.Sprintf("tu_%d", time.Now().UTC().UnixNano())
+		return fmt.Sprintf("tu_%d", time.Now().UTC().UnixMicro())
 	}
-	return fmt.Sprintf("tu_%d_%s", time.Now().UTC().UnixNano(), hex.EncodeToString(buf))
+	return fmt.Sprintf("tu_%d_%s", time.Now().UTC().UnixMicro(), hex.EncodeToString(buf))
 }
 
 func parseBoolQuery(r *http.Request, key string) bool {
@@ -3574,6 +3609,248 @@ func decodeJSONBody(r *http.Request, dst any) error {
 		return errors.New("extra JSON values are not allowed")
 	}
 	return nil
+}
+
+func decodeTurnCreateRequest(r *http.Request, dst *struct {
+	Prompt agents.Prompt
+	Stream bool
+}) error {
+	if dst == nil {
+		return errors.New("destination is required")
+	}
+
+	contentType := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		return decodeMultipartTurnCreateRequest(r, dst)
+	}
+
+	var req struct {
+		Input  string `json:"input"`
+		Stream bool   `json:"stream"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		return err
+	}
+
+	dst.Stream = req.Stream
+	dst.Prompt = agents.TextPrompt(req.Input)
+	return nil
+}
+
+func decodeMultipartTurnCreateRequest(r *http.Request, dst *struct {
+	Prompt agents.Prompt
+	Stream bool
+}) error {
+	if err := r.ParseMultipartForm(maxTurnMultipartMemory); err != nil {
+		return err
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+
+	text := strings.TrimSpace(r.FormValue("input"))
+	stream := parseFormBoolValue(r.FormValue("stream"))
+	attachments, err := persistTurnAttachments(r.MultipartForm.File["attachments"])
+	if err != nil {
+		return err
+	}
+
+	content := make([]agents.PromptContent, 0, len(attachments)+1)
+	if text != "" {
+		content = append(content, agents.PromptContent{
+			Type: agents.PromptContentTypeText,
+			Text: text,
+		})
+	}
+	content = append(content, attachments...)
+
+	dst.Stream = stream
+	dst.Prompt = agents.NormalizePrompt(agents.Prompt{Content: content})
+	return nil
+}
+
+func parseFormBoolValue(value string) bool {
+	value = strings.TrimSpace(strings.ToLower(value))
+	return value == "1" || value == "true" || value == "yes"
+}
+
+func persistTurnAttachments(files []*multipart.FileHeader) ([]agents.PromptContent, error) {
+	if len(files) == 0 {
+		return nil, nil
+	}
+
+	attachments := make([]agents.PromptContent, 0, len(files))
+	for _, fileHeader := range files {
+		attachment, err := persistTurnAttachment(fileHeader)
+		if err != nil {
+			return nil, err
+		}
+		attachments = append(attachments, attachment)
+	}
+	return attachments, nil
+}
+
+func persistTurnAttachment(fileHeader *multipart.FileHeader) (agents.PromptContent, error) {
+	if fileHeader == nil {
+		return agents.PromptContent{}, errors.New("attachment is required")
+	}
+
+	src, err := fileHeader.Open()
+	if err != nil {
+		return agents.PromptContent{}, fmt.Errorf("open attachment %q: %w", fileHeader.Filename, err)
+	}
+	defer src.Close()
+
+	displayName := normalizeUploadFilename(fileHeader.Filename)
+	dstFile, dstPath, err := createUploadTempFile(displayName)
+	if err != nil {
+		return agents.PromptContent{}, err
+	}
+
+	size, mimeType, copyErr := copyUploadToTempFile(dstFile, src, displayName, fileHeader.Header.Get("Content-Type"))
+	closeErr := dstFile.Close()
+	if copyErr != nil {
+		_ = os.Remove(dstPath)
+		return agents.PromptContent{}, copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(dstPath)
+		return agents.PromptContent{}, fmt.Errorf("close temp upload %q: %w", displayName, closeErr)
+	}
+
+	return agents.PromptContent{
+		Type:     agents.PromptContentTypeResourceLink,
+		URI:      fileURIForPath(dstPath),
+		Name:     displayName,
+		MimeType: mimeType,
+		Size:     size,
+	}, nil
+}
+
+func createUploadTempFile(displayName string) (*os.File, string, error) {
+	displayName = normalizeUploadFilename(displayName)
+	ext := filepath.Ext(displayName)
+	stem := sanitizeUploadTempStem(strings.TrimSuffix(displayName, ext))
+	pattern := fmt.Sprintf("ngent-%s-*%s", stem, ext)
+	tempDir := uploadTempDir()
+	file, err := os.CreateTemp(tempDir, pattern)
+	if err != nil {
+		return nil, "", fmt.Errorf("create temp upload for %q: %w", displayName, err)
+	}
+	return file, file.Name(), nil
+}
+
+func copyUploadToTempFile(dst *os.File, src multipart.File, displayName, headerMime string) (int64, string, error) {
+	if dst == nil {
+		return 0, "", errors.New("temp upload file is required")
+	}
+	if src == nil {
+		return 0, "", errors.New("upload source is required")
+	}
+
+	sniffBuf := make([]byte, 512)
+	n, readErr := io.ReadFull(src, sniffBuf)
+	switch {
+	case readErr == nil:
+	case errors.Is(readErr, io.EOF), errors.Is(readErr, io.ErrUnexpectedEOF):
+	default:
+		return 0, "", fmt.Errorf("read upload %q: %w", displayName, readErr)
+	}
+
+	total := int64(0)
+	if n > 0 {
+		written, err := dst.Write(sniffBuf[:n])
+		total += int64(written)
+		if err != nil {
+			return 0, "", fmt.Errorf("write upload %q: %w", displayName, err)
+		}
+		if written != n {
+			return 0, "", io.ErrShortWrite
+		}
+	}
+
+	written, err := io.Copy(dst, src)
+	total += written
+	if err != nil {
+		return 0, "", fmt.Errorf("copy upload %q: %w", displayName, err)
+	}
+
+	return total, detectUploadMimeType(displayName, headerMime, sniffBuf[:n]), nil
+}
+
+func detectUploadMimeType(displayName, headerMime string, sniff []byte) string {
+	if mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(headerMime)); err == nil && mediaType != "" && mediaType != "application/octet-stream" {
+		return mediaType
+	}
+	if len(sniff) > 0 {
+		if detected := http.DetectContentType(sniff); detected != "" {
+			return detected
+		}
+	}
+	if detected := mime.TypeByExtension(strings.ToLower(filepath.Ext(displayName))); detected != "" {
+		return detected
+	}
+	return "application/octet-stream"
+}
+
+func normalizeUploadFilename(name string) string {
+	name = strings.TrimSpace(filepath.Base(name))
+	name = strings.Map(func(r rune) rune {
+		switch r {
+		case 0, '/', '\\':
+			return -1
+		default:
+			return r
+		}
+	}, name)
+	if name == "" || name == "." {
+		return "attachment"
+	}
+	return name
+}
+
+func sanitizeUploadTempStem(stem string) string {
+	stem = strings.ToLower(strings.TrimSpace(stem))
+	if stem == "" {
+		return "attachment"
+	}
+	var builder strings.Builder
+	for _, r := range stem {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+		case r == '-' || r == '_':
+			builder.WriteRune(r)
+		default:
+			builder.WriteByte('-')
+		}
+		if builder.Len() >= 32 {
+			break
+		}
+	}
+	result := strings.Trim(builder.String(), "-_")
+	if result == "" {
+		return "attachment"
+	}
+	return result
+}
+
+func uploadTempDir() string {
+	if info, err := os.Stat("/tmp"); err == nil && info.IsDir() {
+		return "/tmp"
+	}
+	return os.TempDir()
+}
+
+func fileURIForPath(path string) string {
+	path = filepath.Clean(strings.TrimSpace(path))
+	slashPath := filepath.ToSlash(path)
+	if volume := filepath.VolumeName(path); volume != "" && !strings.HasPrefix(slashPath, "/") {
+		slashPath = "/" + slashPath
+	}
+	return (&url.URL{Scheme: "file", Path: slashPath}).String()
 }
 
 type loggingResponseWriter struct {
@@ -3645,7 +3922,7 @@ func (w *loggingResponseWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
 
-func requestClientIP(r *http.Request) string {
+func requestClientAddr(r *http.Request) string {
 	if r == nil {
 		return "unknown"
 	}
@@ -3669,10 +3946,26 @@ func requestClientIP(r *http.Request) string {
 	}
 
 	host, _, err := net.SplitHostPort(remoteAddr)
-	if err == nil && host != "" {
-		return host
+	if err == nil && strings.TrimSpace(host) != "" {
+		return strings.TrimSpace(host)
 	}
+
 	return remoteAddr
+}
+
+func requestLogPath(r *http.Request) string {
+	if r == nil || r.URL == nil {
+		return "/"
+	}
+
+	path := strings.TrimSpace(r.URL.RequestURI())
+	if path == "" {
+		path = strings.TrimSpace(r.URL.Path)
+	}
+	if path == "" {
+		path = "/"
+	}
+	return observability.RedactString(path)
 }
 
 func (s *Server) isAuthorized(r *http.Request) bool {

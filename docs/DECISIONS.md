@@ -2,6 +2,7 @@
 
 ## ADR Index
 
+- ADR-053: Replace `slog` JSON output with a human-readable stderr logger and colored access logs. (Accepted)
 - ADR-001: HTTP/JSON API with SSE streaming transport. (Accepted)
 - ADR-002: Client identity via `X-Client-ID` header. (Accepted)
 - ADR-003: SQLite append-only events table as interaction source of truth. (Accepted)
@@ -51,6 +52,63 @@
 - ADR-049: Align Web UI navigation with a left agent rail and left session panel. (Accepted)
 - ADR-050: Keep the left agent rail permanently expanded. (Accepted)
 - ADR-051: BLACKBOX AI ACP provider integration via shared ACP CLI driver. (Accepted)
+- ADR-052: Cursor CLI ACP provider integration with explicit ACP authentication. (Accepted)
+
+## ADR-053: Replace `slog` JSON Output With A Human-Readable Stderr Logger And Colored Access Logs
+
+- Status: Accepted
+- Date: 2026-03-23
+- Context:
+  - the previous stderr logger emitted JSON `slog` envelopes for every runtime event and HTTP request.
+  - operators reviewing ngent locally primarily read logs in a terminal, and the JSON shape made common request traffic harder to scan quickly.
+  - the product still needs the existing safety properties:
+    - stderr-only logging.
+    - leveled output with debug gating.
+    - secret redaction in errors and ACP traces.
+- Decision:
+  - replace the shared `slog` logger with a repo-local human-readable logger in `internal/observability`.
+  - keep the current logging call sites on a simple leveled API (`Debug/Info/Warn/Error`) to minimize churn outside the observability package.
+  - emit HTTP completion logs in a compact access-log shape:
+    - `INFO: <local-time> <client-ip> - "<method> <path> <proto>" <status> <statusText> <duration>`
+  - keep ACP debug tracing behind `--debug=true`, but print it as readable text fields with the sanitized RPC payload embedded as JSON.
+  - enable ANSI colors only when stderr is attached to a TTY, so redirected output remains plain text.
+- Consequences:
+  - local terminal logs are easier to scan, especially for high-volume request traffic.
+  - stderr output is no longer one-JSON-object-per-line, so external log collectors may need a text parser if they ingest ngent logs directly.
+  - secret redaction remains centralized in `internal/observability`, so changing the presentation layer does not weaken the fail-closed logging policy.
+- Alternatives considered:
+  - keep JSON `slog` and only add a prettier startup banner (rejected: request traffic would remain noisy).
+  - keep `slog` but swap in a custom pretty handler (rejected: the desired output is simpler as a small repo-local logger than as a `slog` compatibility layer).
+  - add a new pretty logger only for access logs and leave everything else as JSON (rejected: mixed formats on stderr would be inconsistent and harder to reason about).
+
+## ADR-052: Cursor CLI ACP Provider Integration With Explicit ACP Authentication
+
+- Status: Accepted
+- Date: 2026-03-23
+- Context:
+  - Cursor CLI now documents ACP mode via `agent acp`, and the user already has a working local Cursor CLI install.
+  - official Cursor ACP docs describe the expected session flow as `initialize -> authenticate(methodId="cursor_login") -> session/new|session/load -> session/prompt`.
+  - local probing against the installed CLI confirmed that:
+    - `initialize` advertises `authMethods=[{"id":"cursor_login",...}]`.
+    - skipping `authenticate` causes real `session/new` to stall without returning a response.
+    - `session/new.model` and `session/new.modelId` do not select the requested model.
+    - `session/set_config_option("model", value)` updates Cursor's selected model and returns updated `configOptions`.
+- Decision:
+  - add `internal/agents/cursor` as a first-class provider on top of the shared `internal/agents/acpcli` driver.
+  - start Cursor ACP with a binary fallback order of `agent acp` then `cursor-agent acp`, so ngent tolerates both common local install shapes.
+  - perform provider-local ACP authentication immediately after `initialize` whenever `cursor_login` is advertised in `authMethods`.
+  - treat Cursor model selection as a config-option concern rather than a startup/prompt hint:
+    - do not rely on `session/new.model` / `modelId`.
+    - apply selected `modelId` through `session/set_config_option("model", ...)`.
+  - keep Cursor's optional ACP extension methods out of scope for now; ngent continues to rely on standard ACP `session/update`, `session/request_permission`, and `session/cancel`.
+- Consequences:
+  - ngent can list, configure, and run Cursor threads through the same shared ACP CLI lifecycle as the other direct ACP providers.
+  - Cursor support remains robust even when only one of `agent` or `cursor-agent` is present in PATH.
+  - thread-selected Cursor models now behave consistently with real Cursor ACP semantics instead of silently being ignored at `session/new`.
+- Alternatives considered:
+  - treat Cursor like the other direct ACP providers and skip `authenticate` (rejected: local probing showed `session/new` hangs).
+  - key model selection off `session/new.model` or `session/prompt.model` only (rejected: real Cursor ignores those hints).
+  - build a Cursor-specific lifecycle stack instead of reusing `acpcli` (rejected: the delta is limited to auth and model-selection hooks).
 
 ## ADR-051: BLACKBOX AI ACP Provider Integration Via Shared ACP CLI Driver
 
@@ -155,7 +213,6 @@
   - the product still needs live reasoning to stay visible while the turn is actively streaming.
   - the message list is re-rendered from store state, so manual expand/collapse choice needs explicit local UI tracking if it should survive later store updates.
 - Decision:
-  - render reasoning inside a lightweight inline `Thinking` toggle modeled after the Kimi Web UI `Thought` block pattern instead of a heavy bordered card.
   - use a sparkles icon + italic label + rotating chevron trigger, with expanded content shown as indented text behind a left border.
   - use tense-sensitive labels: live reasoning stays `Thinking`, and finalized reasoning switches to `Thought`.
   - render finalized reasoning with the same sanitized markdown pipeline used for finalized assistant messages, while keeping in-flight reasoning as plain text during streaming.
@@ -434,7 +491,7 @@
 
 - Status: Accepted
 - Date: 2026-02-28
-- Context: users need a visual client to interact with the Agent Hub without writing curl commands or building a separate frontend project.
+- Context: users need a visual client to interact with the Ngent without writing curl commands or building a separate frontend project.
 - Decision:
   - add a Vite + TypeScript (no framework) frontend under `web/src/`.
   - build output lands in `web/dist/`, embedded via `//go:embed web/dist` in `internal/webui/webui.go`.
@@ -1420,3 +1477,25 @@ Use this template for new decisions.
 - Alternatives considered:
   - keep the UI binary and continue mapping approvals to the first allow/reject option (rejected: loses provider semantics and hides real choices from the user).
   - expose provider options in SSE but keep the HTTP endpoint outcome-only (rejected: UI would still be unable to return the exact selected option).
+
+## ADR-057: Persist Web UI uploads as local temp files and forward them as ACP resource links
+
+- Status: Accepted
+- Date: 2026-03-23
+- Context:
+  - ACP `session/prompt` supports structured prompt content, including `resource_link`, so users can send text together with local files/images.
+  - ngent's turn pipeline previously accepted only one plain `input` string from HTTP through to the agent layer, which meant Web UI uploads had no transport path.
+  - base64-inlining uploaded files into prompt text would bloat requests, lose MIME/name metadata, and diverge from ACP's native content model.
+- Decision:
+  - introduce a shared structured prompt model in the agent layer with `text` and `resource_link` items plus a plain-text fallback renderer for non-ACP paths.
+  - extend `POST /v1/threads/{threadId}/turns` to accept `multipart/form-data`; persist uploaded files into the local temp directory and convert them into `file://` ACP resource links with `name`, `mimeType`, and `size`.
+  - keep `requestText` as a readable fallback summary that mentions attached resources, and persist the original structured user prompt separately as a `user_prompt` turn event so history/UI can reconstruct attachments without polluting the visible user text.
+  - teach ACP CLI and embedded providers to send structured `session/prompt.prompt[]` arrays instead of forcing plain strings.
+- Consequences:
+  - Web UI users can now send attachment-only turns and text+attachment turns without leaving ACP semantics.
+  - hub-created history preserves enough information to re-render user attachment cards after reload.
+  - temp files remain local-only and provider-facing through `file://` URIs; ngent does not need to expose a new download endpoint.
+- Alternatives considered:
+  - upload files to a new ngent HTTP asset endpoint and send remote URLs (rejected: unnecessary extra surface and weaker local-first story).
+  - embed file contents directly into prompt text (rejected: loses ACP structure, MIME metadata, and scales poorly for binary files).
+  - add a separate pre-upload API that returns opaque ids (rejected: more round trips and more state than needed for the current Web UI flow).

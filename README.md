@@ -41,6 +41,7 @@ Ngent acts as a bridge between **ACP-compatible agents** (like Codex, Kimi CLI, 
 |---|---|
 | Codex | ✅ |
 | Claude Code | ✅ |
+| Cursor CLI | ✅ |
 | Gemini CLI | ✅ |
 | Kimi CLI | ✅ |
 | Qwen Code | ✅ |

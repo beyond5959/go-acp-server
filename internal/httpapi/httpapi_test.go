@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -23,6 +25,7 @@ import (
 	"github.com/beyond5959/ngent/internal/agents"
 	"github.com/beyond5959/ngent/internal/agents/acp"
 	"github.com/beyond5959/ngent/internal/agents/acpmodel"
+	"github.com/beyond5959/ngent/internal/observability"
 	runtimectl "github.com/beyond5959/ngent/internal/runtime"
 	"github.com/beyond5959/ngent/internal/storage"
 )
@@ -51,7 +54,7 @@ func TestHealthz(t *testing.T) {
 
 func TestRequestCompletionLogIncludesPathIPAndStatus(t *testing.T) {
 	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+	logger := observability.NewLoggerWithWriter(&logBuf, observability.LevelInfo)
 	h := newTestServer(t, testServerOptions{logger: logger})
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -63,52 +66,10 @@ func TestRequestCompletionLogIncludesPathIPAndStatus(t *testing.T) {
 		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusOK)
 	}
 
-	lines := strings.Split(strings.TrimSpace(logBuf.String()), "\n")
-	entry := map[string]any{}
-	found := false
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		candidate := map[string]any{}
-		if err := json.Unmarshal([]byte(line), &candidate); err != nil {
-			continue
-		}
-		if candidate["msg"] == "http.request.completed" {
-			entry = candidate
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("missing http.request.completed log entry, logs:\n%s", logBuf.String())
-	}
-
-	if got := fmt.Sprintf("%v", entry["method"]); got != http.MethodGet {
-		t.Fatalf("log method = %q, want %q", got, http.MethodGet)
-	}
-	if got := fmt.Sprintf("%v", entry["path"]); got != "/healthz" {
-		t.Fatalf("log path = %q, want %q", got, "/healthz")
-	}
-	if got := fmt.Sprintf("%v", entry["ip"]); got != "198.51.100.23" {
-		t.Fatalf("log ip = %q, want %q", got, "198.51.100.23")
-	}
-	if got := int(entry["status"].(float64)); got != http.StatusOK {
-		t.Fatalf("log status = %d, want %d", got, http.StatusOK)
-	}
-	if got := fmt.Sprintf("%v", entry["req_time"]); strings.TrimSpace(got) == "" {
-		t.Fatalf("log req_time is empty")
-	}
-	reqTimeRaw := fmt.Sprintf("%v", entry["req_time"])
-	if strings.Contains(reqTimeRaw, ".") {
-		t.Fatalf("log req_time includes sub-second precision: %q", reqTimeRaw)
-	}
-	reqTime, err := time.Parse(time.DateTime, reqTimeRaw)
-	if err != nil {
-		t.Fatalf("log req_time parse error: %v (value=%q)", err, reqTimeRaw)
-	}
-	if !reqTime.Equal(reqTime.Truncate(time.Second)) {
-		t.Fatalf("log req_time is not second precision: %q", reqTimeRaw)
+	logLine := strings.TrimSpace(logBuf.String())
+	pattern := regexp.MustCompile(`^INFO: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} 198\.51\.100\.23 - "GET /healthz HTTP/1\.1" 200 OK (0ms|[0-9]+us|[0-9]+\.[0-9]ms|[0-9]+\.[0-9]{3}s)$`)
+	if !pattern.MatchString(logLine) {
+		t.Fatalf("unexpected access log:\n%s", logBuf.String())
 	}
 }
 
@@ -2358,6 +2319,191 @@ func TestTurnsSSEAndHistory(t *testing.T) {
 	}
 }
 
+func TestMultipartTurnUploadsAttachmentsAsResourceLinks(t *testing.T) {
+	root := t.TempDir()
+	streamer := &promptCaptureStreamer{}
+	server := newTestServer(t, testServerOptions{
+		allowedRoots: []string{root},
+		turnAgentFactory: func(thread storage.Thread) (agents.Streamer, error) {
+			_ = thread
+			return streamer, nil
+		},
+	})
+	ts := httptest.NewServer(server)
+	defer ts.Close()
+
+	threadID := createThreadHTTP(t, ts.URL, "client-a", root)
+	fileContents := []byte("%PDF-1.7\nresource-link-test\n")
+
+	status, body := postTurnMultipartRequest(
+		t,
+		ts.URL,
+		"client-a",
+		threadID,
+		"Please inspect this attachment.",
+		"document.pdf",
+		fileContents,
+	)
+	if status != http.StatusOK {
+		t.Fatalf("multipart turn status = %d, want %d, body=%s", status, http.StatusOK, body)
+	}
+
+	events := parseSSEEvents(t, body)
+	if len(events) < 3 {
+		t.Fatalf("events count = %d, want >= 3", len(events))
+	}
+
+	prompt := streamer.prompt
+	if got, want := len(prompt.Content), 2; got != want {
+		t.Fatalf("len(prompt.Content) = %d, want %d", got, want)
+	}
+	if got := prompt.Content[0].Type; got != agents.PromptContentTypeText {
+		t.Fatalf("prompt.Content[0].Type = %q, want %q", got, agents.PromptContentTypeText)
+	}
+	if got := prompt.Content[0].Text; got != "Please inspect this attachment." {
+		t.Fatalf("prompt.Content[0].Text = %q, want %q", got, "Please inspect this attachment.")
+	}
+	resource := prompt.Content[1]
+	if got := resource.Type; got != agents.PromptContentTypeResourceLink {
+		t.Fatalf("prompt.Content[1].Type = %q, want %q", got, agents.PromptContentTypeResourceLink)
+	}
+	if got := resource.Name; got != "document.pdf" {
+		t.Fatalf("prompt.Content[1].Name = %q, want %q", got, "document.pdf")
+	}
+	if got := resource.MimeType; got != "application/pdf" {
+		t.Fatalf("prompt.Content[1].MimeType = %q, want %q", got, "application/pdf")
+	}
+	if got, want := resource.Size, int64(len(fileContents)); got != want {
+		t.Fatalf("prompt.Content[1].Size = %d, want %d", got, want)
+	}
+	if !strings.HasPrefix(resource.URI, "file:///tmp/") {
+		t.Fatalf("prompt.Content[1].URI = %q, want prefix %q", resource.URI, "file:///tmp/")
+	}
+
+	uploadedPath := strings.TrimPrefix(resource.URI, "file://")
+	uploadedBytes, err := os.ReadFile(uploadedPath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q): %v", uploadedPath, err)
+	}
+	if !bytes.Equal(uploadedBytes, fileContents) {
+		t.Fatalf("uploaded temp file bytes = %q, want %q", uploadedBytes, fileContents)
+	}
+
+	historyRR := performJSONRequest(t, server, http.MethodGet, "/v1/threads/"+threadID+"/history?includeEvents=true", nil, map[string]string{"X-Client-ID": "client-a"})
+	if historyRR.Code != http.StatusOK {
+		t.Fatalf("history status code = %d, want %d", historyRR.Code, http.StatusOK)
+	}
+	var history struct {
+		Turns []struct {
+			RequestText string `json:"requestText"`
+			Events      []struct {
+				Type string         `json:"type"`
+				Data map[string]any `json:"data"`
+			} `json:"events"`
+		} `json:"turns"`
+	}
+	if err := json.Unmarshal(historyRR.Body.Bytes(), &history); err != nil {
+		t.Fatalf("unmarshal history: %v", err)
+	}
+	if got, want := len(history.Turns), 1; got != want {
+		t.Fatalf("len(history.turns) = %d, want %d", got, want)
+	}
+	if !strings.Contains(history.Turns[0].RequestText, "[Attached Resources]") {
+		t.Fatalf("history requestText = %q, want attached resource summary", history.Turns[0].RequestText)
+	}
+
+	seenUserPrompt := false
+	for _, event := range history.Turns[0].Events {
+		if event.Type != eventTypeUserPrompt {
+			continue
+		}
+		seenUserPrompt = true
+		rawPrompt, ok := event.Data["prompt"].([]any)
+		if !ok || len(rawPrompt) != 2 {
+			t.Fatalf("user_prompt.data.prompt = %#v, want 2 items", event.Data["prompt"])
+		}
+		attachment, ok := rawPrompt[1].(map[string]any)
+		if !ok {
+			t.Fatalf("user_prompt attachment type = %T, want map[string]any", rawPrompt[1])
+		}
+		if got := stringField(attachment, "type"); got != agents.PromptContentTypeResourceLink {
+			t.Fatalf("user_prompt attachment.type = %q, want %q", got, agents.PromptContentTypeResourceLink)
+		}
+		if got := stringField(attachment, "name"); got != "document.pdf" {
+			t.Fatalf("user_prompt attachment.name = %q, want %q", got, "document.pdf")
+		}
+	}
+	if !seenUserPrompt {
+		t.Fatal("missing persisted user_prompt event")
+	}
+}
+
+func TestBuildInjectedPromptKeepsResourceLinksWhenInjectingContext(t *testing.T) {
+	root := t.TempDir()
+	server := newTestServer(t, testServerOptions{allowedRoots: []string{root}})
+	threadID := createThreadForClient(t, server, "client-a", root)
+
+	thread, ok := server.getOwnedThread(context.Background(), "client-a", threadID)
+	if !ok {
+		t.Fatalf("thread %q not found", threadID)
+	}
+	if err := server.store.UpdateThreadSummary(context.Background(), threadID, "Summary note"); err != nil {
+		t.Fatalf("UpdateThreadSummary: %v", err)
+	}
+	if _, err := server.store.CreateTurn(context.Background(), storage.CreateTurnParams{
+		TurnID:      "turn_prev_1",
+		ThreadID:    threadID,
+		RequestText: "Earlier question",
+		Status:      "running",
+		IsInternal:  false,
+	}); err != nil {
+		t.Fatalf("CreateTurn: %v", err)
+	}
+	if err := server.store.FinalizeTurn(context.Background(), storage.FinalizeTurnParams{
+		TurnID:       "turn_prev_1",
+		ResponseText: "Earlier answer",
+		Status:       "completed",
+		StopReason:   "end_turn",
+	}); err != nil {
+		t.Fatalf("FinalizeTurn: %v", err)
+	}
+	thread.Summary = "Summary note"
+
+	prompt, err := server.buildInjectedPrompt(context.Background(), thread, agents.Prompt{
+		Content: []agents.PromptContent{
+			{Type: agents.PromptContentTypeText, Text: "Please compare with the attachment."},
+			{
+				Type:     agents.PromptContentTypeResourceLink,
+				URI:      "file:///tmp/reference.txt",
+				Name:     "reference.txt",
+				MimeType: "text/plain",
+				Size:     42,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildInjectedPrompt: %v", err)
+	}
+	if got, want := len(prompt.Content), 2; got != want {
+		t.Fatalf("len(prompt.Content) = %d, want %d", got, want)
+	}
+	if got := prompt.Content[0].Type; got != agents.PromptContentTypeText {
+		t.Fatalf("prompt.Content[0].Type = %q, want %q", got, agents.PromptContentTypeText)
+	}
+	if !strings.Contains(prompt.Content[0].Text, "[Conversation Summary]") {
+		t.Fatalf("injected text = %q, want conversation summary wrapper", prompt.Content[0].Text)
+	}
+	if !strings.Contains(prompt.Content[0].Text, "Earlier question") || !strings.Contains(prompt.Content[0].Text, "Please compare with the attachment.") {
+		t.Fatalf("injected text = %q, want prior turn and current input", prompt.Content[0].Text)
+	}
+	if got := prompt.Content[1].Type; got != agents.PromptContentTypeResourceLink {
+		t.Fatalf("prompt.Content[1].Type = %q, want %q", got, agents.PromptContentTypeResourceLink)
+	}
+	if got := prompt.Content[1].URI; got != "file:///tmp/reference.txt" {
+		t.Fatalf("prompt.Content[1].URI = %q, want %q", got, "file:///tmp/reference.txt")
+	}
+}
+
 func TestTurnsSSEIncludesReasoningAndPersistsHistory(t *testing.T) {
 	root := t.TempDir()
 	h := newTestServer(t, testServerOptions{
@@ -3603,7 +3749,7 @@ type testServerOptions struct {
 	agentModelsFactory AgentModelsFactory
 	agentIdleTTL       time.Duration
 	permissionTimeout  time.Duration
-	logger             *slog.Logger
+	logger             *observability.Logger
 }
 
 func newTestServer(t *testing.T, opt testServerOptions) *Server {
@@ -4022,6 +4168,26 @@ func (s *messageContentStreamer) Stream(ctx context.Context, input string, onDel
 	return agents.StopReasonEndTurn, nil
 }
 
+type promptCaptureStreamer struct {
+	prompt agents.Prompt
+}
+
+func (s *promptCaptureStreamer) Name() string {
+	return "prompt-capture-streamer"
+}
+
+func (s *promptCaptureStreamer) Stream(ctx context.Context, input string, onDelta func(delta string) error) (agents.StopReason, error) {
+	return s.StreamPrompt(ctx, agents.TextPrompt(input), onDelta)
+}
+
+func (s *promptCaptureStreamer) StreamPrompt(ctx context.Context, prompt agents.Prompt, onDelta func(delta string) error) (agents.StopReason, error) {
+	s.prompt = prompt.Clone()
+	if err := onDelta("ok"); err != nil {
+		return agents.StopReasonEndTurn, err
+	}
+	return agents.StopReasonEndTurn, nil
+}
+
 type slashCommandStreamer struct {
 	commands []agents.SlashCommand
 }
@@ -4378,6 +4544,56 @@ func runTurnStreamRequest(t *testing.T, baseURL, clientID, threadID, input strin
 	t.Helper()
 	status, body := doJSON(t, http.MethodPost, baseURL+"/v1/threads/"+threadID+"/turns", map[string]any{"input": input, "stream": true}, map[string]string{"X-Client-ID": clientID})
 	return httpTurnStreamResult{StatusCode: status, Body: body}
+}
+
+func postTurnMultipartRequest(
+	t *testing.T,
+	baseURL, clientID, threadID, input, filename string,
+	fileContents []byte,
+) (int, string) {
+	t.Helper()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("input", input); err != nil {
+		t.Fatalf("WriteField(input): %v", err)
+	}
+	if err := writer.WriteField("stream", "true"); err != nil {
+		t.Fatalf("WriteField(stream): %v", err)
+	}
+	part, err := writer.CreateFormFile("attachments", filename)
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err := part.Write(fileContents); err != nil {
+		t.Fatalf("multipart part.Write: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("multipart writer.Close: %v", err)
+	}
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		baseURL+"/v1/threads/"+threadID+"/turns",
+		bytes.NewReader(body.Bytes()),
+	)
+	if err != nil {
+		t.Fatalf("http.NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("X-Client-ID", clientID)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("http.DefaultClient.Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("io.ReadAll: %v", err)
+	}
+	return resp.StatusCode, string(raw)
 }
 
 func postTurnRequest(t *testing.T, baseURL, clientID, threadID, input string) (int, string) {

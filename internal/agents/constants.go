@@ -5,6 +5,7 @@ const (
 	AgentIDKimi     = "kimi"
 	AgentIDClaude   = "claude"
 	AgentIDCodex    = "codex"
+	AgentIDCursor   = "cursor"
 	AgentIDOpencode = "opencode"
 	AgentIDQwen     = "qwen"
 	AgentIDGemini   = "gemini"
@@ -16,6 +17,7 @@ func AllAgentIDs() []string {
 	return []string{
 		AgentIDCodex,
 		AgentIDClaude,
+		AgentIDCursor,
 		AgentIDGemini,
 		AgentIDKimi,
 		AgentIDQwen,

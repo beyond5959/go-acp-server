@@ -97,6 +97,14 @@ export interface MessageSegment {
   toolCall?: ToolCall
 }
 
+export interface MessageAttachment {
+  name: string
+  uri?: string
+  mimeType?: string
+  size?: number
+  previewUrl?: string
+}
+
 export interface Turn {
   turnId: string
   requestText: string
@@ -121,6 +129,7 @@ export interface Message {
   id: string
   role: MessageRole
   content: string
+  attachments?: MessageAttachment[]
   segments?: MessageSegment[]
   reasoning?: string
   /** ISO-8601 string */

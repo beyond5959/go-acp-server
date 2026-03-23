@@ -13,16 +13,10 @@ This document defines the current HTTP API contract.
 ## Runtime Logging Conventions
 
 - Startup prints a human-readable multi-line summary on `stderr` with `Time`, `HTTP`, `Web`, `DB`, `Agents`, and `Help`.
-- Every HTTP request emits one structured completion log entry (`http.request.completed`) with:
-  - `req_time` (UTC `time.DateTime`, second precision)
-  - `method`
-  - `path`
-  - `ip`
-  - `status`
-  - `duration_ms`
-  - `resp_bytes`
-- Structured log `time` is emitted as UTC `time.DateTime` with second precision.
-- When server starts with `--debug=true`, stderr also emits `acp.message` debug entries for ACP JSON-RPC traffic with:
+- Every HTTP request emits one human-readable access-log line on `stderr`, for example:
+  - `INFO: 2026-03-23 15:30:45 127.0.0.1 - "GET /v1/threads HTTP/1.1" 200 OK 12.4ms`
+- When `stderr` is attached to a TTY, access logs and level labels may use ANSI colors; redirected output stays plain text.
+- When server starts with `--debug=true`, `stderr` also emits readable `acp.message` debug lines for ACP JSON-RPC traffic with:
   - `component`
   - `direction` (`inbound|outbound`)
   - `rpcType` (`request|response|notification`)
@@ -74,7 +68,7 @@ All errors use:
 - Headers: `X-Client-ID` (required), optional bearer auth if enabled.
 - agent status contract:
   - each agent entry reports readiness as `available|unavailable`.
-  - current built-in ids are `codex`, `claude`, `gemini`, `qwen`, `opencode`.
+  - current built-in ids are `codex`, `claude`, `cursor`, `gemini`, `kimi`, `qwen`, `opencode`, and `blackbox`.
 - Response `200`:
 
 ```json

@@ -15,6 +15,15 @@
 
 ## Open Issues
 
+- ID: KI-034
+- Title: Human-readable stderr logs are less machine-friendly than JSON logs
+- Status: Open
+- Severity: Low
+- Affects: deployments that ingest ngent stderr into pipelines expecting one JSON object per line
+- Symptom: request/access logs and ACP debug traces are emitted as readable text lines, so strict JSON log collectors cannot parse them directly
+- Workaround: use a text log parser in the collector pipeline, or pin an earlier revision if JSON log envelopes are a hard requirement
+- Follow-up plan: consider an opt-in `--log-format=json|pretty` switch if operator demand for machine-readable logs returns
+
 - ID: KI-001
 - Title: SSE disconnect during long-running turn
 - Status: Open
@@ -218,10 +227,11 @@
   - a just-created Kimi `sessionId` can be resumed successfully through ACP `session/load`, but may still be absent from Kimi's own `session/list`, `kimi export`, and local `~/.kimi/sessions/*/<sessionId>` files for a while.
   - ngent can continue the bound session on the same or another thread if the `sessionId` is already known, but the session sidebar may not show the new session immediately after creation.
 - Workaround:
-  - continue using the bound thread directly after the first Kimi turn when the new session does not yet appear in the sidebar.
-  - retry session browsing later if the session needs to be re-selected from the sidebar.
+  - continue using the bound `sessionId` directly in ngent even if Kimi's own session browser has not caught up yet.
+  - retry session browsing later after Kimi finishes persisting its own session index/files.
 - Follow-up plan:
-  - keep validating newer Kimi CLI releases and add a backend fallback only if Kimi later exposes a reliable transcript/export path for freshly created ACP sessions.
+  - keep validating Kimi CLI session persistence timing across upstream releases.
+  - decide whether ngent should annotate newly bound sessions as "not yet discoverable upstream" when local evidence supports that distinction.
 
 - ID: KI-024
 - Title: Kimi CLI 1.20.0 does not replay transcript messages during historical session/load
@@ -405,6 +415,35 @@
 - Follow-up plan:
   - keep validating newer BLACKBOX CLI releases for `session/list` / `session/load` / model-catalog support.
   - wire those surfaces into ngent immediately once upstream ACP exposes them consistently.
+
+- ID: KI-038
+- Title: Cursor ACP runtime depends on pre-authenticated local CLI state
+- Status: Open
+- Severity: Medium
+- Affects: implemented `cursor` provider turns in environments without a ready local Cursor login
+- Symptom:
+  - Cursor ACP `initialize` advertises `authMethods=[cursor_login]`.
+  - if local Cursor login state is missing or unusable, the provider can fail during the explicit ACP `authenticate` step before `session/new`.
+  - even after ACP authentication succeeds, prompt execution still depends on the local account's current entitlement/quota state.
+- Workaround:
+  - run `agent login` before issuing Cursor turns, or provide supported Cursor CLI auth flags/environment when launching the CLI outside ngent.
+  - if turns authenticate but return product-gating text rather than the requested answer, verify the local Cursor account plan/quota state separately from ngent.
+- Follow-up plan:
+  - add richer preflight diagnostics for Cursor auth readiness beyond PATH existence if this becomes a recurring support issue.
+  - keep validating whether future Cursor CLI releases expose a more explicit non-interactive auth-health probe.
+
+- ID: KI-039
+- Title: Uploaded Web UI resource-link temp files currently rely on OS temp cleanup
+- Status: Open
+- Severity: Low
+- Affects: long-running ngent instances that handle many uploaded Web UI attachments
+- Symptom:
+  - `POST /v1/threads/{threadId}/turns` now persists uploaded files into the local temp directory so ACP providers can read them through `file://` resource links.
+  - ngent currently leaves those temp files in place after the turn finishes and relies on normal OS temp cleanup / user cleanup instead of running its own retention sweeper.
+- Workaround:
+  - periodically clear old `ngent-*` files from the system temp directory if disk usage matters in a long-lived environment.
+- Follow-up plan:
+  - add an age-based temp-upload janitor once real usage clarifies safe retention expectations for provider retries and history-driven debugging.
 
 ## Recently Closed
 

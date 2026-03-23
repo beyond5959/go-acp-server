@@ -19,6 +19,7 @@ import type {
   SessionInfo,
   SessionTranscriptMessage,
   ToolCall,
+  MessageAttachment,
 } from './types.ts'
 import type {
   MessageContentPayload,
@@ -29,7 +30,7 @@ import type {
   SessionBoundPayload,
   ToolCallPayload,
 } from './sse.ts'
-import { copyText, escHtml, formatRelativeTime, formatTimestamp, generateUUID } from './utils.ts'
+import { copyText, escHtml, formatBytes, formatRelativeTime, formatTimestamp, generateUUID } from './utils.ts'
 
 // ── Theme ─────────────────────────────────────────────────────────────────
 
@@ -46,6 +47,10 @@ const iconPlus = `<svg width="15" height="15" viewBox="0 0 15 15" fill="none" ar
 
 const iconSend = `<svg width="14" height="14" viewBox="0 0 15 15" fill="none" aria-hidden="true">
   <path d="M1.5 7.5h12M8.5 2l5 5.5-5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`
+
+const iconAttachment = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <path d="M9 12.5 14.7 6.8a3 3 0 1 1 4.24 4.24l-7.42 7.42a5 5 0 1 1-7.07-7.08l7.78-7.77" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`
 
 const iconSettings = `<svg width="14" height="14" viewBox="0 0 15 15" fill="none" aria-hidden="true">
@@ -131,9 +136,19 @@ interface SessionPanelState {
   error: string
 }
 
+interface ComposerAttachmentDraft {
+  id: string
+  file: File
+  name: string
+  mimeType: string
+  size: number
+  previewUrl?: string
+}
+
 const sessionPanelStateByThread = new Map<string, SessionPanelState>()
 const sessionPanelRequestSeqByThread = new Map<string, number>()
 const sessionPanelScrollTopByThread = new Map<string, number>()
+const composerAttachmentsByThread = new Map<string, ComposerAttachmentDraft[]>()
 let sessionPanelRequestSeq = 0
 
 function cloneConfigOptions(options: ConfigOption[]): ConfigOption[] {
@@ -300,6 +315,76 @@ function cloneMessageSegments(segments: MessageSegment[] | null | undefined): Me
     })
   }
   return cloned.length ? cloned : undefined
+}
+
+function cloneMessageAttachments(
+  attachments: MessageAttachment[] | null | undefined,
+): MessageAttachment[] | undefined {
+  if (!attachments?.length) return undefined
+
+  const cloned: MessageAttachment[] = []
+  for (const attachment of attachments) {
+    const name = attachment.name?.trim() ?? ''
+    if (!name) continue
+    cloned.push({
+      name,
+      uri: attachment.uri?.trim() || undefined,
+      mimeType: attachment.mimeType?.trim() || undefined,
+      size: typeof attachment.size === 'number' && Number.isFinite(attachment.size)
+        ? Math.max(0, attachment.size)
+        : undefined,
+      previewUrl: attachment.previewUrl?.trim() || undefined,
+    })
+  }
+  return cloned.length ? cloned : undefined
+}
+
+function threadComposerAttachments(threadId: string): ComposerAttachmentDraft[] {
+  return composerAttachmentsByThread.get(threadId) ?? []
+}
+
+function attachmentPreviewURL(file: File): string | undefined {
+  if (!file.type.startsWith('image/')) return undefined
+  return URL.createObjectURL(file)
+}
+
+function revokeAttachmentPreview(attachment: { previewUrl?: string } | null | undefined): void {
+  if (!attachment?.previewUrl) return
+  URL.revokeObjectURL(attachment.previewUrl)
+}
+
+function setThreadComposerAttachments(threadId: string, nextAttachments: ComposerAttachmentDraft[]): void {
+  const previous = composerAttachmentsByThread.get(threadId) ?? []
+  const nextPreviewURLs = new Set(nextAttachments.map(attachment => attachment.previewUrl).filter(Boolean))
+  previous.forEach(attachment => {
+    if (attachment.previewUrl && !nextPreviewURLs.has(attachment.previewUrl)) {
+      revokeAttachmentPreview(attachment)
+    }
+  })
+
+  if (nextAttachments.length) {
+    composerAttachmentsByThread.set(threadId, nextAttachments)
+  } else {
+    composerAttachmentsByThread.delete(threadId)
+  }
+}
+
+function clearThreadComposerAttachments(threadId: string): void {
+  const attachments = composerAttachmentsByThread.get(threadId) ?? []
+  attachments.forEach(attachment => revokeAttachmentPreview(attachment))
+  composerAttachmentsByThread.delete(threadId)
+}
+
+function composerDraftsToMessageAttachments(
+  attachments: ComposerAttachmentDraft[] | null | undefined,
+): MessageAttachment[] | undefined {
+  if (!attachments?.length) return undefined
+  return cloneMessageAttachments(attachments.map(attachment => ({
+    name: attachment.name,
+    mimeType: attachment.mimeType || undefined,
+    size: attachment.size,
+    previewUrl: attachment.file.type.startsWith('image/') ? attachmentPreviewURL(attachment.file) : undefined,
+  })))
 }
 
 function appendTextSegment(
@@ -566,6 +651,42 @@ function extractTurnReasoning(events: TurnEvent[] | undefined): string {
     reasoning += event.data.delta
   }
   return reasoning
+}
+
+function extractTurnUserPrompt(events: TurnEvent[] | undefined): {
+  text: string
+  attachments?: MessageAttachment[]
+} {
+  const textParts: string[] = []
+  const attachments: MessageAttachment[] = []
+
+  for (const event of sortTurnEvents(events)) {
+    if (event.type !== 'user_prompt') continue
+    const prompt = Array.isArray(event.data.prompt) ? event.data.prompt : []
+    prompt.forEach(item => {
+      const record = asRecord(item)
+      if (!record) return
+      const type = recordString(record, 'type').toLowerCase()
+      if (type === 'text') {
+        const text = recordString(record, 'text')
+        if (text) textParts.push(text)
+        return
+      }
+      if (type !== 'resource_link') return
+      const sizeValue = record?.size
+      attachments.push({
+        name: recordString(record, 'name') || 'Attachment',
+        uri: recordString(record, 'uri') || undefined,
+        mimeType: recordString(record, 'mimeType') || undefined,
+        size: typeof sizeValue === 'number' && Number.isFinite(sizeValue) ? sizeValue : undefined,
+      })
+    })
+  }
+
+  return {
+    text: textParts.join('\n\n'),
+    attachments: cloneMessageAttachments(attachments),
+  }
 }
 
 function sortTurnEvents(events: TurnEvent[] | undefined): TurnEvent[] {
@@ -2094,6 +2215,9 @@ function renderAgentAvatar(agentId: string, variant: 'thread' | 'message'): stri
   if (normalized === 'claude') {
     return `<img src="${claudeIconURL}" alt="Claude Code" class="${cls}" loading="lazy" decoding="async">`
   }
+  if (normalized === 'cursor') {
+    return `<span class="${cls} ${cls}--contain ${cls}--cursor" role="img" aria-label="Cursor CLI"></span>`
+  }
   if (normalized === 'kimi') {
     return `<span class="${cls} ${cls}--contain ${cls}--kimi" role="img" aria-label="Kimi CLI"></span>`
   }
@@ -2114,6 +2238,7 @@ function hasAgentAvatarIcon(agentId: string): boolean {
   return normalized === 'codex'
     || normalized === 'gemini'
     || normalized === 'claude'
+    || normalized === 'cursor'
     || normalized === 'kimi'
     || normalized === 'opencode'
     || normalized === 'qwen'
@@ -2337,6 +2462,7 @@ async function handleDeleteThread(threadId: string): Promise<void> {
   sessionPanelScrollTopByThread.delete(threadId)
   sessionSwitchingThreads.delete(threadId)
   freshSessionNonceByThread.delete(threadId)
+  clearThreadComposerAttachments(threadId)
   let nextThreadCompletionBadges = omitThreadCompletionBadge(state.threadCompletionBadges, threadId)
   if (nextActiveThreadId) {
     nextThreadCompletionBadges = omitThreadCompletionBadge(nextThreadCompletionBadges, nextActiveThreadId)
@@ -2357,12 +2483,15 @@ function turnsToMessages(turns: Turn[]): Message[] {
   const msgs: Message[] = []
   for (const t of turns) {
     if (t.isInternal) continue
+    const userPrompt = extractTurnUserPrompt(t.events)
+    const userContent = userPrompt.text || t.requestText
 
-    if (t.requestText) {
+    if (userContent || userPrompt.attachments?.length) {
       msgs.push({
         id:        `${t.turnId}-u`,
         role:      'user',
-        content:   t.requestText,
+        content:   userContent,
+        attachments: userPrompt.attachments,
         timestamp: t.createdAt,
         status:    'done',
         turnId:    t.turnId,
@@ -2977,7 +3106,7 @@ function renderMessageContentBlockHTML(contentBlock: unknown): string {
   if (type === 'image') {
     return renderMessageImageContentHTML(contentBlock)
   }
-  if (type === 'resource' || type === 'embedded_resource' || asRecord(record.resource)) {
+  if (type === 'resource' || type === 'resource_link' || type === 'embedded_resource' || asRecord(record.resource)) {
     return renderMessageResourceContentHTML(contentBlock)
   }
 
@@ -3199,6 +3328,38 @@ function renderMessageStatusBubble(msg: Message, hasContent = false): string {
   return ''
 }
 
+function renderMessageAttachmentsHTML(
+  attachments: MessageAttachment[] | null | undefined,
+): string {
+  const normalized = cloneMessageAttachments(attachments)
+  if (!normalized?.length) return ''
+
+  return `
+    <div class="message-attachments">
+      ${normalized.map(attachment => renderMessageAttachmentHTML(attachment)).join('')}
+    </div>`
+}
+
+function renderMessageAttachmentHTML(attachment: MessageAttachment): string {
+  const title = attachment.name || 'Attachment'
+  const meta = [attachment.mimeType, typeof attachment.size === 'number' ? formatBytes(attachment.size) : '']
+    .filter((item): item is string => !!item)
+  const body = [
+    attachment.previewUrl
+      ? `<img class="message-content-card__image" src="${escHtml(attachment.previewUrl)}" alt="${escHtml(title)}" loading="lazy" />`
+      : '',
+    attachment.uri
+      ? `
+        <div class="message-content-card__section">
+          <div class="message-content-card__label">URI</div>
+          <div class="message-content-card__uri">${escHtml(attachment.uri)}</div>
+        </div>`
+      : '',
+  ].filter(Boolean).join('')
+
+  return renderMessageContentCardHTML(title, meta, body)
+}
+
 function renderMessage(msg: Message): string {
   const renderMessageCopyBtn = (text: string): string => `
     <button
@@ -3210,11 +3371,13 @@ function renderMessage(msg: Message): string {
     >⎘</button>`
 
   if (msg.role === 'user') {
-    const copyBtn = renderMessageCopyBtn(msg.content)
+    const copyBtn = msg.content ? renderMessageCopyBtn(msg.content) : ''
+    const attachmentsHTML = renderMessageAttachmentsHTML(msg.attachments)
     return `
       <div class="message message--user" data-msg-id="${escHtml(msg.id)}">
         <div class="message-group">
-          <div class="message-prompt">${escHtml(msg.content)}</div>
+          ${msg.content ? `<div class="message-prompt">${escHtml(msg.content)}</div>` : ''}
+          ${attachmentsHTML}
           <div class="message-meta">
             <span class="message-time">${formatTimestamp(msg.timestamp)}</span>
             ${copyBtn}
@@ -3424,12 +3587,19 @@ function updateInputState(): void {
   const sendBtn  = document.getElementById('send-btn')   as HTMLButtonElement   | null
   const cancelBtn = document.getElementById('cancel-btn') as HTMLButtonElement   | null
   const inputEl  = document.getElementById('message-input') as HTMLTextAreaElement | null
+  const attachmentBtn = document.getElementById('attachment-btn') as HTMLButtonElement | null
   const isSwitchingConfig = !!activeThreadId && threadConfigSwitching.has(activeThreadId)
   const isSwitchingSession = !!activeThreadId && sessionSwitchingThreads.has(activeThreadId)
   const hasThreadStreaming = hasThreadStream(activeThreadId)
+  const attachments = activeThreadId ? threadComposerAttachments(activeThreadId) : []
+  const hasComposerContent = !!inputEl?.value.trim() || attachments.length > 0
 
-  if (sendBtn)  sendBtn.disabled  = isStreaming || isSwitchingConfig || isSwitchingSession
+  if (sendBtn)  sendBtn.disabled  = isStreaming || isSwitchingConfig || isSwitchingSession || !hasComposerContent
   if (inputEl)  inputEl.disabled  = isStreaming || isSwitchingConfig || isSwitchingSession
+  if (attachmentBtn) attachmentBtn.disabled = isStreaming || isSwitchingConfig || isSwitchingSession
+  document.querySelectorAll<HTMLButtonElement>('.composer-attachment__remove').forEach(button => {
+    button.disabled = isStreaming || isSwitchingConfig || isSwitchingSession
+  })
   document.querySelectorAll<HTMLButtonElement>('.thread-model-trigger').forEach(triggerEl => {
     const pickerState = triggerEl.dataset.state ?? 'empty'
     const configID = triggerEl.dataset.configId?.trim() ?? ''
@@ -3663,6 +3833,7 @@ function renderSlashCommandMenuItem(command: SlashCommand, active: boolean): str
 function renderChatThread(t: Thread): string {
   const titleLabel   = threadTitle(t)
   const createdLabel = t.createdAt ? `Created ${formatTimestamp(t.createdAt)}` : ''
+  const attachmentCount = threadComposerAttachments(t.threadId).length
   const selectedModelID = fallbackThreadModelID(t)
   const catalogKey = normalizeAgentConfigCatalogKey(t.agent ?? '', selectedModelID)
   const hasConfigCache = threadConfigCache.has(t.threadId) || hasAgentConfigCatalog(t.agent ?? '', selectedModelID)
@@ -3713,6 +3884,7 @@ function renderChatThread(t: Thread): string {
     <div class="input-area">
       <div class="slash-command-menu" id="slash-command-menu" hidden></div>
       <div class="input-wrapper">
+        <div class="composer-attachments" id="composer-attachments">${renderComposerAttachmentsHTML(t.threadId)}</div>
         <textarea
           id="message-input"
           class="message-input"
@@ -3721,17 +3893,60 @@ function renderChatThread(t: Thread): string {
           aria-label="Message input"
         ></textarea>
         <div class="input-compose-bar">
-          <div class="thread-config-switches">
-            ${renderComposerConfigSwitch('model', 'Model', modelPickerData, modelPickerLabels, isSwitching, showModelSwitch)}
-            ${renderComposerConfigSwitch('reasoning', 'Reasoning', reasoningPickerData, reasoningPickerLabels, isSwitching, showReasoningSwitch)}
+          <div class="input-compose-left">
+            <input id="attachment-input" class="attachment-input" type="file" multiple hidden />
+            <button
+              class="btn btn-secondary btn-icon composer-attachment-btn"
+              id="attachment-btn"
+              aria-label="Add attachments"
+              title="Add attachments"
+              type="button"
+            >
+              ${iconAttachment}
+              ${attachmentCount ? `<span class="composer-attachment-btn__count">${attachmentCount}</span>` : ''}
+            </button>
+            <div class="thread-config-switches">
+              ${renderComposerConfigSwitch('model', 'Model', modelPickerData, modelPickerLabels, isSwitching, showModelSwitch)}
+              ${renderComposerConfigSwitch('reasoning', 'Reasoning', reasoningPickerData, reasoningPickerLabels, isSwitching, showReasoningSwitch)}
+            </div>
           </div>
           <button class="btn btn-primary btn-send" id="send-btn" aria-label="Send message">
             ${iconSend}
           </button>
         </div>
       </div>
-      <div class="input-hint">Press <kbd>⌘ Enter</kbd> to send · <kbd>Esc</kbd> to cancel · Type <kbd>/</kbd> for slash commands</div>
+      <div class="input-hint">Press <kbd>⌘ Enter</kbd> to send · <kbd>⌘ V</kbd> to paste image/file · <kbd>Esc</kbd> to cancel · Type <kbd>/</kbd> for slash commands</div>
     </div>`
+}
+
+function renderComposerAttachmentsHTML(threadId: string): string {
+  const attachments = threadComposerAttachments(threadId)
+  if (!attachments.length) return ''
+
+  return attachments.map(attachment => {
+    const isImage = !!attachment.previewUrl
+    const meta = [attachment.mimeType || 'File', formatBytes(attachment.size)].filter(Boolean)
+      .map(item => `<span class="composer-attachment__meta-item">${escHtml(item)}</span>`)
+      .join('')
+
+    return `
+      <div class="composer-attachment" data-attachment-id="${escHtml(attachment.id)}">
+        ${isImage
+          ? `<img class="composer-attachment__preview" src="${escHtml(attachment.previewUrl ?? '')}" alt="${escHtml(attachment.name)}" loading="lazy" />`
+          : `<div class="composer-attachment__icon" aria-hidden="true">${iconAttachment}</div>`}
+        <div class="composer-attachment__body">
+          <div class="composer-attachment__name" title="${escHtml(attachment.name)}">${escHtml(attachment.name)}</div>
+          <div class="composer-attachment__meta">${meta}</div>
+        </div>
+        <button
+          class="composer-attachment__remove"
+          data-remove-attachment="${escHtml(attachment.id)}"
+          aria-label="Remove ${escHtml(attachment.name)}"
+          title="Remove attachment"
+          type="button"
+        >×</button>
+      </div>`
+  }).join('')
 }
 
 function updateChatArea(): void {
@@ -3779,6 +3994,7 @@ function updateChatArea(): void {
   updateInputState()
   bindSessionInfoPopover()
   bindInputResize()
+  bindComposerAttachments(thread)
   bindSendHandler()
   bindCancelHandler()
   bindThreadConfigSwitches(thread)
@@ -4068,6 +4284,7 @@ function bindInputResize(): void {
   input.addEventListener('input', () => {
     input.style.height = 'auto'
     input.style.height = Math.min(input.scrollHeight, maxHeight) + 'px'
+    updateInputState()
     updateSlashCommandMenu()
   })
   input.addEventListener('keydown', e => {
@@ -4105,6 +4322,16 @@ function bindInputResize(): void {
       document.getElementById('send-btn')?.click()
     }
   })
+  input.addEventListener('paste', e => {
+    const files = clipboardFiles(e.clipboardData)
+    if (!files.length) return
+
+    const { activeThreadId } = store.get()
+    if (!activeThreadId) return
+
+    e.preventDefault()
+    addComposerAttachments(activeThreadId, files)
+  })
 
   menuEl?.addEventListener('mousedown', e => e.preventDefault())
   menuEl?.addEventListener('click', e => {
@@ -4126,6 +4353,97 @@ function bindInputResize(): void {
   })
 }
 
+function renderComposerAttachments(threadId: string): void {
+  const container = document.getElementById('composer-attachments')
+  const attachmentBtn = document.getElementById('attachment-btn') as HTMLButtonElement | null
+  if (!container || !attachmentBtn) return
+
+  const attachments = threadComposerAttachments(threadId)
+  container.innerHTML = renderComposerAttachmentsHTML(threadId)
+  attachmentBtn.innerHTML = `
+    ${iconAttachment}
+    ${attachments.length ? `<span class="composer-attachment-btn__count">${attachments.length}</span>` : ''}`
+
+  container.querySelectorAll<HTMLButtonElement>('[data-remove-attachment]').forEach(button => {
+    button.addEventListener('click', () => {
+      const attachmentID = button.dataset.removeAttachment?.trim() ?? ''
+      if (!attachmentID) return
+      const nextAttachments = threadComposerAttachments(threadId).filter(attachment => attachment.id !== attachmentID)
+      setThreadComposerAttachments(threadId, nextAttachments)
+      renderComposerAttachments(threadId)
+    })
+  })
+
+  updateInputState()
+}
+
+function clipboardFiles(data: DataTransfer | null): File[] {
+  if (!data) return []
+
+  const files: File[] = []
+  const seen = new Set<string>()
+  const pushFile = (file: File | null): void => {
+    if (!file) return
+    const key = `${file.name}:${file.size}:${file.type}:${file.lastModified}`
+    if (seen.has(key)) return
+    seen.add(key)
+    files.push(file)
+  }
+
+  Array.from(data.files ?? []).forEach(file => pushFile(file))
+  Array.from(data.items ?? []).forEach(item => {
+    if (item.kind !== 'file') return
+    pushFile(item.getAsFile())
+  })
+  return files
+}
+
+function addComposerAttachments(threadId: string, files: File[]): void {
+  if (!threadId || !files.length) return
+
+  const existing = threadComposerAttachments(threadId)
+  const seen = new Set(existing.map(attachment => `${attachment.name}:${attachment.size}:${attachment.file.lastModified}`))
+  const nextAttachments = [...existing]
+
+  files.forEach(file => {
+    const key = `${file.name}:${file.size}:${file.lastModified}`
+    if (seen.has(key)) return
+    seen.add(key)
+    nextAttachments.push({
+      id: generateUUID(),
+      file,
+      name: file.name || 'attachment',
+      mimeType: file.type || 'application/octet-stream',
+      size: file.size,
+      previewUrl: attachmentPreviewURL(file),
+    })
+  })
+
+  setThreadComposerAttachments(threadId, nextAttachments)
+  renderComposerAttachments(threadId)
+}
+
+function bindComposerAttachments(thread: Thread): void {
+  const attachmentInput = document.getElementById('attachment-input') as HTMLInputElement | null
+  const attachmentBtn = document.getElementById('attachment-btn') as HTMLButtonElement | null
+  if (!attachmentInput || !attachmentBtn) return
+
+  renderComposerAttachments(thread.threadId)
+
+  attachmentBtn.addEventListener('click', () => {
+    if (attachmentBtn.disabled) return
+    attachmentInput.click()
+  })
+
+  attachmentInput.addEventListener('change', () => {
+    const files = Array.from(attachmentInput.files ?? [])
+    if (!files.length) return
+
+    attachmentInput.value = ''
+    addComposerAttachments(thread.threadId, files)
+  })
+}
+
 // ── Send ──────────────────────────────────────────────────────────────────
 
 function bindSendHandler(): void {
@@ -4137,10 +4455,11 @@ function handleSend(): void {
   if (!inputEl) return
 
   const text = inputEl.value.trim()
-  if (!text) return
 
   const { activeThreadId, threads } = store.get()
   if (!activeThreadId) return
+  const attachmentDrafts = [...threadComposerAttachments(activeThreadId)]
+  if (!text && !attachmentDrafts.length) return
 
   const thread = threads.find(t => t.threadId === activeThreadId)
   if (!thread || sessionSwitchingThreads.has(thread.threadId)) return
@@ -4152,16 +4471,20 @@ function handleSend(): void {
   // Clear input immediately
   inputEl.value = ''
   inputEl.style.height = 'auto'
+  clearThreadComposerAttachments(capturedThreadID)
+  renderComposerAttachments(capturedThreadID)
   resetSlashCommandLookup()
   closeSlashCommandMenu()
 
   const now = new Date().toISOString()
+  const userAttachments = composerDraftsToMessageAttachments(attachmentDrafts)
 
   // ── 1. Add user message (fires subscribe → updateMessageList renders it) ──
   const userMsg: Message = {
     id:        generateUUID(),
     role:      'user',
     content:   text,
+    attachments: userAttachments,
     timestamp: now,
     status:    'done',
   }
@@ -4213,7 +4536,10 @@ function handleSend(): void {
   }
 
   // ── 5. Start SSE stream ────────────────────────────────────────────────────
-  const stream = api.startTurn(capturedThreadID, text, {
+  const stream = api.startTurn(capturedThreadID, {
+    input: text,
+    attachments: attachmentDrafts.map(attachment => attachment.file),
+  }, {
 
     onTurnStarted({ turnId }) {
       const state = getScopeStreamState(capturedScopeKey)

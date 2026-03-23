@@ -18,7 +18,7 @@ var (
 
 // DefaultAgentConfigCatalogModelID is the synthetic model key used for the
 // agent's default config-options snapshot.
-const DefaultAgentConfigCatalogModelID = "__agent_hub_default__"
+const DefaultAgentConfigCatalogModelID = "__ngent_default__"
 
 // Store wraps SQLite-backed persistence operations.
 type Store struct {
