@@ -301,12 +301,12 @@ func TestAgentConfigCatalogRefresherPartialKeepsExistingRows(t *testing.T) {
 }
 
 func TestSupportedAgentsOnlyIncludesAvailableAgents(t *testing.T) {
-	agentsUnavailable := supportedAgents(false, false, false, false, false, false, false)
+	agentsUnavailable := supportedAgents(false, false, false, false, false, false, false, false)
 	if got := len(agentsUnavailable); got != 0 {
 		t.Fatalf("len(agentsUnavailable) = %d, want 0", got)
 	}
 
-	agentsSubset := supportedAgents(true, false, false, true, false, false, false)
+	agentsSubset := supportedAgents(true, false, false, true, false, false, false, false)
 	if got, want := len(agentsSubset), 2; got != want {
 		t.Fatalf("len(agentsSubset) = %d, want %d", got, want)
 	}
@@ -323,11 +323,11 @@ func TestSupportedAgentsOnlyIncludesAvailableAgents(t *testing.T) {
 		t.Fatalf("agentsSubset[1].Status = %q, want %q", agentsSubset[1].Status, "available")
 	}
 
-	agentsAvailable := supportedAgents(true, true, true, true, true, true, true)
-	if got, want := len(agentsAvailable), 7; got != want {
+	agentsAvailable := supportedAgents(true, true, true, true, true, true, true, true)
+	if got, want := len(agentsAvailable), 8; got != want {
 		t.Fatalf("len(agentsAvailable) = %d, want %d", got, want)
 	}
-	for i, wantID := range []string{"codex", "claude", "gemini", "kimi", "qwen", "opencode", "blackbox"} {
+	for i, wantID := range []string{"codex", "claude", "gemini", "kimi", "qwen", "opencode", "blackbox", "cursor"} {
 		if agentsAvailable[i].ID != wantID {
 			t.Fatalf("agentsAvailable[%d].ID = %q, want %q", i, agentsAvailable[i].ID, wantID)
 		}

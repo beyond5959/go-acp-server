@@ -4,14 +4,32 @@
 
 Code Agent Hub Server is a Go service that exposes HTTP/JSON APIs and SSE streaming for multi-client, multi-thread agent turns.
 The system targets ACP-compatible agent providers, lazily starts per-thread agents, persists interaction history in SQLite, and bridges runtime permission requests back to clients.
-Current built-in providers are `codex`, `claude`, `opencode`, `gemini`, `kimi`, `qwen`, and `blackbox`.
+Current built-in providers are `codex`, `claude`, `cursor`, `opencode`, `gemini`, `kimi`, `qwen`, and `blackbox`.
 This file is the source of milestone progress, validation commands, and next actions.
 
 ## Current Milestone
 
 - `Post-M8` ACP multi-agent readiness and maintenance.
 
-## Latest Update (2026-03-22)
+## Latest Update (2026-03-23)
+
+- `Post-M8` Cursor CLI ACP integration completed:
+  - added `internal/agents/cursor` on top of the shared `acpcli` driver, with startup fallback across `agent acp` and `cursor-agent acp`.
+  - wired `cursor` into startup preflight, `/v1/agents`, thread allowlist, turn factory, and agent-model discovery flow.
+  - verified against the local installed Cursor CLI and the official ACP docs that Cursor requires an ACP `authenticate` call with `methodId="cursor_login"` after `initialize`; without that step, real `session/new` does not respond.
+  - confirmed by local probing that Cursor model selection is exposed through ACP `configOptions` and must be applied via `session/set_config_option("model", ...)`; `session/new.model` and `session/new.modelId` are ignored by the real CLI.
+  - normalized generic ACP permission-option matching so providers advertising hyphenated kinds such as `allow-once` / `reject-once` still flow through ngent's fail-closed default decision path.
+  - added fake-process coverage for:
+    - authenticated ACP stream startup.
+    - model selection through `session/set_config_option`.
+    - model discovery after ACP authentication.
+    - session transcript replay after ACP authentication.
+  - validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./internal/agents/cursor ./internal/agents/acpcli ./cmd/ngent`
+    - pass: `go test ./...`
+
+## Previous Update (2026-03-22)
 
 - `Post-M8` ACP assistant image/resource content rendering completed:
   - extended shared ACP `agent_message_chunk` parsing so non-text assistant payloads are preserved as structured content blocks instead of being dropped when they are not `{type:"text",text:...}` deltas.
@@ -228,7 +246,6 @@ This file is the source of milestone progress, validation commands, and next act
   - migrated `gemini`, `opencode`, `qwen`, `kimi`, `codex`, and `claude` to reuse the shared state helper instead of keeping duplicated per-provider copies of model/config override logic.
   - kept protocol/runtime behavior provider-specific; only constructor validation and common mutable state handling were unified.
 - Web UI Kimi icon completed:
-  - downloaded the provided Kimi PNG asset into `internal/webui/web/public/kimi-icon.png`.
   - wired `kimi` avatar rendering in the Web UI to use the new asset with the existing `--contain` image treatment.
   - fixed the remaining New Thread modal agent-card icon map so Kimi now renders consistently there as well.
   - removed the forced white background from all `--contain` agent icons in message/thread views and from the modal's Kimi/OpenCode icon markup.

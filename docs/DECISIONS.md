@@ -51,6 +51,36 @@
 - ADR-049: Align Web UI navigation with a left agent rail and left session panel. (Accepted)
 - ADR-050: Keep the left agent rail permanently expanded. (Accepted)
 - ADR-051: BLACKBOX AI ACP provider integration via shared ACP CLI driver. (Accepted)
+- ADR-052: Cursor CLI ACP provider integration with explicit ACP authentication. (Accepted)
+
+## ADR-052: Cursor CLI ACP Provider Integration With Explicit ACP Authentication
+
+- Status: Accepted
+- Date: 2026-03-23
+- Context:
+  - Cursor CLI now documents ACP mode via `agent acp`, and the user already has a working local Cursor CLI install.
+  - official Cursor ACP docs describe the expected session flow as `initialize -> authenticate(methodId="cursor_login") -> session/new|session/load -> session/prompt`.
+  - local probing against the installed CLI confirmed that:
+    - `initialize` advertises `authMethods=[{"id":"cursor_login",...}]`.
+    - skipping `authenticate` causes real `session/new` to stall without returning a response.
+    - `session/new.model` and `session/new.modelId` do not select the requested model.
+    - `session/set_config_option("model", value)` updates Cursor's selected model and returns updated `configOptions`.
+- Decision:
+  - add `internal/agents/cursor` as a first-class provider on top of the shared `internal/agents/acpcli` driver.
+  - start Cursor ACP with a binary fallback order of `agent acp` then `cursor-agent acp`, so ngent tolerates both common local install shapes.
+  - perform provider-local ACP authentication immediately after `initialize` whenever `cursor_login` is advertised in `authMethods`.
+  - treat Cursor model selection as a config-option concern rather than a startup/prompt hint:
+    - do not rely on `session/new.model` / `modelId`.
+    - apply selected `modelId` through `session/set_config_option("model", ...)`.
+  - keep Cursor's optional ACP extension methods out of scope for now; ngent continues to rely on standard ACP `session/update`, `session/request_permission`, and `session/cancel`.
+- Consequences:
+  - ngent can list, configure, and run Cursor threads through the same shared ACP CLI lifecycle as the other direct ACP providers.
+  - Cursor support remains robust even when only one of `agent` or `cursor-agent` is present in PATH.
+  - thread-selected Cursor models now behave consistently with real Cursor ACP semantics instead of silently being ignored at `session/new`.
+- Alternatives considered:
+  - treat Cursor like the other direct ACP providers and skip `authenticate` (rejected: local probing showed `session/new` hangs).
+  - key model selection off `session/new.model` or `session/prompt.model` only (rejected: real Cursor ignores those hints).
+  - build a Cursor-specific lifecycle stack instead of reusing `acpcli` (rejected: the delta is limited to auth and model-selection hooks).
 
 ## ADR-051: BLACKBOX AI ACP Provider Integration Via Shared ACP CLI Driver
 

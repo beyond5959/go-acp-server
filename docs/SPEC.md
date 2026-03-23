@@ -7,7 +7,7 @@ Build a local-first Code Agent Hub Server that:
 - serves HTTP/JSON APIs.
 - streams turn events via SSE (`text/event-stream`).
 - supports multi-client and multi-thread execution.
-- is designed to support ACP-compatible agents (for example Claude Code, Gemini, Kimi, OpenCode, Qwen, BLACKBOX AI, Codex).
+- is designed to support ACP-compatible agents (for example Claude Code, Cursor CLI, Gemini, Kimi, OpenCode, Qwen, BLACKBOX AI, Codex).
 - persists interaction state/events in SQLite.
 - forwards runtime permissions to the owning client with fail-closed behavior.
 
@@ -19,7 +19,7 @@ Modules:
 - `internal/runtime`: thread controller, turn state machine, cancellation coordination.
 - `internal/agents`: agent providers (fake + ACP-compatible implementations), plus context-bound permission/reasoning/session/plan callback bridges.
   - per-turn provider resolution selects implementation by thread metadata (agent id + cwd).
-  - `internal/agents/acpcli` is the shared ACP CLI driver used by `qwen`, `opencode`, `gemini`, `kimi`, and `blackbox`; provider-specific hooks own command startup, request parameter shaping, permission mapping, and cancel quirks.
+  - `internal/agents/acpcli` is the shared ACP CLI driver used by `qwen`, `opencode`, `gemini`, `kimi`, `blackbox`, and `cursor`; provider-specific hooks own command startup, request parameter shaping, permission mapping, auth/model quirks, and cancel behavior.
 - `internal/context`: prompt injection strategy assembled in HTTP/runtime path from summary + recent turns + current input.
 - `internal/sse`: event formatting, stream fanout, resume helpers.
 - `internal/storage`: SQLite repository and migration management.
@@ -40,7 +40,7 @@ Modules:
 - On server boot: no agent process is started.
 - On first thread usage: runtime requests provider instance for that thread.
 - On first turn execution for embedded-provider thread (currently `codex`): server creates the in-process runtime and initializes ACP session lazily.
-- Process-per-operation ACP CLI providers (`qwen`, `opencode`, `gemini`, `kimi`, `blackbox`) reuse the shared `acpcli` driver; each provider opens a fresh ACP stdio process per stream/config/list/discovery/transcript operation while keeping provider-specific startup hooks.
+- Process-per-operation ACP CLI providers (`qwen`, `opencode`, `gemini`, `kimi`, `blackbox`, `cursor`) reuse the shared `acpcli` driver; each provider opens a fresh ACP stdio process per stream/config/list/discovery/transcript operation while keeping provider-specific startup hooks.
 - Embedded runtime `session/new` is created with `cwd=thread.cwd` (validated as absolute path at thread creation).
 - If `thread.agent_options_json` contains `modelId` / `configOverrides`, those values are the persisted desired session config for the thread.
 - Provider instances are cached per thread + session/fresh-session scope and reclaimed by idle TTL (`--agent-idle-ttl`) when that scope has no active turn.
@@ -140,7 +140,10 @@ See `docs/API.md` for endpoint and schema contracts.
   - request parameter schemas
   - permission-request response encoding
   - cancel strategy
-  - provider quirks such as Kimi model/reasoning startup hints and Gemini/BLACKBOX stdout-noise filtering
+  - provider quirks such as:
+    - Kimi model/reasoning startup hints
+    - Gemini/BLACKBOX stdout-noise filtering
+    - Cursor ACP `authenticate(cursor_login)` and model selection via `session/set_config_option("model", ...)`
 - `internal/agents/acpstdio` now supports opt-in stdout-noise tolerance so providers like Gemini can ignore non-JSON stdout lines without maintaining a separate transport implementation.
 
 ## 10. Error Contract

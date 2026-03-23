@@ -45,6 +45,7 @@
 
   /* Scrollbar */
   --scrollbar-thumb: #d1d1d6;
+  --cursor-icon-image: url('/cursor-icon-light.png');
   --kimi-icon-image: url('/kimi-icon.png');
   --opencode-icon-image: url('/opencode-icon.png');
 
@@ -111,6 +112,7 @@
   --scrollbar-thumb: #3a3a3c;
   --shadow-sm: 0 1px 3px rgba(0,0,0,.3);
   --shadow-md: 0 4px 16px rgba(0,0,0,.4);
+  --cursor-icon-image: url('/cursor-icon-dark.png');
   --kimi-icon-image: url('/kimi-text.png');
   --opencode-icon-image: url('/opencode-logo-dark.svg');
 }
@@ -301,6 +303,13 @@ body {
 
 .thread-item-avatar-icon--kimi {
   background-image: var(--kimi-icon-image);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
+.thread-item-avatar-icon--cursor {
+  background-image: var(--cursor-icon-image);
   background-position: center;
   background-repeat: no-repeat;
   background-size: contain;
@@ -1209,6 +1218,13 @@ body {
 
 .message-avatar-icon--kimi {
   background-image: var(--kimi-icon-image);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
+.message-avatar-icon--cursor {
+  background-image: var(--cursor-icon-image);
   background-position: center;
   background-repeat: no-repeat;
   background-size: contain;
@@ -2920,6 +2936,17 @@ button:disabled, .btn:disabled {
   display: block;
   border-radius: 8px;
   background-image: var(--kimi-icon-image);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
+.agent-card-cursor-icon {
+  width: 32px;
+  height: 32px;
+  display: block;
+  border-radius: 8px;
+  background-image: var(--cursor-icon-image);
   background-position: center;
   background-repeat: no-repeat;
   background-size: contain;

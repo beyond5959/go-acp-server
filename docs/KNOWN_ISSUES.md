@@ -218,10 +218,11 @@
   - a just-created Kimi `sessionId` can be resumed successfully through ACP `session/load`, but may still be absent from Kimi's own `session/list`, `kimi export`, and local `~/.kimi/sessions/*/<sessionId>` files for a while.
   - ngent can continue the bound session on the same or another thread if the `sessionId` is already known, but the session sidebar may not show the new session immediately after creation.
 - Workaround:
-  - continue using the bound thread directly after the first Kimi turn when the new session does not yet appear in the sidebar.
-  - retry session browsing later if the session needs to be re-selected from the sidebar.
+  - continue using the bound `sessionId` directly in ngent even if Kimi's own session browser has not caught up yet.
+  - retry session browsing later after Kimi finishes persisting its own session index/files.
 - Follow-up plan:
-  - keep validating newer Kimi CLI releases and add a backend fallback only if Kimi later exposes a reliable transcript/export path for freshly created ACP sessions.
+  - keep validating Kimi CLI session persistence timing across upstream releases.
+  - decide whether ngent should annotate newly bound sessions as "not yet discoverable upstream" when local evidence supports that distinction.
 
 - ID: KI-024
 - Title: Kimi CLI 1.20.0 does not replay transcript messages during historical session/load
@@ -405,6 +406,22 @@
 - Follow-up plan:
   - keep validating newer BLACKBOX CLI releases for `session/list` / `session/load` / model-catalog support.
   - wire those surfaces into ngent immediately once upstream ACP exposes them consistently.
+
+- ID: KI-038
+- Title: Cursor ACP runtime depends on pre-authenticated local CLI state
+- Status: Open
+- Severity: Medium
+- Affects: implemented `cursor` provider turns in environments without a ready local Cursor login
+- Symptom:
+  - Cursor ACP `initialize` advertises `authMethods=[cursor_login]`.
+  - if local Cursor login state is missing or unusable, the provider can fail during the explicit ACP `authenticate` step before `session/new`.
+  - even after ACP authentication succeeds, prompt execution still depends on the local account's current entitlement/quota state.
+- Workaround:
+  - run `agent login` before issuing Cursor turns, or provide supported Cursor CLI auth flags/environment when launching the CLI outside ngent.
+  - if turns authenticate but return product-gating text rather than the requested answer, verify the local Cursor account plan/quota state separately from ngent.
+- Follow-up plan:
+  - add richer preflight diagnostics for Cursor auth readiness beyond PATH existence if this becomes a recurring support issue.
+  - keep validating whether future Cursor CLI releases expose a more explicit non-interactive auth-health probe.
 
 ## Recently Closed
 

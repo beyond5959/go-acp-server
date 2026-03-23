@@ -192,6 +192,26 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - fake-process/unit path: pending this change set's validation run
   - real smoke: not run in the restricted sandbox environment used for this implementation pass
 
+## Requirement 16C: Cursor CLI Agent
+
+- Operation: verify Cursor provider is listed and can complete ACP handshakes/turn lifecycle through ngent.
+- Expected:
+  - `GET /v1/agents` includes `{"id":"cursor","name":"Cursor CLI","status":"available"}` when either `agent` or `cursor-agent` is in PATH, and omits `cursor` when neither binary is available.
+  - thread creation accepts `agent=cursor`.
+  - provider performs ACP `authenticate` with `methodId="cursor_login"` before `session/new` / `session/load`.
+  - selected `agentOptions.modelId` is applied via ACP `session/set_config_option("model", ...)`.
+  - turn streaming emits standard `message_delta` events and finishes with `turn_completed` (or explicit upstream error envelope).
+- Verification commands:
+  - `go test ./internal/agents/cursor -count=1`
+  - `go test ./internal/agents/acpcli -run TestPickPermissionOptionIDNormalizesKinds -count=1`
+  - `go test ./cmd/ngent -run TestSupportedAgentsOnlyIncludesAvailableAgents -count=1`
+- Latest observed validation (2026-03-23):
+  - official docs + local ACP probe: `initialize -> authenticate(cursor_login) -> session/new` confirmed against the installed Cursor CLI
+  - local probe: `session/new.model` / `session/new.modelId` were ignored, while `session/set_config_option("model", ...)` updated the active model
+  - fake-process/unit path: pass
+  - full repository gate: pass (`cd internal/webui/web && npm run build`, `go test ./...`)
+  - real prompt smoke: not recorded as a stable acceptance gate because the local Cursor account can return plan/quota gating text unrelated to ngent's transport integration
+
 ## Requirement 17: Thread Delete Lifecycle
 
 - Operation: delete an existing thread from API/UI, verify ownership behavior, conflict behavior, and provider cleanup.

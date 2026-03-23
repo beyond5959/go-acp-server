@@ -74,7 +74,7 @@ All errors use:
 - Headers: `X-Client-ID` (required), optional bearer auth if enabled.
 - agent status contract:
   - each agent entry reports readiness as `available|unavailable`.
-  - current built-in ids are `codex`, `claude`, `gemini`, `qwen`, `opencode`.
+  - current built-in ids are `codex`, `claude`, `cursor`, `gemini`, `kimi`, `qwen`, `opencode`, and `blackbox`.
 - Response `200`:
 
 ```json

@@ -2094,6 +2094,9 @@ function renderAgentAvatar(agentId: string, variant: 'thread' | 'message'): stri
   if (normalized === 'claude') {
     return `<img src="${claudeIconURL}" alt="Claude Code" class="${cls}" loading="lazy" decoding="async">`
   }
+  if (normalized === 'cursor') {
+    return `<span class="${cls} ${cls}--contain ${cls}--cursor" role="img" aria-label="Cursor CLI"></span>`
+  }
   if (normalized === 'kimi') {
     return `<span class="${cls} ${cls}--contain ${cls}--kimi" role="img" aria-label="Kimi CLI"></span>`
   }
@@ -2114,6 +2117,7 @@ function hasAgentAvatarIcon(agentId: string): boolean {
   return normalized === 'codex'
     || normalized === 'gemini'
     || normalized === 'claude'
+    || normalized === 'cursor'
     || normalized === 'kimi'
     || normalized === 'opencode'
     || normalized === 'qwen'

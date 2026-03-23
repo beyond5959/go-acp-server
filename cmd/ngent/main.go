@@ -25,6 +25,7 @@ import (
 	blackboxagent "github.com/beyond5959/ngent/internal/agents/blackbox"
 	claudeagent "github.com/beyond5959/ngent/internal/agents/claude"
 	codexagent "github.com/beyond5959/ngent/internal/agents/codex"
+	cursoragent "github.com/beyond5959/ngent/internal/agents/cursor"
 	geminiagent "github.com/beyond5959/ngent/internal/agents/gemini"
 	kimiagent "github.com/beyond5959/ngent/internal/agents/kimi"
 	opencodeagent "github.com/beyond5959/ngent/internal/agents/opencode"
@@ -73,6 +74,7 @@ func main() {
 	qwenPreflightErr := qwenagent.Preflight()
 	blackboxPreflightErr := blackboxagent.Preflight()
 	claudePreflightErr := claudeagent.Preflight()
+	cursorPreflightErr := cursoragent.Preflight()
 
 	if *contextRecentTurns <= 0 {
 		logger.Error("startup.invalid_context_recent_turns", "value", *contextRecentTurns)
@@ -102,6 +104,7 @@ func main() {
 	qwenAvailable := qwenPreflightErr == nil
 	blackboxAvailable := blackboxPreflightErr == nil
 	claudeAvailable := claudePreflightErr == nil
+	cursorAvailable := cursorPreflightErr == nil
 	logStartupPreflight(logger, "startup.codex_embedded_unavailable", codexPreflightErr)
 	logStartupPreflight(logger, "startup.opencode_unavailable", opencodePreflightErr)
 	logStartupPreflight(logger, "startup.gemini_unavailable", geminiPreflightErr)
@@ -109,6 +112,7 @@ func main() {
 	logStartupPreflight(logger, "startup.qwen_unavailable", qwenPreflightErr)
 	logStartupPreflight(logger, "startup.blackbox_unavailable", blackboxPreflightErr)
 	logStartupPreflight(logger, "startup.claude_unavailable", claudePreflightErr)
+	logStartupPreflight(logger, "startup.cursor_unavailable", cursorPreflightErr)
 	if *debugFlag {
 		logger.Info("startup.debug_enabled", "acpTrace", true)
 	}
@@ -120,6 +124,7 @@ func main() {
 		qwenAvailable,
 		blackboxAvailable,
 		claudeAvailable,
+		cursorAvailable,
 	)
 	allowedAgentIDs := agentIDsFromInfos(agents)
 
@@ -216,6 +221,13 @@ func main() {
 					ConfigOverrides: configOverrides,
 					Name:            "claude-embedded",
 				})
+			case agentimpl.AgentIDCursor:
+				return cursoragent.New(cursoragent.Config{
+					Dir:             thread.CWD,
+					ModelID:         modelID,
+					SessionID:       sessionID,
+					ConfigOverrides: configOverrides,
+				})
 			default:
 				return nil, fmt.Errorf("unsupported thread agent %q", thread.AgentID)
 			}
@@ -264,6 +276,11 @@ func main() {
 					return nil, opencodePreflightErr
 				}
 				return opencodeagent.DiscoverModels(ctx, opencodeagent.Config{Dir: modelDiscoveryDir})
+			case agentimpl.AgentIDCursor:
+				if cursorPreflightErr != nil {
+					return nil, cursorPreflightErr
+				}
+				return cursoragent.DiscoverModels(ctx, cursoragent.Config{Dir: modelDiscoveryDir})
 			default:
 				return nil, fmt.Errorf("unsupported agent %q", agentID)
 			}
@@ -346,6 +363,7 @@ func buildAgentConfigCatalogRefresher(
 	qwenPreflightErr error,
 	blackboxPreflightErr error,
 	claudePreflightErr error,
+	cursorPreflightErr error,
 ) *agentConfigCatalogRefresher {
 	if store == nil {
 		return nil
@@ -447,6 +465,18 @@ func buildAgentConfigCatalogRefresher(
 					return nil, err
 				}
 				return queryAgentConfigOptions(ctx, client)
+			case agentimpl.AgentIDCursor:
+				if cursorPreflightErr != nil {
+					return nil, cursorPreflightErr
+				}
+				client, err := cursoragent.New(cursoragent.Config{
+					Dir:     modelDiscoveryDir,
+					ModelID: modelID,
+				})
+				if err != nil {
+					return nil, err
+				}
+				return queryAgentConfigOptions(ctx, client)
 			default:
 				return nil, fmt.Errorf("unsupported agent %q", agentID)
 			}
@@ -499,6 +529,11 @@ func buildAgentConfigCatalogRefresher(
 					return nil, opencodePreflightErr
 				}
 				return opencodeagent.DiscoverModels(ctx, opencodeagent.Config{Dir: modelDiscoveryDir})
+			case "cursor":
+				if cursorPreflightErr != nil {
+					return nil, cursorPreflightErr
+				}
+				return cursoragent.DiscoverModels(ctx, cursoragent.Config{Dir: modelDiscoveryDir})
 			default:
 				return nil, fmt.Errorf("unsupported agent %q", agentID)
 			}
@@ -751,7 +786,8 @@ func supportedAgents(
 	kimiAvailable,
 	qwenAvailable,
 	blackboxAvailable,
-	claudeAvailable bool,
+	claudeAvailable,
+	cursorAvailable bool,
 ) []httpapi.AgentInfo {
 	agents := make([]httpapi.AgentInfo, 0, len(agentimpl.AllAgentIDs()))
 	appendIfAvailable := func(available bool, agentID, name string) {
@@ -772,6 +808,7 @@ func supportedAgents(
 	appendIfAvailable(qwenAvailable, agentimpl.AgentIDQwen, "Qwen Code")
 	appendIfAvailable(opencodeAvailable, agentimpl.AgentIDOpencode, "OpenCode")
 	appendIfAvailable(blackboxAvailable, agentimpl.AgentIDBlackbox, "BLACKBOX AI")
+	appendIfAvailable(cursorAvailable, agentimpl.AgentIDCursor, "Cursor CLI")
 
 	return agents
 }
