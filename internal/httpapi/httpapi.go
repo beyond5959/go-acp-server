@@ -1891,18 +1891,6 @@ func (s *Server) resolveTurnAgent(thread storage.Thread) (agents.Streamer, error
 	return provider, nil
 }
 
-func (s *Server) resolveThreadConfigOptionManager(thread storage.Thread) (agents.ConfigOptionManager, error) {
-	provider, err := s.resolveTurnAgent(thread)
-	if err != nil {
-		return nil, err
-	}
-	manager, ok := provider.(agents.ConfigOptionManager)
-	if !ok {
-		return nil, fmt.Errorf("agent %q does not support config options", thread.AgentID)
-	}
-	return manager, nil
-}
-
 // Close stops background janitor and closes all cached thread agents.
 func (s *Server) Close() error {
 	select {

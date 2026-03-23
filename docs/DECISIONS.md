@@ -185,7 +185,6 @@
   - the product still needs live reasoning to stay visible while the turn is actively streaming.
   - the message list is re-rendered from store state, so manual expand/collapse choice needs explicit local UI tracking if it should survive later store updates.
 - Decision:
-  - render reasoning inside a lightweight inline `Thinking` toggle modeled after the Kimi Web UI `Thought` block pattern instead of a heavy bordered card.
   - use a sparkles icon + italic label + rotating chevron trigger, with expanded content shown as indented text behind a left border.
   - use tense-sensitive labels: live reasoning stays `Thinking`, and finalized reasoning switches to `Thought`.
   - render finalized reasoning with the same sanitized markdown pipeline used for finalized assistant messages, while keeping in-flight reasoning as plain text during streaming.

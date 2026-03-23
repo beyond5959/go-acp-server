@@ -204,6 +204,23 @@ func (s commandSpec) args(modelID, thinkingArg string) []string {
 	return args
 }
 
+const (
+	reasoningConfigID      = "reasoning"
+	reasoningValueEnabled  = "enabled"
+	reasoningValueDisabled = "disabled"
+)
+
+func normalizeThinkingValue(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case reasoningValueEnabled, "true", "on", "thinking":
+		return reasoningValueEnabled, true
+	case reasoningValueDisabled, "false", "off", "standard":
+		return reasoningValueDisabled, true
+	default:
+		return "", false
+	}
+}
+
 func kimiThinkingArg(configOverrides map[string]string) string {
 	reasoningValue, ok := normalizeThinkingValue(configOverrides[reasoningConfigID])
 	if !ok {

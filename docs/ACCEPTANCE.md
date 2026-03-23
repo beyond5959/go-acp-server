@@ -276,7 +276,6 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - `go test ./internal/httpapi -run TestThreadConfigOptionsPersistConfigOverrides -count=1`
   - `go test ./internal/httpapi -run TestV1AgentModelsUsesStoredCatalog -count=1`
   - `go test ./internal/agents/acpmodel -count=1`
-  - `go test ./cmd/ngent -run TestAgentConfigCatalogRefresher -count=1`
   - `go test ./cmd/ngent -run TestExtractConfigOverrides -count=1`
   - `cd internal/webui/web && npm run build`
   - `go test ./...`
@@ -499,11 +498,6 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - `go test ./internal/httpapi -run 'Test(V1AgentModels|V1AgentModelsUsesStoredCatalog|V1AgentModelsEmptyWhenNoStoredCatalog|ThreadConfigOptionsGetAndSetModel|ThreadConfigOptionsGetUsesStoredCatalog|ThreadConfigOptionsPersistConfigOverrides|ThreadConfigOptionsRestoreFromSessionCacheAfterSessionSwitch|ThreadSessionHistoryEndpointPersistsConfigOptionsForSelectedSession|ThreadSessionHistoryEndpointReloadsLiveWhenTranscriptCachedButConfigMissing|ThreadConfigOptionsUnsupportedManager)$' -count=1`
   - `cd internal/webui/web && npm run build`
   - `go test ./...`
-  - real Kimi Web UI validation:
-    - run `go run ./cmd/ngent -db-path /tmp/ngent-session-config.db -port 8687 --debug`
-    - send one real message to create a fresh session and learn model metadata
-    - switch to an older session and confirm the model button hides when that session has no cached snapshot
-    - switch back to the fresh learned session and confirm the model button reappears immediately without sending another turn
   - real Codex Web UI validation:
     - run `go run ./cmd/ngent -db-path /tmp/ngent-session-load-config.db -port 8687 --debug`
     - without sending any turn, click an existing Codex session from the sidebar

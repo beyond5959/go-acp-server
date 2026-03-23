@@ -324,7 +324,7 @@ This file is the source of milestone progress, validation commands, and next act
   - added root `README.md` in English with project goal, `go install` instructions, and startup examples (local/public/auth) using default DB home `$HOME/.ngent`.
   - removed manual `mkdir` steps from README startup examples and documented that server auto-creates `$HOME/.ngent` for default db path.
 - `Post-M8` db-path default improvement completed:
-  - changed default `--db-path` from relative `./agent-hub.db` to `$HOME/.ngent/ngent.db`.
+  - changed default `--db-path` from relative `./ngent.db` to `$HOME/.ngent/ngent.db`.
   - added startup auto-create for db parent directory so users can run without explicitly passing `--db-path`.
   - added unit tests for default path resolution and db parent directory creation.
 - `Post-M8` cwd policy simplification completed:
@@ -911,7 +911,6 @@ This file is the source of milestone progress, validation commands, and next act
   - extended the frontend message model with ordered `segments`, rebuilt finalized assistant messages from persisted turn events (`message_delta`, `reasoning_delta`, `tool_call`, `tool_call_update`), and tracked the same segment timeline during SSE streaming.
   - tool-call updates now keep their original timeline position by merging later `tool_call_update` payloads into the first segment for that `toolCallId`, while message/reasoning deltas append new segments only when the stream actually switches modes.
   - kept plan cards as a separate block, but assistant content / thought / tool activity now render in the same chronological order the agent emitted them.
-  - adjusted assistant content segments to render as flat answer blocks instead of agent chat bubbles, matching Kimi web's timeline style more closely when normal answer text alternates with thought/tool steps.
   - removed the IM-style left/right chat alignment for the transcript pane; user prompts now render as the top line of a single-column turn flow and agent output follows directly underneath in the same reading column.
   - during an in-flight turn, only the currently growing thought segment stays expanded; once a later answer/tool/plan event arrives, the completed thought segment immediately switches to the collapsed finalized-panel state instead of waiting for full turn completion.
   - completed answer segments now switch to finalized markdown rendering as soon as the stream moves on, so tables and other block markdown render immediately instead of staying as raw text until the whole turn finishes.
@@ -972,10 +971,6 @@ This file is the source of milestone progress, validation commands, and next act
     - if transcript cache exists but session config cache is still missing, ngent performs one live `session/load` instead of stopping at cached transcript data
     - if that `session/load` returns `configOptions`, ngent persists them into thread state (when the thread is currently bound to that session), `agent_config_catalogs`, and `session_config_cache`
     - the Web UI refreshes config controls again after session-history replay finishes, so model/reasoning buttons can appear immediately after switching sessions without needing a new turn
-  - added regression coverage for the exact switch-away/switch-back path and verified the real Kimi Web UI flow:
-    - new Kimi session learned `kimi-for-coding (thinking)`
-    - switched to an older session with no model control
-    - switched back to the learned session and confirmed the model button reappeared immediately without sending another turn
   - additionally verified the session-load-only path with a fresh Codex thread on a fresh sqlite database:
     - created the thread without sending any turn
     - switched directly to an existing Codex session

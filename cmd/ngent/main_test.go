@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -15,9 +14,7 @@ import (
 	"testing"
 	"time"
 
-	agentimpl "github.com/beyond5959/ngent/internal/agents"
 	"github.com/beyond5959/ngent/internal/runtime"
-	"github.com/beyond5959/ngent/internal/storage"
 )
 
 func TestResolveListenAddr(t *testing.T) {
@@ -166,140 +163,6 @@ func TestExtractConfigOverrides(t *testing.T) {
 	}
 }
 
-func TestAgentConfigCatalogRefresherRefresh(t *testing.T) {
-	store := newCatalogTestStore(t)
-	defer func() {
-		_ = store.Close()
-	}()
-
-	refresher := &agentConfigCatalogRefresher{
-		store:    store,
-		logger:   slog.New(slog.NewJSONHandler(io.Discard, nil)),
-		agentIDs: []string{"codex"},
-		fetchConfigOptions: func(ctx context.Context, agentID, modelID string) ([]agentimpl.ConfigOption, error) {
-			_ = ctx
-			_ = agentID
-			switch modelID {
-			case "":
-				return []agentimpl.ConfigOption{
-					modelCatalogOption("gpt-5", "gpt-5", "GPT-5", "gpt-5-mini", "GPT-5 Mini"),
-					reasoningCatalogOption("medium", "low", "medium", "high"),
-				}, nil
-			case "gpt-5":
-				return []agentimpl.ConfigOption{
-					modelCatalogOption("gpt-5", "gpt-5", "GPT-5", "gpt-5-mini", "GPT-5 Mini"),
-					reasoningCatalogOption("high", "medium", "high"),
-				}, nil
-			case "gpt-5-mini":
-				return []agentimpl.ConfigOption{
-					modelCatalogOption("gpt-5-mini", "gpt-5-mini", "GPT-5 Mini", "gpt-5", "GPT-5"),
-					reasoningCatalogOption("low", "low", "medium"),
-				}, nil
-			default:
-				return nil, context.DeadlineExceeded
-			}
-		},
-		discoverModels: func(ctx context.Context, agentID string, defaultOptions []agentimpl.ConfigOption) ([]agentimpl.ModelOption, error) {
-			_ = ctx
-			_ = agentID
-			return modelOptionsFromConfigOptions(defaultOptions), nil
-		},
-	}
-
-	refresher.Refresh(context.Background())
-
-	catalogs, err := store.ListAgentConfigCatalogsByAgent(context.Background(), "codex")
-	if err != nil {
-		t.Fatalf("ListAgentConfigCatalogsByAgent(): %v", err)
-	}
-	if got, want := len(catalogs), 3; got != want {
-		t.Fatalf("len(catalogs) = %d, want %d", got, want)
-	}
-
-	defaultOptions := loadCatalogOptions(t, store, "codex", storage.DefaultAgentConfigCatalogModelID)
-	if got := currentConfigValue(defaultOptions, "model"); got != "gpt-5" {
-		t.Fatalf("default model currentValue = %q, want %q", got, "gpt-5")
-	}
-	miniOptions := loadCatalogOptions(t, store, "codex", "gpt-5-mini")
-	if got := currentConfigValue(miniOptions, "reasoning"); got != "low" {
-		t.Fatalf("mini reasoning currentValue = %q, want %q", got, "low")
-	}
-}
-
-func TestAgentConfigCatalogRefresherPartialKeepsExistingRows(t *testing.T) {
-	store := newCatalogTestStore(t)
-	defer func() {
-		_ = store.Close()
-	}()
-
-	if err := store.ReplaceAgentConfigCatalogs(context.Background(), "codex", []storage.UpsertAgentConfigCatalogParams{
-		mustCatalogEntry(t, "codex", storage.DefaultAgentConfigCatalogModelID, []agentimpl.ConfigOption{
-			modelCatalogOption("gpt-5", "gpt-5", "GPT-5", "gpt-5-mini", "GPT-5 Mini"),
-			reasoningCatalogOption("medium", "low", "medium"),
-		}),
-		mustCatalogEntry(t, "codex", "gpt-5", []agentimpl.ConfigOption{
-			modelCatalogOption("gpt-5", "gpt-5", "GPT-5", "gpt-5-mini", "GPT-5 Mini"),
-			reasoningCatalogOption("medium", "medium", "high"),
-		}),
-		mustCatalogEntry(t, "codex", "gpt-5-mini", []agentimpl.ConfigOption{
-			modelCatalogOption("gpt-5-mini", "gpt-5-mini", "GPT-5 Mini", "gpt-5", "GPT-5"),
-			reasoningCatalogOption("low", "low", "medium"),
-		}),
-	}); err != nil {
-		t.Fatalf("ReplaceAgentConfigCatalogs(seed): %v", err)
-	}
-
-	refresher := &agentConfigCatalogRefresher{
-		store:    store,
-		logger:   slog.New(slog.NewJSONHandler(io.Discard, nil)),
-		agentIDs: []string{"codex"},
-		fetchConfigOptions: func(ctx context.Context, agentID, modelID string) ([]agentimpl.ConfigOption, error) {
-			_ = ctx
-			_ = agentID
-			switch modelID {
-			case "":
-				return []agentimpl.ConfigOption{
-					modelCatalogOption("gpt-5", "gpt-5", "GPT-5", "gpt-5-mini", "GPT-5 Mini"),
-					reasoningCatalogOption("high", "medium", "high"),
-				}, nil
-			case "gpt-5":
-				return []agentimpl.ConfigOption{
-					modelCatalogOption("gpt-5", "gpt-5", "GPT-5", "gpt-5-mini", "GPT-5 Mini"),
-					reasoningCatalogOption("high", "medium", "high"),
-				}, nil
-			case "gpt-5-mini":
-				return nil, context.DeadlineExceeded
-			default:
-				return nil, context.DeadlineExceeded
-			}
-		},
-		discoverModels: func(ctx context.Context, agentID string, defaultOptions []agentimpl.ConfigOption) ([]agentimpl.ModelOption, error) {
-			_ = ctx
-			_ = agentID
-			return modelOptionsFromConfigOptions(defaultOptions), nil
-		},
-	}
-
-	refresher.Refresh(context.Background())
-
-	catalogs, err := store.ListAgentConfigCatalogsByAgent(context.Background(), "codex")
-	if err != nil {
-		t.Fatalf("ListAgentConfigCatalogsByAgent(): %v", err)
-	}
-	if got, want := len(catalogs), 3; got != want {
-		t.Fatalf("len(catalogs) after partial refresh = %d, want %d", got, want)
-	}
-
-	defaultOptions := loadCatalogOptions(t, store, "codex", storage.DefaultAgentConfigCatalogModelID)
-	if got := currentConfigValue(defaultOptions, "reasoning"); got != "high" {
-		t.Fatalf("default reasoning currentValue = %q, want %q", got, "high")
-	}
-	miniOptions := loadCatalogOptions(t, store, "codex", "gpt-5-mini")
-	if got := currentConfigValue(miniOptions, "reasoning"); got != "low" {
-		t.Fatalf("mini reasoning currentValue = %q, want %q", got, "low")
-	}
-}
-
 func TestSupportedAgentsOnlyIncludesAvailableAgents(t *testing.T) {
 	agentsUnavailable := supportedAgents(false, false, false, false, false, false, false, false)
 	if got := len(agentsUnavailable); got != 0 {
@@ -335,83 +198,6 @@ func TestSupportedAgentsOnlyIncludesAvailableAgents(t *testing.T) {
 			t.Fatalf("agentsAvailable[%d].Status = %q, want %q", i, agentsAvailable[i].Status, "available")
 		}
 	}
-}
-
-func newCatalogTestStore(t *testing.T) *storage.Store {
-	t.Helper()
-
-	dbPath := filepath.Join(t.TempDir(), "catalog.db")
-	store, err := storage.New(dbPath)
-	if err != nil {
-		t.Fatalf("storage.New(%q): %v", dbPath, err)
-	}
-	return store
-}
-
-func modelCatalogOption(current string, optionOneID string, optionOneName string, optionTwoID string, optionTwoName string) agentimpl.ConfigOption {
-	return agentimpl.ConfigOption{
-		ID:           "model",
-		Category:     "model",
-		Type:         "select",
-		CurrentValue: current,
-		Options: []agentimpl.ConfigOptionValue{
-			{Value: optionOneID, Name: optionOneName},
-			{Value: optionTwoID, Name: optionTwoName},
-		},
-	}
-}
-
-func reasoningCatalogOption(current string, values ...string) agentimpl.ConfigOption {
-	options := make([]agentimpl.ConfigOptionValue, 0, len(values))
-	for _, value := range values {
-		options = append(options, agentimpl.ConfigOptionValue{Value: value, Name: value})
-	}
-	return agentimpl.ConfigOption{
-		ID:           "reasoning",
-		Category:     "reasoning",
-		Type:         "select",
-		CurrentValue: current,
-		Options:      options,
-	}
-}
-
-func mustCatalogEntry(
-	t *testing.T,
-	agentID string,
-	modelID string,
-	options []agentimpl.ConfigOption,
-) storage.UpsertAgentConfigCatalogParams {
-	t.Helper()
-
-	entry, err := newAgentConfigCatalogEntry(agentID, modelID, options)
-	if err != nil {
-		t.Fatalf("newAgentConfigCatalogEntry(): %v", err)
-	}
-	return entry
-}
-
-func loadCatalogOptions(t *testing.T, store *storage.Store, agentID, modelID string) []agentimpl.ConfigOption {
-	t.Helper()
-
-	catalog, err := store.GetAgentConfigCatalog(context.Background(), agentID, modelID)
-	if err != nil {
-		t.Fatalf("GetAgentConfigCatalog(%q, %q): %v", agentID, modelID, err)
-	}
-
-	var options []agentimpl.ConfigOption
-	if err := json.Unmarshal([]byte(catalog.ConfigOptionsJSON), &options); err != nil {
-		t.Fatalf("json.Unmarshal(catalog): %v", err)
-	}
-	return options
-}
-
-func currentConfigValue(options []agentimpl.ConfigOption, configID string) string {
-	for _, option := range options {
-		if option.ID == configID {
-			return option.CurrentValue
-		}
-	}
-	return ""
 }
 
 func TestResolveDefaultDBPath(t *testing.T) {

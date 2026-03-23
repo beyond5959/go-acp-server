@@ -81,32 +81,6 @@ func (c *Client) findSessionInRuntime(
 	return agents.SessionInfo{}, agents.ErrSessionNotFound
 }
 
-func (c *Client) findSession(
-	ctx context.Context,
-	cwd, sessionID string,
-) (agents.SessionInfo, error) {
-	cursor := ""
-	for {
-		result, err := c.ListSessions(ctx, agents.SessionListRequest{
-			CWD:    cwd,
-			Cursor: cursor,
-		})
-		if err != nil {
-			return agents.SessionInfo{}, err
-		}
-		for _, session := range result.Sessions {
-			if codexSessionMatchesID(session, sessionID) {
-				return agents.CloneSessionInfo(session), nil
-			}
-		}
-		cursor = strings.TrimSpace(result.NextCursor)
-		if cursor == "" {
-			break
-		}
-	}
-	return agents.SessionInfo{}, agents.ErrSessionNotFound
-}
-
 func (c *Client) collectSessionReplay(
 	ctx context.Context,
 	runtime *codexacp.EmbeddedRuntime,
