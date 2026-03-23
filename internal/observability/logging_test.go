@@ -23,6 +23,7 @@ func TestLoggerFormatsInfoLine(t *testing.T) {
 func TestHTTPRequestFormatsAccessLog(t *testing.T) {
 	var buf bytes.Buffer
 	logger := NewLoggerWithWriter(&buf, LevelInfo)
+	requestTime := time.Date(2026, time.March, 23, 15, 30, 45, 0, time.FixedZone("UTC+8", 8*60*60))
 
 	logger.HTTPRequest(HTTPRequestLogEntry{
 		RemoteAddr:  "127.0.0.1",
@@ -30,12 +31,13 @@ func TestHTTPRequestFormatsAccessLog(t *testing.T) {
 		Path:        "/api/sessions/?limit=100&offset=0",
 		Proto:       "HTTP/1.1",
 		Status:      200,
-		RequestTime: time.Date(2026, time.March, 23, 15, 30, 45, 0, time.FixedZone("UTC+8", 8*60*60)),
+		RequestTime: requestTime,
 		Duration:    1250 * time.Microsecond,
 	})
 
 	got := strings.TrimSpace(buf.String())
-	want := `INFO: 2026-03-23 15:30:45 127.0.0.1 - "GET /api/sessions/?limit=100&offset=0 HTTP/1.1" 200 OK 1.2ms`
+	want := `INFO: ` + requestTime.In(time.Local).Format(time.DateTime) +
+		` 127.0.0.1 - "GET /api/sessions/?limit=100&offset=0 HTTP/1.1" 200 OK 1.2ms`
 	if got != want {
 		t.Fatalf("access log = %q, want %q", got, want)
 	}
