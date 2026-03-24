@@ -1598,6 +1598,11 @@ function setSessionPanelState(threadId: string, next: SessionPanelState): void {
     nextCursor: next.nextCursor.trim(),
     error: next.error.trim(),
   })
+  // Update chat header title if this thread is currently active
+  const { activeThreadId } = store.get()
+  if (activeThreadId === threadId) {
+    updateChatHeaderTitle()
+  }
 }
 
 function dedupeSessionItems(items: SessionInfo[]): SessionInfo[] {
@@ -3971,8 +3976,35 @@ function renderSlashCommandMenuItem(command: SlashCommand, active: boolean): str
     </button>`
 }
 
+const MAX_SESSION_TITLE_LEN = 32
+
+function truncateSessionTitle(title: string): string {
+  if (title.length <= MAX_SESSION_TITLE_LEN) return title
+  return title.slice(0, MAX_SESSION_TITLE_LEN) + '…'
+}
+
+function getCurrentSessionTitle(t: Thread): string {
+  const sessionID = threadSessionID(t)
+  if (!sessionID) {
+    return 'New Session'
+  }
+  const state = sessionPanelState(t.threadId)
+  const session = state.sessions.find(s => s.sessionId === sessionID)
+  const title = session?.title?.trim()
+  if (title) {
+    return truncateSessionTitle(title)
+  }
+  // Check for runtime title override
+  const overrides = sessionTitleOverridesByThread.get(t.threadId)
+  const overrideTitle = overrides?.get(sessionID)?.trim()
+  if (overrideTitle) {
+    return truncateSessionTitle(overrideTitle)
+  }
+  return 'New Session'
+}
+
 function renderChatThread(t: Thread): string {
-  const titleLabel   = threadTitle(t)
+  const sessionTitleLabel = getCurrentSessionTitle(t)
   const createdLabel = t.createdAt ? `Created ${formatTimestamp(t.createdAt)}` : ''
   const attachmentCount = threadComposerAttachments(t.threadId).length
   const selectedModelID = fallbackThreadModelID(t)
@@ -4004,8 +4036,7 @@ function renderChatThread(t: Thread): string {
         <button class="btn btn-icon mobile-menu-btn" aria-label="Open menu">${iconMenu}</button>
         <div class="chat-header-main">
           <div class="chat-header-title-row">
-            <h2 class="chat-title" title="${escHtml(titleLabel)}">${escHtml(titleLabel)}</h2>
-            <span class="badge badge--agent">${escHtml(t.agent ?? '')}</span>
+            <h2 class="chat-title" title="${escHtml(sessionTitleLabel)}">${escHtml(sessionTitleLabel)}</h2>
           </div>
         </div>
       </div>
@@ -4088,6 +4119,17 @@ function renderComposerAttachmentsHTML(threadId: string): string {
         >×</button>
       </div>`
   }).join('')
+}
+
+function updateChatHeaderTitle(): void {
+  const { threads, activeThreadId } = store.get()
+  const thread = activeThreadId ? threads.find(t => t.threadId === activeThreadId) : null
+  if (!thread) return
+  const titleEl = document.querySelector('.chat-title') as HTMLElement | null
+  if (!titleEl) return
+  const newTitle = getCurrentSessionTitle(thread)
+  titleEl.textContent = newTitle
+  titleEl.title = newTitle
 }
 
 function updateChatArea(): void {
