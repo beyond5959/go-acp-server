@@ -137,3 +137,40 @@ func TestNewACPNotificationHandlerRoutesStructuredMessageContent(t *testing.T) {
 		t.Fatalf("payload.type = %q, want %q", got, "resource")
 	}
 }
+
+func TestNewACPNotificationHandlerRoutesSessionInfoBeforePromptStart(t *testing.T) {
+	t.Parallel()
+
+	var received SessionInfoUpdate
+	ctx := WithSessionInfoHandler(context.Background(), func(ctx context.Context, update SessionInfoUpdate) error {
+		_ = ctx
+		received = update
+		return nil
+	})
+
+	handler, _ := NewACPNotificationHandler(ctx, func(delta string) error {
+		_ = delta
+		return nil
+	})
+
+	raw := json.RawMessage(`{
+		"sessionId": "sess_42",
+		"update": {
+			"sessionUpdate": "session_info_update",
+			"title": "Runtime title"
+		}
+	}`)
+	if err := handler("session/update", raw); err != nil {
+		t.Fatalf("handler() error = %v", err)
+	}
+
+	if got := received.SessionID; got != "sess_42" {
+		t.Fatalf("received.SessionID = %q, want %q", got, "sess_42")
+	}
+	if got := received.Title; got != "Runtime title" {
+		t.Fatalf("received.Title = %q, want %q", got, "Runtime title")
+	}
+	if !received.HasTitle {
+		t.Fatal("received.HasTitle = false, want true")
+	}
+}

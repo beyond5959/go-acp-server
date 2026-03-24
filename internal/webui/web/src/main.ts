@@ -28,6 +28,7 @@ import type {
   PlanUpdatePayload,
   ReasoningDeltaPayload,
   SessionBoundPayload,
+  SessionInfoUpdatePayload,
   ToolCallPayload,
 } from './sse.ts'
 import { copyText, escHtml, formatBytes, formatRelativeTime, formatTimestamp, generateUUID } from './utils.ts'
@@ -192,6 +193,7 @@ interface ComposerAttachmentDraft {
 const sessionPanelStateByThread = new Map<string, SessionPanelState>()
 const sessionPanelRequestSeqByThread = new Map<string, number>()
 const sessionPanelScrollTopByThread = new Map<string, number>()
+const sessionTitleOverridesByThread = new Map<string, Map<string, string>>()
 const composerAttachmentsByThread = new Map<string, ComposerAttachmentDraft[]>()
 let sessionPanelRequestSeq = 0
 
@@ -1581,9 +1583,18 @@ function sessionPanelState(threadId: string): SessionPanelState {
 }
 
 function setSessionPanelState(threadId: string, next: SessionPanelState): void {
+  const overrides = sessionTitleOverridesByThread.get(threadId)
+  const sessions = dedupeSessionItems(next.sessions).map(item => {
+    const titleOverride = overrides?.get(item.sessionId)
+    if (titleOverride === undefined) return item
+    return {
+      ...item,
+      title: titleOverride || undefined,
+    }
+  })
   sessionPanelStateByThread.set(threadId, {
     ...next,
-    sessions: dedupeSessionItems(next.sessions),
+    sessions,
     nextCursor: next.nextCursor.trim(),
     error: next.error.trim(),
   })
@@ -1618,6 +1629,44 @@ function updateThreadSessionID(threadId: string, sessionID: string): void {
     }
   })
   store.set({ threads: nextThreads })
+}
+
+function applySessionTitleUpdate(threadId: string, sessionID: string, title: string): void {
+  const normalizedThreadID = threadId.trim()
+  const normalizedSessionID = sessionID.trim()
+  if (!normalizedThreadID || !normalizedSessionID) return
+
+  let overrides = sessionTitleOverridesByThread.get(normalizedThreadID)
+  if (!overrides) {
+    overrides = new Map<string, string>()
+    sessionTitleOverridesByThread.set(normalizedThreadID, overrides)
+  }
+  overrides.set(normalizedSessionID, title.trim())
+
+  const state = sessionPanelState(normalizedThreadID)
+  let found = false
+  const nextSessions = state.sessions.map(item => {
+    if (item.sessionId !== normalizedSessionID) return item
+    found = true
+    return {
+      ...item,
+      title: title.trim() || undefined,
+    }
+  })
+  if (!found) {
+    nextSessions.unshift({
+      sessionId: normalizedSessionID,
+      title: title.trim() || undefined,
+    })
+  }
+  setSessionPanelState(normalizedThreadID, {
+    ...state,
+    sessions: nextSessions,
+  })
+
+  if (store.get().activeThreadId === normalizedThreadID) {
+    updateSessionPanel()
+  }
 }
 
 async function loadThreadSessions(threadId: string, append = false): Promise<void> {
@@ -2504,6 +2553,7 @@ async function handleDeleteThread(threadId: string): Promise<void> {
   sessionPanelStateByThread.delete(threadId)
   sessionPanelRequestSeqByThread.delete(threadId)
   sessionPanelScrollTopByThread.delete(threadId)
+  sessionTitleOverridesByThread.delete(threadId)
   sessionSwitchingThreads.delete(threadId)
   freshSessionNonceByThread.delete(threadId)
   clearThreadComposerAttachments(threadId)
@@ -4795,6 +4845,10 @@ function handleSend(): void {
       capturedScopeKey = threadSessionScopeKey(capturedThreadID, capturedSessionID)
       rebindScopeRuntime(previousScopeKey, capturedScopeKey, capturedSessionID)
       updateThreadSessionID(capturedThreadID, sessionId)
+    },
+
+    onSessionInfoUpdate({ sessionId, title }: SessionInfoUpdatePayload) {
+      applySessionTitleUpdate(capturedThreadID, sessionId, title)
     },
 
     onPermissionRequired(event) {

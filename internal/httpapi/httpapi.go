@@ -133,6 +133,7 @@ const (
 	eventTypeUserPrompt              = "user_prompt"
 	eventTypeMessageContent          = "message_content"
 	eventTypeReasoningDelta          = "reasoning_delta"
+	eventTypeSessionInfoUpdate       = "session_info_update"
 	eventTypeToolCall                = "tool_call"
 	eventTypeToolCallUpdate          = "tool_call_update"
 )
@@ -913,6 +914,14 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 		return emit(eventTypeReasoningDelta, map[string]any{
 			"turnId": turnID,
 			"delta":  delta,
+		})
+	})
+	turnCtx = agents.WithSessionInfoHandler(turnCtx, func(sessionInfoCtx context.Context, update agents.SessionInfoUpdate) error {
+		_ = sessionInfoCtx
+		return emit(eventTypeSessionInfoUpdate, map[string]any{
+			"turnId":    turnID,
+			"sessionId": update.SessionID,
+			"title":     update.Title,
 		})
 	})
 	turnCtx = agents.WithMessageContentHandler(turnCtx, func(messageCtx context.Context, event agents.ACPMessageContent) error {

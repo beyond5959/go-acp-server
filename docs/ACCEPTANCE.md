@@ -359,6 +359,7 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - repeated `New session` clicks while the thread is still unbound must still open a blank fresh-session view instead of reusing the prior anonymous buffer.
   - selecting an existing session requests provider-owned transcript replay before the next turn.
   - turn SSE emits `session_bound`, and the thread persists `agentOptions.sessionId`.
+  - when an ACP agent emits `session/update` with `sessionUpdate="session_info_update"` and a non-null `title`, turn SSE emits `session_info_update` and the Web UI uses that title for the matching `sessionId` in the session sidebar.
   - once a thread is session-bound, subsequent prompt building no longer injects prior local turns into the provider prompt.
   - cancelled turns that never emitted `session_bound` and never produced visible response text do not reappear when the user opens a newer fresh session or reloads the thread.
 - Verification commands (executed 2026-03-13):

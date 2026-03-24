@@ -20,6 +20,8 @@ const (
 	acpUpdateTypeAgentThoughtChunk = "agent_thought_chunk"
 	// ACPUpdateTypePlan replaces the current agent plan entries.
 	ACPUpdateTypePlan = "plan"
+	// ACPUpdateTypeSessionInfo updates ACP session metadata such as title.
+	ACPUpdateTypeSessionInfo = "session_info_update"
 	// ACPUpdateTypeAvailableCommands replaces the current slash-command list.
 	ACPUpdateTypeAvailableCommands = "available_commands_update"
 )
@@ -40,6 +42,7 @@ type ACPUpdate struct {
 	Timestamp      string
 	PlanEntries    []PlanEntry
 	Commands       []SlashCommand
+	SessionInfo    *SessionInfoUpdate
 	MessageContent *ACPMessageContent
 	ToolCall       *ACPToolCall
 }
@@ -51,6 +54,7 @@ func ParseACPUpdate(raw json.RawMessage) (ACPUpdate, error) {
 	}
 
 	var payload struct {
+		SessionID string         `json:"sessionId"`
 		Delta     string         `json:"delta"`
 		MessageID string         `json:"messageId"`
 		Timestamp string         `json:"timestamp"`
@@ -139,6 +143,20 @@ func ParseACPUpdate(raw json.RawMessage) (ACPUpdate, error) {
 		return ACPUpdate{
 			Type:        ACPUpdateTypePlan,
 			PlanEntries: normalizePlanEntries(payload.Update.Entries),
+		}, nil
+	case ACPUpdateTypeSessionInfo:
+		if payload.Update.Title == nil {
+			return ACPUpdate{
+				Type: ACPUpdateTypeSessionInfo,
+			}, nil
+		}
+		return ACPUpdate{
+			Type: ACPUpdateTypeSessionInfo,
+			SessionInfo: &SessionInfoUpdate{
+				SessionID: strings.TrimSpace(payload.SessionID),
+				Title:     strings.TrimSpace(*payload.Update.Title),
+				HasTitle:  true,
+			},
 		}, nil
 	case ACPUpdateTypeAvailableCommands:
 		return ACPUpdate{

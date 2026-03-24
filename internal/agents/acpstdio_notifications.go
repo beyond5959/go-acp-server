@@ -27,6 +27,9 @@ func NewACPNotificationHandler(
 		if update.Type == ACPUpdateTypeAvailableCommands {
 			return NotifySlashCommands(ctx, update.Commands)
 		}
+		if update.Type == ACPUpdateTypeSessionInfo && update.SessionInfo != nil {
+			return NotifySessionInfoUpdate(ctx, *update.SessionInfo)
+		}
 		if !promptStarted.Load() {
 			return nil
 		}

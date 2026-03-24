@@ -60,6 +60,13 @@ type SessionTranscriptResult struct {
 	ConfigOptions []ConfigOption             `json:"configOptions,omitempty"`
 }
 
+// SessionInfoUpdate describes one incremental ACP session metadata update.
+type SessionInfoUpdate struct {
+	SessionID string
+	Title     string
+	HasTitle  bool
+}
+
 // SessionTranscriptLoader exposes replayable session transcript messages.
 type SessionTranscriptLoader interface {
 	LoadSessionTranscript(ctx context.Context, req SessionTranscriptRequest) (SessionTranscriptResult, error)
@@ -108,6 +115,11 @@ type SessionBoundHandler func(ctx context.Context, sessionID string) error
 
 type sessionBoundHandlerContextKey struct{}
 
+// SessionInfoHandler receives one incremental ACP session metadata update.
+type SessionInfoHandler func(ctx context.Context, update SessionInfoUpdate) error
+
+type sessionInfoHandlerContextKey struct{}
+
 // WithSessionBoundHandler binds one session callback to context.
 func WithSessionBoundHandler(ctx context.Context, handler SessionBoundHandler) context.Context {
 	if handler == nil {
@@ -139,6 +151,40 @@ func NotifySessionBound(ctx context.Context, sessionID string) error {
 		return nil
 	}
 	return handler(ctx, sessionID)
+}
+
+// WithSessionInfoHandler binds one session metadata callback to context.
+func WithSessionInfoHandler(ctx context.Context, handler SessionInfoHandler) context.Context {
+	if handler == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, sessionInfoHandlerContextKey{}, handler)
+}
+
+// SessionInfoHandlerFromContext gets session metadata callback from context, if present.
+func SessionInfoHandlerFromContext(ctx context.Context) (SessionInfoHandler, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	handler, ok := ctx.Value(sessionInfoHandlerContextKey{}).(SessionInfoHandler)
+	if !ok || handler == nil {
+		return nil, false
+	}
+	return handler, true
+}
+
+// NotifySessionInfoUpdate reports one ACP session metadata change to the active callback, if any.
+func NotifySessionInfoUpdate(ctx context.Context, update SessionInfoUpdate) error {
+	update.SessionID = strings.TrimSpace(update.SessionID)
+	update.Title = strings.TrimSpace(update.Title)
+	if update.SessionID == "" || !update.HasTitle {
+		return nil
+	}
+	handler, ok := SessionInfoHandlerFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	return handler(ctx, update)
 }
 
 // CloneSessionInfo returns a trimmed deep copy of the provided session entry.

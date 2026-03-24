@@ -998,6 +998,14 @@ This file is the source of milestone progress, validation commands, and next act
     - pass: `go test ./internal/httpapi ./internal/agents/...`
     - pass: `go test ./...`
 
+- 2026-03-24: wired ACP `session_info_update` titles through the turn stream into the Web UI session sidebar.
+  - extended shared ACP `session/update` parsing with `session_info_update`, ignoring `title: null` while preserving non-null title changes keyed by `sessionId`.
+  - added a turn-scoped session-info callback so HTTP streaming now emits `session_info_update` SSE/history events, and updated built-in ACP providers plus the shared stdio notification bridge to forward those updates.
+  - the Web UI now applies live session-title updates to the matching sidebar session row and keeps a runtime override map so a slower follow-up `session/list` refresh does not immediately revert the new title.
+  - executed validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./... -count=1`
+
 - 2026-03-22: fixed the composer model/reasoning dropdowns so they remain clickable after session-history refresh updates them in place.
   - root cause: `bindThreadConfigSwitches()` can run more than once on the same composer DOM after a session switch; repeated `addEventListener('click', ...)` bindings caused one listener to open the menu and the next listener to close it immediately in the same click.
   - made config-switch binding idempotent per `.thread-model-switch` node, while still allowing later refresh passes to update labels, menu contents, and hidden/disabled state.

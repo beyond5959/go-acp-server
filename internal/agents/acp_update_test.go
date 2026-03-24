@@ -92,6 +92,57 @@ func TestParseACPUpdatePlanKeepsEmptyReplacement(t *testing.T) {
 	}
 }
 
+func TestParseACPUpdateSessionInfoTitle(t *testing.T) {
+	t.Parallel()
+
+	update, err := ParseACPUpdate(json.RawMessage(`{
+		"sessionId": " sess_123 ",
+		"update": {
+			"sessionUpdate": "session_info_update",
+			"title": "  Implement auth  "
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("ParseACPUpdate() error = %v", err)
+	}
+	if update.Type != ACPUpdateTypeSessionInfo {
+		t.Fatalf("update.Type = %q, want %q", update.Type, ACPUpdateTypeSessionInfo)
+	}
+	if update.SessionInfo == nil {
+		t.Fatal("update.SessionInfo = nil, want populated session metadata")
+	}
+	if got := update.SessionInfo.SessionID; got != "sess_123" {
+		t.Fatalf("update.SessionInfo.SessionID = %q, want %q", got, "sess_123")
+	}
+	if got := update.SessionInfo.Title; got != "Implement auth" {
+		t.Fatalf("update.SessionInfo.Title = %q, want %q", got, "Implement auth")
+	}
+	if !update.SessionInfo.HasTitle {
+		t.Fatal("update.SessionInfo.HasTitle = false, want true")
+	}
+}
+
+func TestParseACPUpdateSessionInfoNullTitleIgnored(t *testing.T) {
+	t.Parallel()
+
+	update, err := ParseACPUpdate(json.RawMessage(`{
+		"sessionId": "sess_123",
+		"update": {
+			"sessionUpdate": "session_info_update",
+			"title": null
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("ParseACPUpdate() error = %v", err)
+	}
+	if update.Type != ACPUpdateTypeSessionInfo {
+		t.Fatalf("update.Type = %q, want %q", update.Type, ACPUpdateTypeSessionInfo)
+	}
+	if update.SessionInfo != nil {
+		t.Fatalf("update.SessionInfo = %#v, want nil when title is null", update.SessionInfo)
+	}
+}
+
 func TestParseACPUpdateUserMessageChunk(t *testing.T) {
 	t.Parallel()
 

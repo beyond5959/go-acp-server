@@ -505,6 +505,7 @@ The integration follows the official ACP startup form `blackbox --experimental-a
     - `opencode`, `codex`, and `qwen` replay transcript messages over ACP `session/load`.
     - Kimi CLI 1.20.0 successfully resumes historical sessions through `session/load` but currently emits no replay `session/update` notifications for those sessions, so transcript replay stays empty under the ACP-only implementation.
 - HTTP turn handling persists the bound session id back into `threads.agent_options_json` and emits SSE `session_bound`.
+- HTTP turn handling also forwards ACP `session_info_update` title changes as SSE `session_info_update` events keyed by `sessionId`; `title: null` is ignored.
 
 ### 15.4 Prompt Construction
 
@@ -530,6 +531,7 @@ The integration follows the official ACP startup form `blackbox --experimental-a
   - offers `New session` to clear `sessionId`.
   - when the active thread is already unbound, `New session` still rotates into a fresh client-side scope so the composer starts blank instead of reusing the previous anonymous buffer.
   - refreshes after turns complete so newly created/bound sessions appear in the list.
+  - applies live `session_info_update.title` notifications to the matching session row immediately and keeps that runtime title override until a later notification replaces it.
   - skips server history hydration for that temporary fresh-session scope until a real ACP session id is bound back into the thread.
   - filters empty cancelled placeholders from empty-session history replay so page reload does not resurrect abandoned pre-bind attempts.
 

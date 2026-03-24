@@ -2339,6 +2339,84 @@ func TestTurnsSSEAndHistory(t *testing.T) {
 	}
 }
 
+func TestTurnSessionInfoUpdateSSEAndHistory(t *testing.T) {
+	root := t.TempDir()
+	h := newTestServer(t, testServerOptions{
+		allowedRoots: []string{root},
+		turnAgentFactory: func(thread storage.Thread) (agents.Streamer, error) {
+			_ = thread
+			return &sessionInfoUpdateStreamer{
+				sessionID: "sess-title-1",
+				title:     "Implement user authentication",
+			}, nil
+		},
+	})
+
+	threadID := createThreadForClient(t, h, "client-a", root)
+	turnRR := performJSONRequest(t, h, http.MethodPost, "/v1/threads/"+threadID+"/turns", map[string]any{
+		"input":  "rename this session",
+		"stream": true,
+	}, map[string]string{"X-Client-ID": "client-a"})
+	if turnRR.Code != http.StatusOK {
+		t.Fatalf("turn status code = %d, want %d", turnRR.Code, http.StatusOK)
+	}
+
+	events := parseSSEEvents(t, turnRR.Body.String())
+	foundSessionInfo := false
+	for _, ev := range events {
+		if ev.Event != eventTypeSessionInfoUpdate {
+			continue
+		}
+		foundSessionInfo = true
+		if got := stringField(ev.Data, "sessionId"); got != "sess-title-1" {
+			t.Fatalf("session_info_update.sessionId = %q, want %q", got, "sess-title-1")
+		}
+		if got := stringField(ev.Data, "title"); got != "Implement user authentication" {
+			t.Fatalf("session_info_update.title = %q, want %q", got, "Implement user authentication")
+		}
+	}
+	if !foundSessionInfo {
+		t.Fatal("missing session_info_update SSE event")
+	}
+
+	historyRR := performJSONRequest(t, h, http.MethodGet, "/v1/threads/"+threadID+"/history?includeEvents=true", nil, map[string]string{"X-Client-ID": "client-a"})
+	if historyRR.Code != http.StatusOK {
+		t.Fatalf("history status code = %d, want %d", historyRR.Code, http.StatusOK)
+	}
+
+	var history struct {
+		Turns []struct {
+			Events []struct {
+				Type string         `json:"type"`
+				Data map[string]any `json:"data"`
+			} `json:"events"`
+		} `json:"turns"`
+	}
+	if err := json.Unmarshal(historyRR.Body.Bytes(), &history); err != nil {
+		t.Fatalf("unmarshal history response: %v", err)
+	}
+	if len(history.Turns) != 1 {
+		t.Fatalf("len(history.Turns) = %d, want 1", len(history.Turns))
+	}
+
+	foundPersisted := false
+	for _, event := range history.Turns[0].Events {
+		if event.Type != eventTypeSessionInfoUpdate {
+			continue
+		}
+		foundPersisted = true
+		if got := stringField(event.Data, "sessionId"); got != "sess-title-1" {
+			t.Fatalf("history session_info_update.sessionId = %q, want %q", got, "sess-title-1")
+		}
+		if got := stringField(event.Data, "title"); got != "Implement user authentication" {
+			t.Fatalf("history session_info_update.title = %q, want %q", got, "Implement user authentication")
+		}
+	}
+	if !foundPersisted {
+		t.Fatal("missing persisted session_info_update history event")
+	}
+}
+
 func TestMultipartTurnUploadsAttachmentsAsResourceLinks(t *testing.T) {
 	root := t.TempDir()
 	streamer := &promptCaptureStreamer{}
@@ -4487,6 +4565,29 @@ func (s *sessionBoundStreamer) Name() string {
 
 func (s *sessionBoundStreamer) Stream(ctx context.Context, input string, onDelta func(delta string) error) (agents.StopReason, error) {
 	if err := agents.NotifySessionBound(ctx, s.sessionID); err != nil {
+		return agents.StopReasonEndTurn, err
+	}
+	if err := onDelta(input); err != nil {
+		return agents.StopReasonEndTurn, err
+	}
+	return agents.StopReasonEndTurn, nil
+}
+
+type sessionInfoUpdateStreamer struct {
+	sessionID string
+	title     string
+}
+
+func (s *sessionInfoUpdateStreamer) Name() string {
+	return "session-info-update-streamer"
+}
+
+func (s *sessionInfoUpdateStreamer) Stream(ctx context.Context, input string, onDelta func(delta string) error) (agents.StopReason, error) {
+	if err := agents.NotifySessionInfoUpdate(ctx, agents.SessionInfoUpdate{
+		SessionID: s.sessionID,
+		Title:     s.title,
+		HasTitle:  true,
+	}); err != nil {
 		return agents.StopReasonEndTurn, err
 	}
 	if err := onDelta(input); err != nil {

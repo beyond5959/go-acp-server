@@ -179,6 +179,10 @@ func (c *Client) StreamPrompt(ctx context.Context, prompt agents.Prompt, onDelta
 			if handler, ok := agents.PlanHandlerFromContext(ctx); ok {
 				return handler(ctx, update.PlanEntries)
 			}
+		case agents.ACPUpdateTypeSessionInfo:
+			if update.SessionInfo != nil {
+				return agents.NotifySessionInfoUpdate(ctx, *update.SessionInfo)
+			}
 		case agents.ACPUpdateTypeAvailableCommands:
 			return agents.NotifySlashCommands(ctx, update.Commands)
 		case agents.ACPUpdateTypeToolCall, agents.ACPUpdateTypeToolCallUpdate:

@@ -48,6 +48,12 @@ export interface SessionBoundPayload {
   sessionId: string
 }
 
+export interface SessionInfoUpdatePayload {
+  turnId: string
+  sessionId: string
+  title: string
+}
+
 export interface TurnErrorPayload {
   turnId: string
   code: string
@@ -74,6 +80,7 @@ export interface TurnStreamCallbacks {
   onToolCall?:           (e: ToolCallPayload) => void
   onToolCallUpdate?:     (e: ToolCallPayload) => void
   onSessionBound?:       (e: SessionBoundPayload) => void
+  onSessionInfoUpdate?:  (e: SessionInfoUpdatePayload) => void
   onCompleted?:          (e: TurnCompletedPayload) => void
   onError?:              (e: TurnErrorPayload) => void
   onPermissionRequired?: (e: PermissionRequiredPayload) => void
@@ -209,6 +216,9 @@ export class TurnStream {
         break
       case 'session_bound':
         this.callbacks.onSessionBound?.(payload as unknown as SessionBoundPayload)
+        break
+      case 'session_info_update':
+        this.callbacks.onSessionInfoUpdate?.(payload as unknown as SessionInfoUpdatePayload)
         break
       case 'turn_completed':
         this.terminated = true
