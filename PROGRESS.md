@@ -11,7 +11,27 @@ This file is the source of milestone progress, validation commands, and next act
 
 - `Post-M8` ACP multi-agent readiness and maintenance.
 
-## Latest Update (2026-03-23)
+## Latest Update (2026-03-26)
+
+- `Post-M8` Web UI premium visual refresh completed:
+  - kept the existing no-framework SPA data flow, SSE behavior, store semantics, and API contracts unchanged; the change set is UI-only.
+  - rebuilt the shell into a glass-panel workspace with a richer desktop feel: layered backdrop, elevated sidebars, stronger header hierarchy, cleaner empty states, and improved chat/composer surfaces.
+  - upgraded interaction polish across thread rows, session cards, slash-command popover, settings drawer, new-agent modal, permission cards, and attachment chips.
+  - refreshed the visual token system around a restrained teal accent, warmer neutral surfaces, deeper shadows, larger radii, and a more intentional system-font stack while keeping light/dark themes and responsive behavior.
+  - follow-up: reduced the chat-header session title size on both desktop and narrow/mobile breakpoints so long titles feel less heavy and consume less vertical attention.
+  - validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
+- `Post-M8` Web UI user-message base64 image placeholder rendering completed:
+  - user prompt bubbles now detect inline placeholders that start with `[Image: data:image/...;base64,...]` and render them as immediate inline image previews instead of raw base64 text.
+  - the parser is fail-soft and image-only: it accepts only `data:image/*;base64,...` payloads, strips incidental whitespace inside the data URL, and falls back to ordinary markdown rendering for malformed or non-image placeholders.
+  - ordinary user markdown/text rendering remains unchanged around those placeholders, and the message copy action still preserves the original raw message text.
+  - validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `env GOCACHE=/tmp/ngent-gocache GOFLAGS=-p=1 go test ./...`
+
+## Previous Update (2026-03-23)
 
 - `Post-M8` human-readable stderr logger rollout completed:
   - replaced the previous `slog` JSON logger with a repo-local leveled logger in `internal/observability`, keeping the existing `Debug/Info/Warn/Error` call shape while switching output to readable text lines on `stderr`.
@@ -1045,3 +1065,15 @@ This file is the source of milestone progress, validation commands, and next act
     - pass: `env GOCACHE=/tmp/ngent-gocache GOFLAGS=-p=1 /usr/local/go/bin/go test ./internal/agents/kimi -run 'TestHandlePermissionRequest(ParsesRichToolCallPayload|HonorsSelectedOptionID)' -count=1`
     - pass: `env GOCACHE=/tmp/ngent-gocache GOFLAGS=-p=1 /usr/local/go/bin/go test ./internal/httpapi -run 'TestTurnPermission(RequiredSSEEvent|ApprovedContinuesAndCompletes|SelectedOptionFlowsThroughExactAgentChoice|TimeoutFailClosed|SSEDisconnectFailClosed)' -count=1`
     - pass: `env GOCACHE=/tmp/ngent-gocache GOFLAGS=-p=1 /usr/local/go/bin/go test ./... -count=1`
+
+- 2026-03-26: moved uploaded Web UI attachments into the configurable data directory and made persisted attachment cards survive reload.
+  - replaced the CLI storage root flag with `--data-path` (default `$HOME/.ngent/`), deriving sqlite as `data-path/ngent.db` instead of accepting a standalone `--db-path` file.
+  - `POST /v1/threads/{threadId}/turns` now persists uploads under `data-path/attachments/<category>/` rather than `/tmp`, using MIME/extension-aware categories such as `images`, `documents`, `text`, `audio`, `video`, `archives`, and `files`.
+  - added sqlite-backed `turn_attachments(attachment_id, turn_id, name, mime_type, size, file_path, created_at)` and persist stable `attachmentId` values into `user_prompt` turn events.
+  - added `GET /attachments/{attachmentId}` with client ownership checks and optional query-token auth so the Web UI can keep rendering persisted image/file cards after stream completion and history reload.
+  - updated the Web UI history attachment reconstruction to build stable attachment URLs from `attachmentId`, show persisted previews/links after reload, and keep using in-memory `blob:` previews only for unsent/live local drafts.
+  - updated README plus acceptance/decision/spec/known-issues docs to describe `--data-path`, durable attachment storage, and the remaining lack of an automatic attachment janitor.
+  - executed validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./cmd/ngent ./internal/httpapi ./internal/storage ./internal/observability`
+    - pass: `go test ./...`

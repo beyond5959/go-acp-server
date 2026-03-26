@@ -31,7 +31,7 @@ import type {
   SessionInfoUpdatePayload,
   ToolCallPayload,
 } from './sse.ts'
-import { copyText, escHtml, formatBytes, formatRelativeTime, formatTimestamp, generateUUID } from './utils.ts'
+import { copyText, debounce, escHtml, formatBytes, formatRelativeTime, formatTimestamp, generateUUID } from './utils.ts'
 
 // ── Theme ─────────────────────────────────────────────────────────────────
 
@@ -372,7 +372,9 @@ function cloneMessageAttachments(
   for (const attachment of attachments) {
     const name = attachment.name?.trim() ?? ''
     if (!name) continue
+    const attachmentId = attachment.attachmentId?.trim() || undefined
     cloned.push({
+      attachmentId,
       name,
       uri: attachment.uri?.trim() || undefined,
       mimeType: attachment.mimeType?.trim() || undefined,
@@ -380,6 +382,7 @@ function cloneMessageAttachments(
         ? Math.max(0, attachment.size)
         : undefined,
       previewUrl: attachment.previewUrl?.trim() || undefined,
+      downloadUrl: attachment.downloadUrl?.trim() || undefined,
     })
   }
   return cloned.length ? cloned : undefined
@@ -392,6 +395,16 @@ function threadComposerAttachments(threadId: string): ComposerAttachmentDraft[] 
 function attachmentPreviewURL(file: File): string | undefined {
   if (!file.type.startsWith('image/')) return undefined
   return URL.createObjectURL(file)
+}
+
+function attachmentResourceURL(attachmentId: string | null | undefined): string | undefined {
+  const normalized = attachmentId?.trim() ?? ''
+  if (!normalized) return undefined
+
+  const { serverUrl, clientId, authToken } = store.get()
+  const params = new URLSearchParams({ client_id: clientId })
+  if (authToken.trim()) params.set('access_token', authToken.trim())
+  return `${serverUrl}/attachments/${encodeURIComponent(normalized)}?${params.toString()}`
 }
 
 function revokeAttachmentPreview(attachment: { previewUrl?: string } | null | undefined): void {
@@ -720,11 +733,17 @@ function extractTurnUserPrompt(events: TurnEvent[] | undefined): {
       }
       if (type !== 'resource_link') return
       const sizeValue = record?.size
+      const attachmentId = recordString(record, 'attachmentId') || undefined
+      const persistentUrl = attachmentResourceURL(attachmentId)
+      const mimeType = recordString(record, 'mimeType') || undefined
       attachments.push({
+        attachmentId,
         name: recordString(record, 'name') || 'Attachment',
         uri: recordString(record, 'uri') || undefined,
-        mimeType: recordString(record, 'mimeType') || undefined,
+        mimeType,
         size: typeof sizeValue === 'number' && Number.isFinite(sizeValue) ? sizeValue : undefined,
+        previewUrl: mimeType?.startsWith('image/') ? persistentUrl : undefined,
+        downloadUrl: persistentUrl,
       })
     })
   }
@@ -1810,16 +1829,6 @@ function renderSessionPanel(): string {
     return ''
   }
 
-  if (!sessionPanelExpanded) {
-    return `
-      <div class="session-panel-collapsed">
-        <button class="btn btn-icon session-sidebar-toggle-btn" type="button">
-          ${iconChevronRight}
-        </button>
-        <div class="session-panel-collapsed-marker" title="${escHtml(threadTitle(thread))}">${escHtml(threadMonogramLabel(thread))}</div>
-      </div>`
-  }
-
   const state = sessionPanelState(thread.threadId)
   const selectedSessionID = threadSessionID(thread)
   const switching = sessionSwitchingThreads.has(thread.threadId)
@@ -1874,10 +1883,14 @@ function renderSessionPanel(): string {
       <div class="session-panel-heading-row">
         <div class="session-panel-heading-copy">
           <div class="session-panel-title-row">
-            <h3 class="session-panel-title" title="${escHtml(threadTitle(thread))}">${escHtml(threadTitle(thread))}</h3>
+            <h3 class="session-panel-title" title="${escHtml(threadTitle(thread))}">
+              <span class="session-panel-title__text">${escHtml(threadTitle(thread))}</span>
+            </h3>
             <span class="badge badge--agent">${escHtml(thread.agent ?? '')}</span>
           </div>
-          <div class="session-panel-subtitle" title="${escHtml(thread.cwd)}">${escHtml(thread.cwd)}</div>
+          <div class="session-panel-subtitle" title="${escHtml(thread.cwd)}">
+            <span class="session-panel-subtitle__text">${escHtml(thread.cwd)}</span>
+          </div>
         </div>
         <div class="session-panel-actions">
           <button
@@ -1887,9 +1900,6 @@ function renderSessionPanel(): string {
             aria-label="${state.loading ? 'Refreshing sessions' : 'Refresh sessions'}"
             ${refreshDisabled ? 'disabled' : ''}>
             ${iconRefresh}
-          </button>
-          <button class="btn btn-icon session-sidebar-toggle-btn" type="button">
-            ${iconChevronRight}
           </button>
         </div>
       </div>
@@ -1923,12 +1933,6 @@ function updateSessionPanel(): void {
   const { activeThreadId, threads } = store.get()
   const thread = activeThreadId ? threads.find(item => item.threadId === activeThreadId) : null
 
-  el.querySelectorAll<HTMLButtonElement>('.session-sidebar-toggle-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      setSessionPanelExpanded(!sessionPanelExpanded)
-    })
-  })
-
   if (!thread) {
     delete el.dataset.threadId
     return
@@ -1945,6 +1949,8 @@ function updateSessionPanel(): void {
     void loadThreadSessions(thread.threadId)
   }
 
+  syncSessionPanelTitleOverflow(el)
+  syncSessionPanelSubtitleOverflow(el)
   el.querySelector<HTMLButtonElement>('.session-refresh-btn')?.addEventListener('click', () => {
     void loadThreadSessions(thread.threadId)
   })
@@ -1984,16 +1990,6 @@ function threadTitle(t: Thread): string {
   return t.cwd.split('/').filter(Boolean).pop() ?? t.cwd
 }
 
-function monogramLabel(value: string): string {
-  const firstChar = Array.from(value.trim())[0] ?? 'A'
-  return /^[A-Za-z]$/.test(firstChar) ? firstChar.toUpperCase() : firstChar
-}
-
-function threadMonogramLabel(thread: Thread): string {
-  const label = threadTitle(thread) || thread.agent || 'A'
-  return monogramLabel(label)
-}
-
 function syncSidebarChrome(): void {
   const sidebar = document.getElementById('sidebar')
   if (sidebar) {
@@ -2009,11 +2005,12 @@ function syncSidebarChrome(): void {
     sessionSidebar.classList.toggle('session-sidebar--collapsed', hasActiveThread && !sessionPanelExpanded)
   }
 
-  document.querySelectorAll<HTMLButtonElement>('.session-sidebar-toggle-btn').forEach(btn => {
+  document.querySelectorAll<HTMLButtonElement>('.chat-session-toggle-btn').forEach(btn => {
     const label = sessionPanelExpanded ? 'Collapse session list' : 'Expand session list'
     btn.setAttribute('aria-label', label)
     btn.setAttribute('title', label)
     btn.setAttribute('aria-expanded', sessionPanelExpanded ? 'true' : 'false')
+    btn.dataset.expanded = sessionPanelExpanded ? 'true' : 'false'
   })
 }
 
@@ -2371,6 +2368,63 @@ function renderThreadStatusIndicator(status: ThreadActivityIndicator): string {
   return ''
 }
 
+function syncThreadTitleOverflow(scope: ParentNode = document): void {
+  scope.querySelectorAll<HTMLElement>('.thread-item-title').forEach(titleEl => {
+    const textEl = titleEl.querySelector<HTMLElement>('.thread-item-title__text')
+    if (!textEl) return
+
+    titleEl.dataset.overflowing = 'false'
+    titleEl.style.removeProperty('--thread-title-overflow')
+    titleEl.style.removeProperty('--thread-title-scroll-duration')
+
+    const overflowPx = Math.max(0, Math.ceil(textEl.scrollWidth - titleEl.clientWidth))
+    if (overflowPx <= 6) return
+
+    const durationMs = Math.min(5000, Math.max(1600, overflowPx * 14))
+    titleEl.dataset.overflowing = 'true'
+    titleEl.style.setProperty('--thread-title-overflow', `${overflowPx}px`)
+    titleEl.style.setProperty('--thread-title-scroll-duration', `${(durationMs / 1000).toFixed(2)}s`)
+  })
+}
+
+function syncSessionPanelSubtitleOverflow(scope: ParentNode = document): void {
+  scope.querySelectorAll<HTMLElement>('.session-panel-subtitle').forEach(subtitleEl => {
+    const textEl = subtitleEl.querySelector<HTMLElement>('.session-panel-subtitle__text')
+    if (!textEl) return
+
+    subtitleEl.dataset.overflowing = 'false'
+    subtitleEl.style.removeProperty('--session-panel-subtitle-overflow')
+    subtitleEl.style.removeProperty('--session-panel-subtitle-scroll-duration')
+
+    const overflowPx = Math.max(0, Math.ceil(textEl.scrollWidth - subtitleEl.clientWidth))
+    if (overflowPx <= 6) return
+
+    const durationMs = Math.min(5200, Math.max(1800, overflowPx * 16))
+    subtitleEl.dataset.overflowing = 'true'
+    subtitleEl.style.setProperty('--session-panel-subtitle-overflow', `${overflowPx}px`)
+    subtitleEl.style.setProperty('--session-panel-subtitle-scroll-duration', `${(durationMs / 1000).toFixed(2)}s`)
+  })
+}
+
+function syncSessionPanelTitleOverflow(scope: ParentNode = document): void {
+  scope.querySelectorAll<HTMLElement>('.session-panel-title').forEach(titleEl => {
+    const textEl = titleEl.querySelector<HTMLElement>('.session-panel-title__text')
+    if (!textEl) return
+
+    titleEl.dataset.overflowing = 'false'
+    titleEl.style.removeProperty('--session-panel-title-overflow')
+    titleEl.style.removeProperty('--session-panel-title-scroll-duration')
+
+    const overflowPx = Math.max(0, Math.ceil(textEl.scrollWidth - titleEl.clientWidth))
+    if (overflowPx <= 6) return
+
+    const durationMs = Math.min(5000, Math.max(1700, overflowPx * 14))
+    titleEl.dataset.overflowing = 'true'
+    titleEl.style.setProperty('--session-panel-title-overflow', `${overflowPx}px`)
+    titleEl.style.setProperty('--session-panel-title-scroll-duration', `${(durationMs / 1000).toFixed(2)}s`)
+  })
+}
+
 function renderSessionStatusIndicator(loading: boolean): string {
   if (!loading) return ''
   return `
@@ -2404,7 +2458,9 @@ function renderThreadItem(
          aria-label="${escHtml(displayTitle)}">
       <div class="thread-item-avatar ${hasIconAvatar ? 'thread-item-avatar--icon' : (isActive ? '' : 'thread-item-avatar--inactive')}">${avatar}</div>
       <div class="thread-item-body">
-        <div class="thread-item-title">${escHtml(displayTitle)}</div>
+        <div class="thread-item-title" title="${escHtml(displayTitle)}">
+          <span class="thread-item-title__text">${escHtml(displayTitle)}</span>
+        </div>
         <div class="thread-item-foot">
           <span class="badge badge--agent">${escHtml(t.agent ?? '')}</span>
         </div>
@@ -2424,18 +2480,26 @@ function renderThreadItem(
     </div>`
 }
 
+function renderThreadListEmptyState(): string {
+  return `
+    <div class="thread-list-empty">
+      <div class="thread-list-empty__visual" aria-hidden="true">${iconPlus}</div>
+      <div class="thread-list-empty__title">No agents yet</div>
+      <div class="thread-list-empty__desc">Create a workspace to start your first session.</div>
+    </div>`
+}
+
 function updateThreadList(): void {
   const el = document.getElementById('thread-list')
   if (!el) return
 
   const { threads, activeThreadId, streamStates, threadCompletionBadges } = store.get()
   const filtered = threads
+  const countEl = document.getElementById('thread-count')
+  if (countEl) countEl.textContent = String(filtered.length)
 
   if (!filtered.length) {
-    el.innerHTML = `
-      <div class="thread-list-empty">
-        No agents yet.<br>Click <strong>+</strong> to start one.
-      </div>`
+    el.innerHTML = renderThreadListEmptyState()
     renderThreadActionLayer()
     return
   }
@@ -2476,6 +2540,7 @@ function updateThreadList(): void {
     })
   })
 
+  syncThreadTitleOverflow(el)
   renderThreadActionLayer()
 }
 
@@ -3141,6 +3206,62 @@ function safeContentURL(value: string, allowImageData = false): string | null {
   return null
 }
 
+const inlineUserImagePattern = /\[Image:\s*(data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+?)(?:\s*\]|$)/gi
+
+function inlineUserImageSource(value: string): { src: string, mimeType: string } | null {
+  const normalized = value.replace(/\s+/g, '').trim()
+  const match = normalized.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/i)
+  if (!match) return null
+  const src = safeContentURL(normalized, true)
+  if (!src) return null
+  return {
+    src,
+    mimeType: match[1].toLowerCase(),
+  }
+}
+
+function renderUserMessageHTML(content: string): string {
+  inlineUserImagePattern.lastIndex = 0
+
+  const parts: string[] = []
+  let lastIndex = 0
+  let matchedImage = false
+  let match: RegExpExecArray | null
+
+  while ((match = inlineUserImagePattern.exec(content)) !== null) {
+    const image = inlineUserImageSource(match[1] ?? '')
+    if (!image) continue
+
+    matchedImage = true
+    if (match.index > lastIndex) {
+      const textChunk = content.slice(lastIndex, match.index)
+      if (textChunk) parts.push(renderMarkdown(textChunk))
+    }
+
+    parts.push(`
+      <figure class="message-inline-image">
+        <img
+          class="message-inline-image__img"
+          src="${escHtml(image.src)}"
+          alt="User image"
+          loading="lazy"
+        />
+        <figcaption class="message-inline-image__meta">${escHtml(image.mimeType)}</figcaption>
+      </figure>
+    `)
+    lastIndex = inlineUserImagePattern.lastIndex
+  }
+
+  if (!matchedImage) return renderMarkdown(content)
+
+  if (lastIndex < content.length) {
+    const textChunk = content.slice(lastIndex)
+    if (textChunk) parts.push(renderMarkdown(textChunk))
+  }
+
+  return parts.join('')
+}
+
 function contentImageSource(record: Record<string, unknown> | null): string | null {
   if (!record) return null
   const mimeType = recordString(record, 'mimeType')
@@ -3490,9 +3611,16 @@ function renderMessageAttachmentHTML(attachment: MessageAttachment): string {
   const title = attachment.name || 'Attachment'
   const meta = [attachment.mimeType, typeof attachment.size === 'number' ? formatBytes(attachment.size) : '']
     .filter((item): item is string => !!item)
+  const downloadUrl = attachment.downloadUrl || attachment.previewUrl || undefined
   const body = [
     attachment.previewUrl
       ? `<img class="message-content-card__image" src="${escHtml(attachment.previewUrl)}" alt="${escHtml(title)}" loading="lazy" />`
+      : '',
+    downloadUrl
+      ? `
+        <div class="message-content-card__section">
+          <a class="message-content-card__link" href="${escHtml(downloadUrl)}" target="_blank" rel="noreferrer">Open attachment</a>
+        </div>`
       : '',
     attachment.uri
       ? `
@@ -3522,7 +3650,7 @@ function renderMessage(msg: Message): string {
     return `
       <div class="message message--user" data-msg-id="${escHtml(msg.id)}">
         <div class="message-group">
-          ${msg.content ? `<div class="message-prompt message-prompt--md">${renderMarkdown(msg.content)}</div>` : ''}
+          ${msg.content ? `<div class="message-prompt message-prompt--md">${renderUserMessageHTML(msg.content)}</div>` : ''}
           ${attachmentsHTML}
           <div class="message-meta">
             <span class="message-time">${formatTimestamp(msg.timestamp)}</span>
@@ -3703,12 +3831,11 @@ function updateMessageList(): void {
   const msgs     = messages[scopeKey] ?? []
 
   if (!msgs.length) {
-    listEl.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-state-icon" style="font-size:28px">💬</div>
-        <h3 class="empty-state-title" style="font-size:var(--font-size-lg)">Start the conversation</h3>
-        <p class="empty-state-desc">Send your first message to begin working with ${escHtml(thread?.agent ?? 'the agent')}.</p>
-      </div>`
+    listEl.innerHTML = renderEmptyState(
+      'Start the conversation',
+      `Send the first message to begin working with ${thread?.agent ?? 'the agent'}.`,
+      'conversation',
+    )
     return
   }
 
@@ -3875,6 +4002,32 @@ function updateSlashCommandMenu(): void {
     </div>`
 }
 
+function renderEmptyStateVisual(icon: string, variant: string): string {
+  return `
+    <div class="empty-state-visual empty-state-visual--${escHtml(variant)}" aria-hidden="true">
+      <span class="empty-state-visual__halo"></span>
+      <span class="empty-state-visual__orb"></span>
+      <span class="empty-state-visual__ring"></span>
+      <span class="empty-state-visual__core">${icon}</span>
+    </div>`
+}
+
+function renderEmptyState(
+  title: string,
+  description: string,
+  variant: 'workspace' | 'conversation' | 'sidebar',
+  actionHTML = '',
+): string {
+  const icon = variant === 'sidebar' ? iconPlus : iconSparkles
+  return `
+    <div class="empty-state empty-state--${variant}">
+      ${renderEmptyStateVisual(icon, variant)}
+      <h3 class="empty-state-title">${escHtml(title)}</h3>
+      <p class="empty-state-desc">${escHtml(description)}</p>
+      ${actionHTML}
+    </div>`
+}
+
 function selectSlashCommand(commandName: string): void {
   const inputEl = document.getElementById('message-input') as HTMLTextAreaElement | null
   const { activeThreadId, threads } = store.get()
@@ -3899,17 +4052,15 @@ function selectSlashCommand(commandName: string): void {
 // ── Chat area rendering ───────────────────────────────────────────────────
 
 function renderChatEmpty(): string {
-  return `
-    <div class="empty-state">
-      <div class="empty-state-icon">◈</div>
-      <h3 class="empty-state-title">No agent selected</h3>
-      <p class="empty-state-desc">
-        Select an agent from the sidebar, or create a new one to start chatting.
-      </p>
+  return renderEmptyState(
+    'No agent selected',
+    'Pick an existing workspace from the left, or create a new one to start working.',
+    'workspace',
+    `
       <button class="btn btn-primary" id="new-thread-empty-btn">
         ${iconPlus} New Agent
-      </button>
-    </div>`
+      </button>`,
+  )
 }
 
 function renderSessionInfoField(label: string, value: string, copyLabel: string): string {
@@ -4033,6 +4184,16 @@ function renderChatThread(t: Thread): string {
   const isSwitching = threadConfigSwitching.has(t.threadId)
 
   return `
+    <div class="chat-session-toggle-zone" id="chat-session-toggle-zone">
+      <button
+        class="btn btn-icon chat-session-toggle-btn"
+        id="chat-session-toggle-btn"
+        type="button"
+      >
+        ${iconChevronRight}
+      </button>
+    </div>
+
     <div class="chat-header">
       <div class="chat-header-left">
         <button class="btn btn-icon mobile-menu-btn" aria-label="Open menu">${iconMenu}</button>
@@ -4040,11 +4201,12 @@ function renderChatThread(t: Thread): string {
           <div class="chat-header-title-row">
             <h2 class="chat-title" title="${escHtml(sessionTitleLabel)}">${escHtml(sessionTitleLabel)}</h2>
           </div>
+          <div class="chat-header-subtitle" title="${escHtml(t.cwd)}">${escHtml(t.cwd)}</div>
         </div>
       </div>
       <div class="chat-header-right">
         <button class="btn btn-sm btn-danger" id="cancel-btn" style="display:none" aria-label="Cancel turn">Cancel</button>
-        <span class="chat-header-meta">${escHtml(createdLabel)}</span>
+        ${createdLabel ? `<span class="chat-header-meta">${escHtml(createdLabel)}</span>` : ''}
         ${renderSessionInfoPopover(t)}
       </div>
     </div>
@@ -4062,7 +4224,7 @@ function renderChatThread(t: Thread): string {
         <textarea
           id="message-input"
           class="message-input"
-          placeholder="Type a message…"
+          placeholder="Ask for changes, inspect code, or attach files"
           rows="1"
           aria-label="Message input"
         ></textarea>
@@ -4089,7 +4251,7 @@ function renderChatThread(t: Thread): string {
           </button>
         </div>
       </div>
-      <div class="input-hint">Press <kbd>⌘ Enter</kbd> to send · <kbd>⌘ V</kbd> to paste image/file · <kbd>Esc</kbd> to cancel · Type <kbd>/</kbd> for slash commands</div>
+      <div class="input-hint"><span class="input-hint-label">Shortcuts</span> Press <kbd>⌘ Enter</kbd> to send · <kbd>⌘ V</kbd> to paste image/file · <kbd>Esc</kbd> to cancel · Type <kbd>/</kbd> for slash commands</div>
     </div>`
 }
 
@@ -4151,6 +4313,7 @@ function updateChatArea(): void {
     document.querySelector('.mobile-menu-btn')?.addEventListener('click', () => {
       document.getElementById('sidebar')?.classList.toggle('sidebar--open')
     })
+    syncSidebarChrome()
     return
   }
 
@@ -4158,6 +4321,12 @@ function updateChatArea(): void {
   document.querySelector('.mobile-menu-btn')?.addEventListener('click', () => {
     document.getElementById('sidebar')?.classList.toggle('sidebar--open')
   })
+  document.getElementById('chat-session-toggle-btn')?.addEventListener('click', event => {
+    event.preventDefault()
+    event.stopPropagation()
+    setSessionPanelExpanded(!sessionPanelExpanded)
+  })
+  syncSidebarChrome()
 
   // Show locally loaded messages immediately (including empty threads).
   // Show the loading state when the cache belongs to a different selected session.
@@ -5051,43 +5220,60 @@ function renderShell(): void {
   const activeThread = activeThreadId ? threads.find(thread => thread.threadId === activeThreadId) ?? null : null
 
   root.innerHTML = `
-    <div class="layout">
-      <aside class="sidebar" id="sidebar">
-        <div class="sidebar-header">
-          <div class="sidebar-brand">
-            <div class="sidebar-brand-icon">N</div>
-            <span class="sidebar-brand-text">Ngent</span>
+    <div class="layout-shell">
+      <div class="layout-backdrop" aria-hidden="true">
+        <span class="layout-backdrop__orb layout-backdrop__orb--one"></span>
+        <span class="layout-backdrop__orb layout-backdrop__orb--two"></span>
+        <span class="layout-backdrop__grid"></span>
+      </div>
+
+      <div class="layout">
+        <aside class="sidebar" id="sidebar">
+          <div class="sidebar-header">
+            <div class="sidebar-brand">
+              <div class="sidebar-brand-icon">N</div>
+              <div class="sidebar-brand-copy">
+                <span class="sidebar-brand-text">Ngent</span>
+              </div>
+            </div>
           </div>
-        </div>
 
-        <div class="thread-list" id="thread-list">
-          ${skeletonItems()}
-        </div>
+          <div class="sidebar-section">
+            <div class="sidebar-section-head">
+              <span class="sidebar-section-label">Agents</span>
+              <span class="sidebar-section-meta" id="thread-count">${threads.length}</span>
+            </div>
 
-        <div class="sidebar-primary-action">
-          <button class="btn btn-primary sidebar-new-btn" id="new-thread-btn" title="New agent" aria-label="New agent">
-            ${iconPlus}
-            <span class="btn-label">New agent</span>
-          </button>
-        </div>
+            <div class="thread-list" id="thread-list">
+              ${skeletonItems()}
+            </div>
+          </div>
 
-        <div class="sidebar-footer">
-          <button class="btn btn-ghost sidebar-settings-btn" id="settings-btn">
-            ${iconSettings}
-            <span class="btn-label">Settings</span>
-          </button>
-        </div>
+          <div class="sidebar-primary-action">
+            <button class="btn btn-primary sidebar-new-btn" id="new-thread-btn" title="New agent" aria-label="New agent">
+              ${iconPlus}
+              <span class="btn-label">New agent</span>
+            </button>
+          </div>
 
-        <div class="thread-action-layer" id="thread-action-layer" hidden></div>
-      </aside>
+          <div class="sidebar-footer">
+            <button class="btn btn-ghost sidebar-settings-btn" id="settings-btn">
+              ${iconSettings}
+              <span class="btn-label">Settings</span>
+            </button>
+          </div>
 
-      <aside class="session-sidebar" id="session-sidebar" ${activeThread ? '' : 'hidden'}>
-        ${activeThread ? renderSessionPanel() : ''}
-      </aside>
+          <div class="thread-action-layer" id="thread-action-layer" hidden></div>
+        </aside>
 
-      <main class="chat" id="chat">
-        ${renderChatEmpty()}
-      </main>
+        <aside class="session-sidebar" id="session-sidebar" ${activeThread ? '' : 'hidden'}>
+          ${activeThread ? renderSessionPanel() : ''}
+        </aside>
+
+        <main class="chat" id="chat">
+          ${renderChatEmpty()}
+        </main>
+      </div>
     </div>`
 
   document.getElementById('settings-btn')?.addEventListener('click', () => settingsPanel.open())
@@ -5157,6 +5343,9 @@ async function init(): Promise<void> {
   }
   document.getElementById('thread-list')?.addEventListener('scroll', repositionThreadActionLayer, { passive: true })
   window.addEventListener('resize', repositionThreadActionLayer)
+  window.addEventListener('resize', debounce(() => syncThreadTitleOverflow(), 120))
+  window.addEventListener('resize', debounce(() => syncSessionPanelTitleOverflow(), 120))
+  window.addEventListener('resize', debounce(() => syncSessionPanelSubtitleOverflow(), 120))
   document.addEventListener('click', e => {
     const target = e.target as HTMLElement | null
     if (!target?.closest('.input-area')) {

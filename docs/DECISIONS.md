@@ -2,6 +2,8 @@
 
 ## ADR Index
 
+- ADR-058: Render bracketed inline base64 user-image placeholders as safe Web UI previews. (Accepted)
+- ADR-054: Refresh the embedded Web UI as a premium workbench without changing behavior. (Accepted)
 - ADR-053: Replace `slog` JSON output with a human-readable stderr logger and colored access logs. (Accepted)
 - ADR-001: HTTP/JSON API with SSE streaming transport. (Accepted)
 - ADR-002: Client identity via `X-Client-ID` header. (Accepted)
@@ -53,6 +55,32 @@
 - ADR-050: Keep the left agent rail permanently expanded. (Accepted)
 - ADR-051: BLACKBOX AI ACP provider integration via shared ACP CLI driver. (Accepted)
 - ADR-052: Cursor CLI ACP provider integration with explicit ACP authentication. (Accepted)
+
+## ADR-054: Refresh The Embedded Web UI As A Premium Workbench Without Changing Behavior
+
+- Status: Accepted
+- Date: 2026-03-26
+- Context:
+  - the existing embedded Web UI was functionally complete, but the visual quality still read like an internal tool prototype.
+  - users explicitly asked for a more premium, higher-quality desktop feel while keeping the product local-first and operationally unchanged.
+  - the frontend milestone is already on a no-framework Vite + TypeScript SPA, so the refresh needed to stay within the existing DOM/store/SSE architecture.
+- Decision:
+  - keep all runtime logic, API usage, SSE semantics, and store behavior unchanged; the refresh is limited to markup hierarchy, styling tokens, and interaction polish.
+  - adopt a glass-panel workbench direction with:
+    - layered backdrop treatment.
+    - elevated sidebars and chat surface.
+    - stronger typographic hierarchy in headers and empty states.
+    - richer composer, modal, drawer, and permission-card presentation.
+  - use a restrained teal accent and warmer neutrals instead of the earlier default blue-on-flat-gray presentation.
+  - rely on a curated system-font stack instead of bundling a remote webfont, so the embedded UI remains self-contained and offline-friendly.
+- Consequences:
+  - the UI feels more intentional and mature without adding framework/runtime complexity.
+  - visual output remains stable at the interaction/API level because business logic did not move.
+  - exact typography can vary slightly by host OS because the stack prefers locally available premium system fonts.
+- Alternatives considered:
+  - keep the current structure and only tweak colors (rejected: insufficient improvement).
+  - introduce a JS component framework for richer visuals (rejected: conflicts with the repo's no-framework Web UI direction).
+  - bundle external webfonts/assets from a CDN (rejected: weakens the local-first/offline posture).
 
 ## ADR-053: Replace `slog` JSON Output With A Human-Readable Stderr Logger And Colored Access Logs
 
@@ -141,6 +169,7 @@
 
 - Status: Accepted
 - Date: 2026-03-19
+- Current-status note: the left rail decision in this ADR still stands, and the later 2026-03-26 Web UI polish kept the same single collapsible secondary panel model while refining the session-panel affordance into a chat-edge hover handle with a full-retract collapsed state.
 - Context:
   - ADR-049 introduced a collapsible compact agent rail to mimic OpenCode's left-most project strip more closely.
   - in follow-up product review, that compact state was judged less useful than expected because the ngent left column represents full agent/thread items rather than tiny project icons, and collapsing it hid search plus thread metadata too aggressively.
@@ -148,12 +177,13 @@
 - Decision:
   - keep the left agent rail permanently expanded on desktop and mobile overlay states.
   - remove the agent-rail collapse/expand trigger and compact monogram-only rendering path.
-  - retain the left-side session panel collapse/expand control as the only navigation-width toggle.
+  - retain the session panel as the only navigation-width toggle, but expose its desktop collapse/expand affordance from a hover-revealed button on the chat panel's left edge instead of from the panel header itself.
   - keep the session panel contextual to the current selection: if no thread is active yet, do not render a placeholder session column.
 - Consequences:
   - the main navigation always exposes thread metadata and thread actions without an extra click.
   - layout stays simpler because only one left-side panel now owns collapse state.
   - first-load navigation density improves because chat sits directly beside the agent rail until a thread is chosen.
+  - collapsing the session panel now fully retracts it instead of leaving behind a narrow visible strip.
   - the left rail no longer mirrors OpenCode's narrow icon strip exactly, but preserves the more useful ngent-specific thread browsing surface.
 - Alternatives considered:
   - keep both rails collapsible (rejected: too much state and weaker scanning ergonomics for ngent's denser thread rows).
@@ -163,6 +193,7 @@
 
 - Status: Accepted
 - Date: 2026-03-19
+- Current-status note: this ADR established the left-side two-column navigation model, but its compact agent-rail default was later superseded by ADR-050, and the original slim-strip session collapse affordance was later replaced by a full-collapse chat-edge hover control in the 2026-03-26 Web UI polish.
 - Context:
   - the Web UI had been using a wide left thread list plus a separate right session sidebar.
   - users wanted the navigation model to feel closer to OpenCode's web UI, where project/session browsing sits on the left side of the workspace and the first column can collapse into a compact rail.
@@ -1499,3 +1530,48 @@ Use this template for new decisions.
   - upload files to a new ngent HTTP asset endpoint and send remote URLs (rejected: unnecessary extra surface and weaker local-first story).
   - embed file contents directly into prompt text (rejected: loses ACP structure, MIME metadata, and scales poorly for binary files).
   - add a separate pre-upload API that returns opaque ids (rejected: more round trips and more state than needed for the current Web UI flow).
+
+## ADR-058: Render bracketed inline base64 user-image placeholders as safe Web UI previews
+
+- Status: Accepted
+- Date: 2026-03-26
+- Context:
+  - some user messages now arrive with inline image payloads serialized directly into the visible text as placeholders beginning with `[Image: data:image/...;base64,...]`.
+  - the Web UI previously fed the entire user message through markdown rendering unchanged, so those placeholders appeared as long raw base64 blobs inside the chat bubble.
+  - attachment cards already cover structured uploads, but these placeholder-style images live inside ordinary `msg.content` text and therefore need a separate render path.
+- Decision:
+  - add a user-message-only renderer that scans for bracketed inline placeholders matching `data:image/*;base64,...`.
+  - accept only image data URLs, normalize incidental whitespace out of the base64 payload, and render each valid placeholder as an inline preview image inside the existing user bubble.
+  - keep all surrounding text on the existing markdown path and leave malformed or unsupported placeholders untouched as literal text.
+  - preserve the original raw message string for copy actions and stored history; the change is presentation-only.
+- Consequences:
+  - user messages containing inline base64 image placeholders become immediately readable in the Web UI without changing backend contracts.
+  - the renderer remains fail-closed against non-image `data:` payloads because only `data:image/*;base64,...` is promoted to an `<img>`.
+  - markdown behavior around ordinary text stays consistent, though placeholder parsing is intentionally targeted at the bracketed image form rather than arbitrary embedded binary text.
+- Alternatives considered:
+  - require upstream senders to convert these images into structured attachments first (rejected: existing message streams already contain the placeholder form).
+  - render every `data:` URL found in user text as an image (rejected: too permissive and unsafe).
+  - leave the placeholder as raw text and rely on copy/paste elsewhere (rejected: poor UX for image-bearing prompts).
+
+## ADR-059: Store uploaded attachments under the configurable data directory and serve them back through a stable attachment route
+
+- Status: Accepted
+- Date: 2026-03-26
+- Context:
+  - ADR-057 deliberately used local `file://` uploads so ACP providers could read user attachments without introducing a remote object store.
+  - that first implementation stored uploads in the OS temp directory and only persisted the raw `file://` resource link into history.
+  - temp-directory storage was too fragile for long-running local-first usage because the OS can clean it at any time, and browsers cannot reliably keep rendering persisted `file://` image/resource links after the live in-memory `blob:` preview disappears.
+- Decision:
+  - replace the CLI `--db-path` flag with `--data-path`, with default root `$HOME/.ngent/`.
+  - derive sqlite as `data-path/ngent.db` and store uploaded files under `data-path/attachments/<category>/`, where category is chosen from MIME/extension families such as `images`, `documents`, `text`, `audio`, `video`, `archives`, and `files`.
+  - persist uploaded attachment metadata in sqlite as `turn_attachments(attachment_id, turn_id, name, mime_type, size, file_path, created_at)`.
+  - include a stable `attachmentId` in persisted `user_prompt` events and serve persisted files back to the Web UI through `GET /attachments/{attachmentId}` with client ownership checks and optional query-token auth for image tags.
+- Consequences:
+  - uploaded attachments now survive service restarts and OS temp cleanup.
+  - Web UI attachment cards continue to render after stream completion and after history reload because they no longer depend on ephemeral `blob:` URLs.
+  - the CLI data model is clearer: one configurable data root now owns both sqlite state and uploaded-file state.
+  - ngent still needs a later janitor policy for old attachment files inside the data directory.
+- Alternatives considered:
+  - keep `--db-path` and add a second unrelated attachment-root flag (rejected: splits one local state root across two flags and makes defaults harder to reason about).
+  - keep storing uploads in temp and only persist extra preview metadata (rejected: does not solve OS cleanup and still leaves the attachment file itself non-durable).
+  - expose raw absolute file paths directly to the browser (rejected: browsers cannot reliably use persisted `file://` paths from the HTTP Web UI, and a routed attachment fetch keeps ownership/auth checks server-side).

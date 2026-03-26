@@ -98,11 +98,13 @@ export interface MessageSegment {
 }
 
 export interface MessageAttachment {
+  attachmentId?: string
   name: string
   uri?: string
   mimeType?: string
   size?: number
   previewUrl?: string
+  downloadUrl?: string
 }
 
 export interface Turn {

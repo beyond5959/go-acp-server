@@ -30,13 +30,20 @@ function renderPanel(): string {
       <div class="settings-panel" id="settings-panel">
 
         <div class="settings-header">
-          <h2 class="settings-title">Settings</h2>
+          <div class="settings-header-copy">
+            <div class="settings-kicker">Preferences</div>
+            <h2 class="settings-title">Settings</h2>
+          </div>
           <button class="btn btn-icon" id="settings-close-btn" aria-label="Close settings">
             ${iconClose}
           </button>
         </div>
 
         <div class="settings-body">
+          <div class="settings-intro">
+            <div class="settings-intro-badge">Browser-local</div>
+            <p class="settings-intro-copy">Adjust identity, connection, and appearance without changing server-side state.</p>
+          </div>
 
           <section class="settings-section">
             <h3 class="settings-section-title">Identity</h3>

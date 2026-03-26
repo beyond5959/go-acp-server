@@ -103,12 +103,12 @@ This checklist defines executable acceptance checks for requirements 1-16.
 ## Requirement 13: Embedded Web UI
 
 - Operation: start server; open browser at `http://127.0.0.1:8686/`.
-- Expected: UI loads, threads can be created, turns stream in real time, ACP plan/reasoning updates render as live agent-side sections, live reasoning shows `Thinking`, finalized reasoning shows `Thought`, finalized reasoning uses a lightweight inline toggle, renders markdown, and collapses by default, permissions can be resolved, and history is browsable.
+- Expected: UI loads, threads can be created, turns stream in real time, ACP plan/reasoning updates render as live agent-side sections, live reasoning shows `Thinking`, finalized reasoning shows `Thought`, finalized reasoning uses a lightweight inline toggle, renders markdown, and collapses by default, permissions can be resolved, history is browsable, and the shell/composer/modals render with the refreshed premium workbench styling on both desktop and narrow/mobile widths; on desktop the session panel fully retracts without leaving a strip, and its collapse/expand affordance is revealed from the chat panel's left edge.
 - Verification command:
   - `go test ./internal/webui -count=1` (checks `GET /` returns 200 with `text/html` content-type and SPA fallback)
   - `go test ./internal/httpapi -run TestTurnsSSEIncludesReasoningAndPersistsHistory -count=1`
   - `cd internal/webui/web && npm run build`
-  - manual: `make run` → open `http://127.0.0.1:8686/` or scan the startup QR code from another device, confirm live `Thinking` stays expanded while streaming, finalized reasoning label changes to `Thought`, markdown inside expanded `Thought` renders correctly, and the section collapses after the turn completes
+  - manual: `make run` → open `http://127.0.0.1:8686/` or scan the startup QR code from another device, confirm the refreshed glass-panel shell/sidebars/chat composer render cleanly, live `Thinking` stays expanded while streaming, finalized reasoning label changes to `Thought`, markdown inside expanded `Thought` renders correctly, the section collapses after the turn completes, the session panel fully retracts and reopens from the chat-left hover handle on desktop, and settings/new-agent overlays remain polished and usable
 
 ## Global Gate
 
@@ -351,7 +351,9 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - for providers that replay transcript over ACP `session/load`, the first `GET /v1/threads/{threadId}/session-history?sessionId=...` warms sqlite `session_transcript_cache`, and later requests can return the same replayed `user` / `assistant` messages without calling the provider again.
   - the Web UI renders a left-side collapsible session panel beside a permanently expanded agent rail.
   - when no agent/thread is selected yet, the session panel stays hidden and does not reserve layout width.
-  - the expanded session panel shows the active agent/thread name, project path, and a `New session` entry above the session list.
+  - when collapsed, the session panel fully retracts and does not leave behind a visible strip.
+  - on desktop, the session panel collapse/expand affordance is exposed from a hover-revealed control on the chat panel's left edge instead of from the panel header.
+  - the expanded session panel shows the active thread title, provider badge, project path, and a `New session` entry above the session list.
   - the agent rail exposes the thread list plus a `New agent` button below it.
   - first-page session load happens when an active thread is selected and the session panel is expanded.
   - `Show more` pagination appears when `nextCursor` is present.
@@ -379,7 +381,7 @@ This checklist defines executable acceptance checks for requirements 1-16.
 - Additional verification commands (executed 2026-03-16 after fresh-session scope reset fix):
   - `cd internal/webui/web && npm run build`
   - `go test ./...`
-  - `go run ./cmd/ngent --port 8798 --db-path /tmp/ngent-session-bug.db --debug`
+  - `go run ./cmd/ngent --port 8798 --data-path /tmp/ngent-session-bug --debug`
   - reload the page, reopen the same thread, and confirm the empty cancelled placeholder still does not reappear
 
 ## Requirement 24: ACP Slash Commands Cache and Composer Picker
@@ -404,23 +406,23 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - `cd internal/webui/web && npm run build`
   - `go test ./...`
 - Additional verification commands (executed 2026-03-13):
-  - `go run ./cmd/ngent --port 8787 --db-path /tmp/ngent-kimi-real-3.db --debug`
+  - `go run ./cmd/ngent --port 8787 --data-path /tmp/ngent-kimi-real-3 --debug`
 - Additional verification commands (executed 2026-03-13 after Kimi timing fix):
   - `go test ./internal/agents/kimi -run 'TestStream(CapturesSlashCommandsEmittedBeforePrompt|WithFakeProcess|WithFakeProcessModelID)$' -count=1`
-  - `go run ./cmd/ngent --port 8788 --db-path /tmp/ngent-kimi-acp-trace.db --debug`
+  - `go run ./cmd/ngent --port 8788 --data-path /tmp/ngent-kimi-acp-trace --debug`
   - real local Kimi thread: confirmed `GET /v1/threads/{threadId}/slash-commands` returned the 8 persisted Kimi commands after the first turn
 - Additional verification commands (executed 2026-03-13 after slash-entry refresh fix):
   - `cd internal/webui/web && npm run build`
   - `go test ./...`
-  - `go run ./cmd/ngent --port 8789 --db-path /tmp/ngent-slash-refresh.db --debug`
+  - `go run ./cmd/ngent --port 8789 --data-path /tmp/ngent-slash-refresh --debug`
 - Additional verification commands (executed 2026-03-13 after codex embedded timing fix):
   - `go test ./internal/agents/codex -run 'TestStream(CapturesSlashCommandsEmittedBeforePrompt|ReplaysCachedSlashCommandsAfterConfigOptionsInit)$' -count=1`
-  - `go run ./cmd/ngent --port 8793 --db-path /tmp/ngent-codex-fix.db --debug`
+  - `go run ./cmd/ngent --port 8793 --data-path /tmp/ngent-codex-fix --debug`
   - real local codex thread: confirmed `GET /v1/threads/{threadId}/slash-commands` returned the 7-command codex snapshot after the first turn
   - sqlite check: `select agent_id, json_array_length(commands_json) from agent_slash_commands where agent_id = 'codex';` returned `codex|7`
 - Additional verification commands (executed 2026-03-13 after Qwen/OpenCode stdio timing fix):
   - `go test ./internal/agents/qwen ./internal/agents/opencode -run 'TestStream(CapturesSlashCommandsEmittedBeforePrompt|WithFakeProcess|WithFakeProcessModelID)?$' -count=1`
-  - `go run ./cmd/ngent --port 8794 --db-path /tmp/ngent-qwen-opencode-fix.db --debug`
+  - `go run ./cmd/ngent --port 8794 --data-path /tmp/ngent-qwen-opencode-fix --debug`
   - real local Qwen thread: confirmed `GET /v1/threads/{threadId}/slash-commands` returned `/bug`, `/compress`, `/init`, `/summary`
   - real local OpenCode thread: confirmed `GET /v1/threads/{threadId}/slash-commands` returned `/init`, `/review`, `/go-style-core`, `/remotion-best-practices`, `/find-skills`, `/compact`
 - Additional verification commands (executed 2026-03-13 after stdio notification helper refactor):
@@ -428,12 +430,12 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - `go test ./...`
 - Additional verification commands (executed 2026-03-13 after Gemini ACP notification fix):
   - `go test ./internal/agents/gemini -run 'TestStream(CapturesSlashCommandsEmittedBeforePrompt|WithFakeProcess|WithFakeProcessModelID)$' -count=1`
-  - `go run ./cmd/ngent --port 8795 --db-path /tmp/ngent-gemini-fix.db --debug`
+  - `go run ./cmd/ngent --port 8795 --data-path /tmp/ngent-gemini-fix --debug`
   - real local Gemini thread: confirmed `GET /v1/threads/{threadId}/slash-commands` still returned `[]`, indicating no provider `available_commands_update` was observed in that run
 - Additional verification commands (executed 2026-03-13 after Codex config-init slash-command backfill):
   - `go test ./internal/agents/codex -run 'Test(StreamCapturesSlashCommandsEmittedBeforePrompt|StreamReplaysCachedSlashCommandsAfterConfigOptionsInit|SlashCommandsAfterConfigOptionsInit)$' -count=1`
   - `go test ./internal/httpapi -run 'Test(ThreadSlashCommandsPersistAndLoad|ThreadSlashCommandsPersistAcrossRestart|ThreadConfigOptionsBackfillsSlashCommandsWhenCatalogAlreadyStored)$' -count=1`
-  - `go run ./cmd/ngent --port 8796 --db-path /tmp/ngent-codex-slash-fix.db --debug`
+  - `go run ./cmd/ngent --port 8796 --data-path /tmp/ngent-codex-slash-fix --debug`
   - real local Codex thread: confirmed `GET /v1/threads/{threadId}/config-options` initialized the embedded provider and `GET /v1/threads/{threadId}/slash-commands` then returned the 7-command snapshot before any turn was sent
   - sqlite check: `select agent_id, commands_json from agent_slash_commands where agent_id = 'codex';` returned the persisted codex command list
 - Additional verification commands (executed 2026-03-13 after Qwen slash-command probe fallback):
@@ -500,7 +502,7 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - `cd internal/webui/web && npm run build`
   - `go test ./...`
   - real Codex Web UI validation:
-    - run `go run ./cmd/ngent -db-path /tmp/ngent-session-load-config.db -port 8687 --debug`
+    - run `go run ./cmd/ngent --data-path /tmp/ngent-session-load-config -port 8687 --debug`
     - without sending any turn, click an existing Codex session from the sidebar
     - confirm `Model` and `Reasoning` buttons appear immediately after the user-triggered session switch
 
@@ -536,12 +538,26 @@ This checklist defines executable acceptance checks for requirements 1-16.
 - Expected:
   - the composer footer order is `Attachment`, `Model`, `Reasoning` on the left and `Send` on the right.
   - the Web UI allows attachment-only sends as well as text+attachment sends, shows removable attachment chips/previews before send, and accepts clipboard file/image paste (`Cmd+V` on macOS) into the current composer.
-  - `POST /v1/threads/{threadId}/turns` accepts `multipart/form-data` and persists uploaded files into the local temp directory before dispatching the turn.
+  - `POST /v1/threads/{threadId}/turns` accepts `multipart/form-data` and persists uploaded files into the configured `data-path` under typed subdirectories such as `attachments/images/`, `attachments/documents/`, or `attachments/files/` before dispatching the turn.
   - ACP-backed agents receive `session/prompt.prompt[]` with ordinary text items plus `resource_link` items containing `uri`, `name`, `mimeType`, and `size`.
-  - ngent persists a readable `requestText` summary plus a structured `user_prompt` history event so attachment cards can be reconstructed after reload.
-  - the Web UI renders uploaded user attachments as cards in the transcript both immediately after send and after history reload.
-- Verification commands (executed 2026-03-23):
-  - `go test ./internal/httpapi -run 'Test(MultipartTurnUploadsAttachmentsAsResourceLinks|BuildInjectedPromptKeepsResourceLinksWhenInjectingContext)' -count=1`
+  - ngent persists a readable `requestText` summary plus a structured `user_prompt` history event carrying stable attachment ids so attachment cards can be reconstructed after reload.
+  - the Web UI renders uploaded user attachments as cards in the transcript both immediately after send and after history reload, and persisted image attachments continue to preview through the backend attachment route instead of disappearing after the stream finishes.
+- Verification commands (executed 2026-03-26):
+  - `go test ./internal/httpapi -run 'Test(MultipartTurnUploadsAttachmentsAsResourceLinks|AttachmentEndpointSupportsQueryTokenAndClientOwnership|BuildInjectedPromptKeepsResourceLinksWhenInjectingContext)' -count=1`
   - `go test ./internal/agents/opencode -run 'TestStreamPromptSendsResourceLinks' -count=1`
   - `cd internal/webui/web && npm run build`
   - `go test ./...`
+
+## Requirement 29: Web UI Renders Inline Base64 Image Placeholders In User Messages
+
+- Operation:
+  - create or replay a user message whose text contains one or more bracketed placeholders in the form `[Image: data:image/png;base64,...]`, optionally mixed with ordinary markdown/text before or after the placeholder.
+  - open the thread in the Web UI and inspect the user message bubble.
+- Expected:
+  - each valid `data:image/*;base64,...` placeholder is rendered as an inline image preview inside the user bubble instead of raw base64 text.
+  - surrounding user text still renders through the normal markdown path.
+  - malformed or unsupported placeholder strings remain visible as literal text instead of being turned into broken image tags.
+  - the message copy button still copies the original raw message text rather than a transformed HTML representation.
+- Verification commands (executed 2026-03-26):
+  - `cd internal/webui/web && npm run build`
+  - `env GOCACHE=/tmp/ngent-gocache GOFLAGS=-p=1 go test ./...`

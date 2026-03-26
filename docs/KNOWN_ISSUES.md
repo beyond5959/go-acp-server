@@ -15,6 +15,15 @@
 
 ## Open Issues
 
+- ID: KI-035
+- Title: Premium Web UI visuals vary slightly by host browser/font stack
+- Status: Open
+- Severity: Low
+- Affects: the embedded Web UI on different desktop/mobile browsers and operating systems
+- Symptom: typography, glass effects, and spacing can look slightly different depending on available local system fonts and browser support for `backdrop-filter` / compositing
+- Workaround: use a modern browser with backdrop-filter support for the intended presentation; functional behavior remains unchanged even when the visual treatment degrades
+- Follow-up plan: consider adding lightweight visual regression snapshots and/or optional bundled local fonts if exact cross-platform visual parity becomes a product requirement
+
 - ID: KI-034
 - Title: Human-readable stderr logs are less machine-friendly than JSON logs
 - Status: Open
@@ -433,19 +442,31 @@
   - keep validating whether future Cursor CLI releases expose a more explicit non-interactive auth-health probe.
 
 - ID: KI-039
-- Title: Uploaded Web UI resource-link temp files currently rely on OS temp cleanup
+- Title: Persisted Web UI uploads currently have no automatic janitor
 - Status: Open
 - Severity: Low
 - Affects: long-running ngent instances that handle many uploaded Web UI attachments
 - Symptom:
-  - `POST /v1/threads/{threadId}/turns` now persists uploaded files into the local temp directory so ACP providers can read them through `file://` resource links.
-  - ngent currently leaves those temp files in place after the turn finishes and relies on normal OS temp cleanup / user cleanup instead of running its own retention sweeper.
+  - `POST /v1/threads/{threadId}/turns` now persists uploaded files under the configured `data-path/attachments/*` tree so ACP providers can read them through stable `file://` resource links and the Web UI can keep rendering them after reload.
+  - ngent currently keeps those persisted files indefinitely and does not yet run an age-based or reference-count-based cleanup sweep.
 - Workaround:
-  - periodically clear old `ngent-*` files from the system temp directory if disk usage matters in a long-lived environment.
+  - periodically clear stale files from the configured `data-path/attachments/` tree if disk usage matters in a long-lived environment.
 - Follow-up plan:
-  - add an age-based temp-upload janitor once real usage clarifies safe retention expectations for provider retries and history-driven debugging.
+  - add an age-based or thread-reference-aware attachment janitor once real usage clarifies safe retention expectations for provider retries and history-driven debugging.
 
 ## Recently Closed
+
+- ID: KI-040
+- Title: Inline base64 image placeholders in user messages rendered as raw text
+- Status: Closed
+- Severity: Low
+- Affects: Web UI threads whose user messages include bracketed placeholders such as `[Image: data:image/png;base64,...]`
+- Symptom:
+  - the user bubble previously sent the entire message through plain markdown rendering, so bracketed base64 image placeholders showed up as long unreadable text blobs instead of visible image previews.
+- Workaround:
+  - none; fixed on 2026-03-26.
+- Follow-up plan:
+  - monitor whether any upstream source emits materially different placeholder shapes that should also be normalized into the same inline-image render path.
 
 - ID: KI-033
 - Title: Repeated `New session` reused stale anonymous Web UI scope after fast cancel

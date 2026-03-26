@@ -73,6 +73,7 @@ function renderAgentCard(agent: AgentInfo, selected: boolean): string {
       />
       <div class="agent-card-icon">${agentIcon(agent.id)}</div>
       <span class="agent-card-name">${escHtml(agent.name)}</span>
+      ${disabled ? '<span class="agent-card-status">Unavailable</span>' : ''}
     </label>`
 }
 
@@ -85,11 +86,14 @@ function renderModal(s: ModalState, agents: AgentInfo[]): string {
       <div class="modal" id="new-thread-modal">
 
         <div class="modal-header">
-          <h2 class="modal-title">New Agent</h2>
+          <div class="modal-header-copy">
+            <h2 class="modal-title">New Agent</h2>
+          </div>
           <button class="btn btn-icon" id="new-thread-close" aria-label="Close">${iconClose}</button>
         </div>
 
         <div class="modal-body">
+          <p class="modal-lead">Choose an agent, point it at a project directory, and optionally preconfigure advanced JSON options.</p>
 
           ${s.error ? `<div class="form-error-banner" id="modal-error">${escHtml(s.error)}</div>` : ''}
 

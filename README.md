@@ -87,6 +87,12 @@ With authentication:
 ngent --auth-token "your-token"
 ```
 
+Custom data directory:
+
+```bash
+ngent --data-path /path/to/ngent-data
+```
+
 Show all options:
 
 ```bash
@@ -94,7 +100,9 @@ ngent --help
 ```
 
 **Default paths:**
+- Data directory: `$HOME/.ngent/`
 - Database: `$HOME/.ngent/ngent.db`
+- Attachments: `$HOME/.ngent/attachments/<category>/`
 
 Notes:
 

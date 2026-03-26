@@ -141,4 +141,21 @@ var migrations = []migration{
 			WHERE model_id = '__' || 'agent' || '_' || 'hub' || '_default__';`,
 		},
 	},
+	{
+		version: 11,
+		name:    "create_turn_attachments",
+		sql: []string{
+			`CREATE TABLE IF NOT EXISTS turn_attachments (
+				attachment_id TEXT PRIMARY KEY,
+				turn_id TEXT NOT NULL,
+				name TEXT NOT NULL,
+				mime_type TEXT NOT NULL,
+				size INTEGER NOT NULL,
+				file_path TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				FOREIGN KEY (turn_id) REFERENCES turns(turn_id)
+			);`,
+			`CREATE INDEX IF NOT EXISTS idx_turn_attachments_turn_id ON turn_attachments(turn_id);`,
+		},
+	},
 }

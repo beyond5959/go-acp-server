@@ -20,6 +20,8 @@ type PromptContent struct {
 	Name     string `json:"name,omitempty"`
 	MimeType string `json:"mimeType,omitempty"`
 	Size     int64  `json:"size,omitempty"`
+	// AttachmentID links one persisted upload to a durable backend record.
+	AttachmentID string `json:"attachmentId,omitempty"`
 }
 
 // Prompt is one normalized user prompt payload sent to the agent.
@@ -66,11 +68,12 @@ func NormalizePrompt(prompt Prompt) Prompt {
 				continue
 			}
 			normalized = append(normalized, PromptContent{
-				Type:     PromptContentTypeResourceLink,
-				URI:      uri,
-				Name:     name,
-				MimeType: strings.TrimSpace(item.MimeType),
-				Size:     maxPromptSize(item.Size),
+				Type:         PromptContentTypeResourceLink,
+				URI:          uri,
+				Name:         name,
+				MimeType:     strings.TrimSpace(item.MimeType),
+				Size:         maxPromptSize(item.Size),
+				AttachmentID: strings.TrimSpace(item.AttachmentID),
 			})
 		}
 	}
@@ -150,6 +153,9 @@ func (p Prompt) ACPContent() []map[string]any {
 			}
 			if item.Size > 0 {
 				payload["size"] = item.Size
+			}
+			if item.AttachmentID != "" {
+				payload["attachmentId"] = item.AttachmentID
 			}
 			items = append(items, payload)
 		}

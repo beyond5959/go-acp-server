@@ -127,6 +127,17 @@ type Turn struct {
 	CompletedAt  *time.Time
 }
 
+// TurnAttachment stores one persisted uploaded attachment row.
+type TurnAttachment struct {
+	AttachmentID string
+	TurnID       string
+	Name         string
+	MimeType     string
+	Size         int64
+	FilePath     string
+	CreatedAt    time.Time
+}
+
 // CreateTurnParams contains input for CreateTurn.
 type CreateTurnParams struct {
 	TurnID      string
@@ -134,6 +145,16 @@ type CreateTurnParams struct {
 	RequestText string
 	Status      string
 	IsInternal  bool
+}
+
+// CreateTurnAttachmentParams contains input for CreateTurnAttachments.
+type CreateTurnAttachmentParams struct {
+	AttachmentID string
+	TurnID       string
+	Name         string
+	MimeType     string
+	Size         int64
+	FilePath     string
 }
 
 // FinalizeTurnParams contains fields used to close a turn.
@@ -374,6 +395,17 @@ func (s *Store) DeleteThread(ctx context.Context, threadID string) error {
 	defer func() {
 		_ = tx.Rollback()
 	}()
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM turn_attachments
+		WHERE turn_id IN (
+			SELECT turn_id
+			FROM turns
+			WHERE thread_id = ?
+		);
+	`, threadID); err != nil {
+		return fmt.Errorf("storage: delete thread attachments: %w", err)
+	}
 
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM events
@@ -997,6 +1029,64 @@ func (s *Store) CreateTurn(ctx context.Context, params CreateTurnParams) (Turn, 
 	}, nil
 }
 
+// CreateTurnAttachments inserts one or more attachment rows for a turn.
+func (s *Store) CreateTurnAttachments(ctx context.Context, params []CreateTurnAttachmentParams) error {
+	if len(params) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin create turn attachments tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	nowText := formatTime(s.now().UTC())
+	for _, param := range params {
+		if strings.TrimSpace(param.AttachmentID) == "" {
+			return errors.New("storage: attachmentID is required")
+		}
+		if strings.TrimSpace(param.TurnID) == "" {
+			return errors.New("storage: turnID is required")
+		}
+		if strings.TrimSpace(param.Name) == "" {
+			return errors.New("storage: attachment name is required")
+		}
+		if strings.TrimSpace(param.FilePath) == "" {
+			return errors.New("storage: attachment filePath is required")
+		}
+
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO turn_attachments (
+				attachment_id,
+				turn_id,
+				name,
+				mime_type,
+				size,
+				file_path,
+				created_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?);
+		`,
+			param.AttachmentID,
+			param.TurnID,
+			param.Name,
+			strings.TrimSpace(param.MimeType),
+			maxInt64(param.Size),
+			param.FilePath,
+			nowText,
+		); err != nil {
+			return fmt.Errorf("storage: create turn attachment: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit create turn attachments tx: %w", err)
+	}
+	return nil
+}
+
 // GetTurn returns one turn by turn_id.
 func (s *Store) GetTurn(ctx context.Context, turnID string) (Turn, error) {
 	row := s.db.QueryRowContext(ctx, `
@@ -1054,6 +1144,48 @@ func (s *Store) GetTurn(ctx context.Context, turnID string) (Turn, error) {
 	}
 
 	return turn, nil
+}
+
+// GetTurnAttachment returns one persisted attachment by attachment_id.
+func (s *Store) GetTurnAttachment(ctx context.Context, attachmentID string) (TurnAttachment, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			attachment_id,
+			turn_id,
+			name,
+			mime_type,
+			size,
+			file_path,
+			created_at
+		FROM turn_attachments
+		WHERE attachment_id = ?;
+	`, attachmentID)
+
+	var (
+		attachment  TurnAttachment
+		createdAtDB string
+	)
+	if err := row.Scan(
+		&attachment.AttachmentID,
+		&attachment.TurnID,
+		&attachment.Name,
+		&attachment.MimeType,
+		&attachment.Size,
+		&attachment.FilePath,
+		&createdAtDB,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return TurnAttachment{}, ErrNotFound
+		}
+		return TurnAttachment{}, fmt.Errorf("storage: get turn attachment: %w", err)
+	}
+
+	createdAt, err := parseTime(createdAtDB)
+	if err != nil {
+		return TurnAttachment{}, fmt.Errorf("storage: parse turn attachment.created_at: %w", err)
+	}
+	attachment.CreatedAt = createdAt
+	return attachment, nil
 }
 
 // ListTurnsByThread returns all turns for one thread.
@@ -1387,6 +1519,13 @@ func boolToSQLiteInt(v bool) int {
 		return 1
 	}
 	return 0
+}
+
+func maxInt64(v int64) int64 {
+	if v < 0 {
+		return 0
+	}
+	return v
 }
 
 func sqliteIntToBool(v int) bool {

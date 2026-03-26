@@ -14,8 +14,9 @@ var (
 )
 
 var (
-	bearerTokenPattern = regexp.MustCompile(`(?i)\bbearer\s+[^\s]+`)
-	openAIKeyPattern   = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]+\b`)
+	bearerTokenPattern    = regexp.MustCompile(`(?i)\bbearer\s+[^\s]+`)
+	openAIKeyPattern      = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]+\b`)
+	sensitiveQueryPattern = regexp.MustCompile(`(?i)([?&](?:access[_-]?token|auth[_-]?token|api[_-]?key|token|secret|password)=)[^&\s]+`)
 )
 
 // ConfigureACPDebug toggles verbose ACP tracing on the shared logger.
@@ -193,5 +194,6 @@ func redactString(value string) string {
 	}
 	value = bearerTokenPattern.ReplaceAllString(value, "Bearer [REDACTED]")
 	value = openAIKeyPattern.ReplaceAllString(value, "[REDACTED]")
+	value = sensitiveQueryPattern.ReplaceAllString(value, "${1}[REDACTED]")
 	return value
 }

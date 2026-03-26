@@ -24,6 +24,7 @@ Modules:
 - `internal/sse`: event formatting, stream fanout, resume helpers.
 - `internal/storage`: SQLite repository and migration management.
 - `internal/observability`: human-readable stderr logging, access-log formatting, ANSI-color helpers, and redaction helpers.
+- `internal/webui`: embedded Vite + TypeScript SPA with a no-framework DOM renderer; premium visual refreshes must remain presentation-only and must not change API/runtime behavior.
 
 ## 3. Concurrency Model
 
@@ -524,7 +525,8 @@ The integration follows the official ACP startup form `blackbox --experimental-a
   - lives between the agent rail and the chat area instead of on the right edge.
   - stays hidden until an active thread is selected, so the initial empty state does not reserve session-panel width.
   - when expanded, shows the active thread title, provider badge, project path, and a full-width `New session` action before the session list.
-  - can collapse independently into a slim strip with an expand affordance.
+  - can collapse independently into a fully retracted state with no residual strip left in the layout.
+  - on desktop, collapse/expand is triggered from a hover-revealed button on the chat panel's left edge instead of from a persistent control inside the session panel header.
   - loads the first page automatically when a thread becomes active and the session panel is expanded.
   - shows `Show more` when `nextCursor` is present.
   - highlights the currently selected `sessionId`.
@@ -739,12 +741,13 @@ The integration follows the official ACP startup form `blackbox --experimental-a
     - `input`: optional text
     - `stream=true`
     - one or more `attachments` file parts
-  - each uploaded file is persisted into the local temp directory and converted into one normalized prompt item:
+  - each uploaded file is persisted into the configured `data-path` under `attachments/<category>/` (`images`, `documents`, `text`, `audio`, `video`, `archives`, or `files`) and converted into one normalized prompt item:
     - `type=resource_link`
     - `uri=file:///...`
     - `name=<original base filename>`
     - `mimeType=<parsed/sniffed MIME>`
     - `size=<bytes copied>`
+    - `attachmentId=<stable persisted upload id>`
 - Prompt assembly:
   - the agent layer now uses a shared structured prompt model instead of forcing every turn through one string.
   - when ngent injects summary/recent-turn context, it rewrites only the text portion of the prompt and preserves resource links as separate items.
@@ -752,7 +755,22 @@ The integration follows the official ACP startup form `blackbox --experimental-a
 - Persistence:
   - `turns.request_text` stores the plain-text fallback representation so context-compaction and non-ACP flows still retain attachment references.
   - turns with uploaded resources also persist a `user_prompt` event containing the original structured prompt array for history/UI reconstruction.
+  - sqlite also persists `turn_attachments(attachment_id, turn_id, name, mime_type, size, file_path, created_at)` so uploaded files survive restarts and can be served back to the Web UI.
 - Web UI:
   - the composer footer order is `Attachment -> Model -> Reasoning` on the left, mirrored by `Send` on the right.
   - attachments are held in thread-local in-memory draft state until send, with image previews when possible.
   - the transcript renders sent user attachments as cards and rebuilds them from `user_prompt` history events after reload.
+  - persisted attachments are served back through `GET /attachments/{attachmentId}?client_id=...&access_token=...` so image/file cards remain visible after stream completion and service restart without exposing raw `file://` paths to the browser.
+
+### 18.6 Web UI Inline Base64 User Images
+
+- Some upstream/user message sources can embed images directly into `msg.content` as bracketed placeholders such as `[Image: data:image/png;base64,...]`.
+- The Web UI user-message renderer now performs a presentation-only parse for that placeholder form:
+  - accept only `data:image/*;base64,...` payloads.
+  - strip incidental internal whitespace from the data URL before rendering.
+  - emit an inline `<img>` preview inside the existing user bubble for each valid placeholder.
+  - leave malformed or unsupported placeholders on the normal markdown/text path unchanged.
+- This path does not change backend persistence or message copy behavior:
+  - stored message text remains the original raw content.
+  - the UI copy button still copies the unmodified raw message text, including the original placeholder string.
+  - surrounding user text before/after each placeholder is still rendered through the existing markdown renderer.

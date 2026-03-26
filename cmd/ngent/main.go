@@ -38,9 +38,9 @@ import (
 func main() {
 	logger := observability.NewLogger(observability.LevelInfo)
 
-	defaultDBPath, err := resolveDefaultDBPath()
+	defaultDataPath, err := resolveDefaultDataPath()
 	if err != nil {
-		logger.Error("startup.default_db_path_resolve_failed", "error", err.Error())
+		logger.Error("startup.default_data_path_resolve_failed", "error", err.Error())
 		os.Exit(1)
 	}
 
@@ -48,7 +48,7 @@ func main() {
 	allowPublic := flag.Bool("allow-public", false, "allow listening on public interfaces (default false for loopback-only)")
 	debugFlag := flag.Bool("debug", false, "enable verbose debug logs, including ACP request/response payloads on stderr")
 	authToken := flag.String("auth-token", "", "optional bearer token for /v1/* endpoints")
-	dbPath := flag.String("db-path", defaultDBPath, "sqlite database path")
+	dataPath := flag.String("data-path", defaultDataPath, "data directory for sqlite and uploaded attachments")
 	contextRecentTurns := flag.Int("context-recent-turns", 10, "number of recent user+assistant turns injected into each prompt")
 	contextMaxChars := flag.Int("context-max-chars", 20000, "maximum character budget for injected context prompt")
 	compactMaxChars := flag.Int("compact-max-chars", 4000, "maximum summary characters produced by compact endpoint")
@@ -137,14 +137,15 @@ func main() {
 		os.Exit(1)
 	}
 	modelDiscoveryDir := resolveModelDiscoveryDir(allowedRoots)
-	if err := ensureDBPathParent(*dbPath); err != nil {
-		logger.Error("startup.invalid_db_path", "error", err.Error(), "dbPath", *dbPath)
+	if err := ensureDataPath(*dataPath); err != nil {
+		logger.Error("startup.invalid_data_path", "error", err.Error(), "dataPath", *dataPath)
 		os.Exit(1)
 	}
+	dbPath := filepath.Join(filepath.Clean(*dataPath), "ngent.db")
 
-	store, err := storage.New(*dbPath)
+	store, err := storage.New(dbPath)
 	if err != nil {
-		logger.Error("startup.storage_open_failed", "error", err.Error(), "dbPath", *dbPath)
+		logger.Error("startup.storage_open_failed", "error", err.Error(), "dbPath", dbPath)
 		os.Exit(1)
 	}
 	defer func() {
@@ -156,6 +157,7 @@ func main() {
 	turnController := runtime.NewTurnController()
 	handler := httpapi.New(httpapi.Config{
 		AuthToken:       *authToken,
+		DataDir:         *dataPath,
 		Agents:          agents,
 		AllowedAgentIDs: allowedAgentIDs,
 		AllowedRoots:    allowedRoots,
@@ -540,7 +542,7 @@ func resolveAllowedRoots() ([]string, error) {
 	return []string{root}, nil
 }
 
-func resolveDefaultDBPath() (string, error) {
+func resolveDefaultDataPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve user home dir: %w", err)
@@ -549,20 +551,17 @@ func resolveDefaultDBPath() (string, error) {
 	if home == "" {
 		return "", errors.New("user home dir is empty")
 	}
-	return filepath.Join(home, ".ngent", "ngent.db"), nil
+	return filepath.Join(home, ".ngent"), nil
 }
 
-func ensureDBPathParent(dbPath string) error {
-	path := strings.TrimSpace(dbPath)
+func ensureDataPath(dataPath string) error {
+	path := strings.TrimSpace(dataPath)
 	if path == "" {
-		return errors.New("db path is empty")
+		return errors.New("data path is empty")
 	}
-	parent := filepath.Dir(filepath.Clean(path))
-	if parent == "." {
-		return nil
-	}
-	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return fmt.Errorf("create db parent dir %q: %w", parent, err)
+	path = filepath.Clean(path)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return fmt.Errorf("create data dir %q: %w", path, err)
 	}
 	return nil
 }

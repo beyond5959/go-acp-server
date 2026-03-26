@@ -197,6 +197,16 @@ func TestDeleteThreadCascadeData(t *testing.T) {
 	if _, err := store.AppendEvent(ctx, "tu-delete", "turn_started", `{"turnId":"tu-delete"}`); err != nil {
 		t.Fatalf("AppendEvent(): %v", err)
 	}
+	if err := store.CreateTurnAttachments(ctx, []CreateTurnAttachmentParams{{
+		AttachmentID: "att-delete",
+		TurnID:       "tu-delete",
+		Name:         "delete.txt",
+		MimeType:     "text/plain",
+		Size:         4,
+		FilePath:     "/tmp/ngent/attachments/text/att-delete-delete.txt",
+	}}); err != nil {
+		t.Fatalf("CreateTurnAttachments(): %v", err)
+	}
 
 	if err := store.DeleteThread(ctx, "th-delete"); err != nil {
 		t.Fatalf("DeleteThread(): %v", err)
@@ -217,6 +227,9 @@ func TestDeleteThreadCascadeData(t *testing.T) {
 	}
 	if got := countRows(t, store.db, "events"); got != 0 {
 		t.Fatalf("events rows = %d, want 0", got)
+	}
+	if got := countRows(t, store.db, "turn_attachments"); got != 0 {
+		t.Fatalf("turn_attachments rows = %d, want 0", got)
 	}
 }
 
@@ -326,6 +339,75 @@ func TestCreateTurnAppendEventFinalizeTurn(t *testing.T) {
 	}
 	if completedAt == "" {
 		t.Fatalf("turn completed_at is empty, want non-empty")
+	}
+}
+
+func TestTurnAttachmentsCRUD(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer func() {
+		_ = store.Close()
+	}()
+
+	if err := store.UpsertClient(ctx, "client-attachments"); err != nil {
+		t.Fatalf("UpsertClient(): %v", err)
+	}
+	if _, err := store.CreateThread(ctx, CreateThreadParams{
+		ThreadID:         "th-attachments",
+		ClientID:         "client-attachments",
+		AgentID:          "codex",
+		CWD:              "/tmp/project-attachments",
+		Title:            "attachments",
+		AgentOptionsJSON: "{}",
+		Summary:          "",
+	}); err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+	if _, err := store.CreateTurn(ctx, CreateTurnParams{
+		TurnID:      "tu-attachments",
+		ThreadID:    "th-attachments",
+		RequestText: "hello",
+		Status:      "running",
+	}); err != nil {
+		t.Fatalf("CreateTurn(): %v", err)
+	}
+
+	if err := store.CreateTurnAttachments(ctx, []CreateTurnAttachmentParams{{
+		AttachmentID: "att-1",
+		TurnID:       "tu-attachments",
+		Name:         "diagram.png",
+		MimeType:     "image/png",
+		Size:         42,
+		FilePath:     "/tmp/ngent/attachments/images/att-1-diagram.png",
+	}}); err != nil {
+		t.Fatalf("CreateTurnAttachments(): %v", err)
+	}
+
+	attachment, err := store.GetTurnAttachment(ctx, "att-1")
+	if err != nil {
+		t.Fatalf("GetTurnAttachment(): %v", err)
+	}
+	if got, want := attachment.TurnID, "tu-attachments"; got != want {
+		t.Fatalf("attachment.turn_id = %q, want %q", got, want)
+	}
+	if got, want := attachment.Name, "diagram.png"; got != want {
+		t.Fatalf("attachment.name = %q, want %q", got, want)
+	}
+	if got, want := attachment.MimeType, "image/png"; got != want {
+		t.Fatalf("attachment.mime_type = %q, want %q", got, want)
+	}
+	if got, want := attachment.Size, int64(42); got != want {
+		t.Fatalf("attachment.size = %d, want %d", got, want)
+	}
+	if got, want := attachment.FilePath, "/tmp/ngent/attachments/images/att-1-diagram.png"; got != want {
+		t.Fatalf("attachment.file_path = %q, want %q", got, want)
+	}
+
+	if err := store.DeleteThread(ctx, "th-attachments"); err != nil {
+		t.Fatalf("DeleteThread(): %v", err)
+	}
+	if _, err := store.GetTurnAttachment(ctx, "att-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetTurnAttachment(after delete) err = %v, want ErrNotFound", err)
 	}
 }
 

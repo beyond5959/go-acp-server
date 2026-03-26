@@ -70,7 +70,7 @@ function buildHtml(
 
   return `
     <div class="message-avatar perm-avatar">!</div>
-    <div class="message-group" style="max-width:min(480px,90%)">
+    <div class="message-group message-group--permission">
       <div class="permission-card" id="perm-card-${pid}">
 
         <div class="permission-card-header">

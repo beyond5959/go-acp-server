@@ -115,3 +115,11 @@ func TestLogACPMessageSanitizesSensitiveFields(t *testing.T) {
 		t.Fatalf("openai key still present in %q", line)
 	}
 }
+
+func TestRedactStringRedactsSensitiveQueryValues(t *testing.T) {
+	got := RedactString("/attachments/att_1?client_id=client-a&access_token=secret-token")
+	want := "/attachments/att_1?client_id=client-a&access_token=[REDACTED]"
+	if got != want {
+		t.Fatalf("RedactString() = %q, want %q", got, want)
+	}
+}

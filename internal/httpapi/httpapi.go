@@ -58,6 +58,8 @@ type ThreadStore interface {
 	UpsertSessionConfigCache(ctx context.Context, params storage.UpsertSessionConfigCacheParams) error
 	ListThreadsByClient(ctx context.Context, clientID string) ([]storage.Thread, error)
 	CreateTurn(ctx context.Context, params storage.CreateTurnParams) (storage.Turn, error)
+	CreateTurnAttachments(ctx context.Context, params []storage.CreateTurnAttachmentParams) error
+	GetTurnAttachment(ctx context.Context, attachmentID string) (storage.TurnAttachment, error)
 	GetTurn(ctx context.Context, turnID string) (storage.Turn, error)
 	ListTurnsByThread(ctx context.Context, threadID string) ([]storage.Turn, error)
 	AppendEvent(ctx context.Context, turnID, eventType, dataJSON string) (storage.Event, error)
@@ -75,6 +77,7 @@ type AgentModelsFactory func(ctx context.Context, agentID string) ([]agents.Mode
 // Config controls HTTP API behavior.
 type Config struct {
 	AuthToken          string
+	DataDir            string
 	Agents             []AgentInfo
 	AllowedAgentIDs    []string
 	AllowedRoots       []string
@@ -97,6 +100,7 @@ type Config struct {
 // Server serves the HTTP API.
 type Server struct {
 	authToken          string
+	dataDir            string
 	agents             []AgentInfo
 	allowedRoots       []string
 	store              ThreadStore
@@ -152,6 +156,17 @@ const (
 var errThreadConfigOptionsUnavailable = errors.New("thread config options are not available yet")
 
 const maxTurnMultipartMemory = 32 << 20
+
+type turnCreateRequest struct {
+	Prompt  agents.Prompt
+	Stream  bool
+	Uploads []storedTurnAttachment
+}
+
+type storedTurnAttachment struct {
+	PromptContent agents.PromptContent
+	FilePath      string
+}
 
 // New creates a new API server.
 func New(cfg Config) *Server {
@@ -223,8 +238,14 @@ func New(cfg Config) *Server {
 		logger = observability.NewLoggerWithWriter(io.Discard, observability.LevelError)
 	}
 
+	dataDir := filepath.Clean(strings.TrimSpace(cfg.DataDir))
+	if dataDir == "." || dataDir == "" {
+		dataDir = uploadTempDir()
+	}
+
 	server := &Server{
 		authToken:          cfg.AuthToken,
+		dataDir:            dataDir,
 		agents:             agentsList,
 		allowedRoots:       roots,
 		store:              cfg.Store,
@@ -257,6 +278,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if attachmentID, ok := parseAttachmentPath(r.URL.Path); ok {
+		s.handleAttachment(w, r, attachmentID)
+		return
+	}
+
 	if r.URL.Path == "/healthz" {
 		s.handleHealthz(w, r)
 		return
@@ -366,6 +392,101 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleAttachment(w http.ResponseWriter, r *http.Request, attachmentID string) {
+	if err := requireMethod(r, http.MethodGet); err != nil {
+		writeMethodNotAllowed(w, r)
+		return
+	}
+	if !s.isAttachmentAuthorized(r) {
+		writeError(w, http.StatusUnauthorized, codeUnauthorized, "missing or invalid attachment token", map[string]any{})
+		return
+	}
+
+	clientID := strings.TrimSpace(r.URL.Query().Get("client_id"))
+	if clientID == "" {
+		writeError(w, http.StatusBadRequest, codeInvalidArgument, "missing required query parameter client_id", map[string]any{
+			"query": "client_id",
+		})
+		return
+	}
+	if s.store == nil {
+		writeError(w, http.StatusInternalServerError, codeInternal, "storage is not configured", map[string]any{})
+		return
+	}
+
+	attachment, err := s.store.GetTurnAttachment(r.Context(), attachmentID)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			writeError(w, http.StatusNotFound, codeNotFound, "attachment not found", map[string]any{})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, codeInternal, "failed to load attachment", map[string]any{
+			"reason": err.Error(),
+		})
+		return
+	}
+
+	turn, err := s.store.GetTurn(r.Context(), attachment.TurnID)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			writeError(w, http.StatusNotFound, codeNotFound, "attachment not found", map[string]any{})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, codeInternal, "failed to load attachment turn", map[string]any{
+			"reason": err.Error(),
+		})
+		return
+	}
+	if _, ok := s.getOwnedThread(r.Context(), clientID, turn.ThreadID); !ok {
+		writeError(w, http.StatusNotFound, codeNotFound, "attachment not found", map[string]any{})
+		return
+	}
+
+	attachmentPath := filepath.Clean(strings.TrimSpace(attachment.FilePath))
+	if attachmentPath == "" || !isPathAllowed(attachmentPath, []string{s.dataDir}) {
+		writeError(w, http.StatusInternalServerError, codeInternal, "attachment path is invalid", map[string]any{})
+		return
+	}
+
+	file, err := os.Open(attachmentPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusNotFound, codeNotFound, "attachment file not found", map[string]any{})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, codeInternal, "failed to open attachment file", map[string]any{
+			"reason": err.Error(),
+		})
+		return
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, codeInternal, "failed to stat attachment file", map[string]any{
+			"reason": err.Error(),
+		})
+		return
+	}
+	if info.IsDir() {
+		writeError(w, http.StatusNotFound, codeNotFound, "attachment file not found", map[string]any{})
+		return
+	}
+
+	contentType := strings.TrimSpace(attachment.MimeType)
+	if contentType == "" {
+		contentType = mime.TypeByExtension(strings.ToLower(filepath.Ext(attachment.Name)))
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", normalizeUploadFilename(attachment.Name)))
+	http.ServeContent(w, r, attachment.Name, info.ModTime(), file)
 }
 
 func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
@@ -763,15 +884,19 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	var req struct {
-		Prompt agents.Prompt
-		Stream bool
-	}
-	if err := decodeTurnCreateRequest(r, &req); err != nil {
+	req, err := s.decodeTurnCreateRequest(r)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid request body", map[string]any{"reason": err.Error()})
 		return
 	}
 	req.Prompt = agents.NormalizePrompt(req.Prompt)
+	keepUploads := false
+	defer func() {
+		if keepUploads {
+			return
+		}
+		removeStoredAttachments(req.Uploads)
+	}()
 	if !req.Stream {
 		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "stream must be true", map[string]any{"field": "stream"})
 		return
@@ -837,6 +962,14 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusInternalServerError, "INTERNAL", "failed to create turn", map[string]any{"reason": err.Error()})
 		return
 	}
+	if err := s.persistTurnAttachments(persistCtx, turnID, req.Uploads); err != nil {
+		s.finalizeTurnWithBestEffort(persistCtx, turnID, "failed", "error", "", err.Error())
+		writeError(w, http.StatusInternalServerError, codeInternal, "failed to persist turn attachments", map[string]any{
+			"reason": err.Error(),
+		})
+		return
+	}
+	keepUploads = true
 
 	streamWriter, err := sse.NewWriter(w)
 	if err != nil {
@@ -1051,6 +1184,29 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 	}
 
 	s.finalizeTurnWithBestEffort(persistCtx, turnID, finalStatus, finalReason, aggregated.String(), errorMessage)
+}
+
+func (s *Server) persistTurnAttachments(ctx context.Context, turnID string, uploads []storedTurnAttachment) error {
+	if len(uploads) == 0 {
+		return nil
+	}
+
+	params := make([]storage.CreateTurnAttachmentParams, 0, len(uploads))
+	for _, upload := range uploads {
+		attachmentID := strings.TrimSpace(upload.PromptContent.AttachmentID)
+		if attachmentID == "" {
+			return errors.New("attachmentID is required")
+		}
+		params = append(params, storage.CreateTurnAttachmentParams{
+			AttachmentID: attachmentID,
+			TurnID:       turnID,
+			Name:         strings.TrimSpace(upload.PromptContent.Name),
+			MimeType:     strings.TrimSpace(upload.PromptContent.MimeType),
+			Size:         upload.PromptContent.Size,
+			FilePath:     strings.TrimSpace(upload.FilePath),
+		})
+	}
+	return s.store.CreateTurnAttachments(ctx, params)
 }
 
 func (s *Server) handleCompactThread(w http.ResponseWriter, r *http.Request, clientID, threadID string) {
@@ -2516,6 +2672,18 @@ func parseThreadPath(path string) (threadID, subresource string, ok bool) {
 	return "", "", false
 }
 
+func parseAttachmentPath(path string) (attachmentID string, ok bool) {
+	const prefix = "/attachments/"
+	if !strings.HasPrefix(path, prefix) {
+		return "", false
+	}
+	raw := strings.Trim(strings.TrimPrefix(path, prefix), "/")
+	if raw == "" || strings.Contains(raw, "/") {
+		return "", false
+	}
+	return raw, true
+}
+
 func parseAgentModelsPath(path string) (agentID string, ok bool) {
 	const prefix = "/v1/agents/"
 	const suffix = "/models"
@@ -3635,17 +3803,10 @@ func decodeJSONBody(r *http.Request, dst any) error {
 	return nil
 }
 
-func decodeTurnCreateRequest(r *http.Request, dst *struct {
-	Prompt agents.Prompt
-	Stream bool
-}) error {
-	if dst == nil {
-		return errors.New("destination is required")
-	}
-
+func (s *Server) decodeTurnCreateRequest(r *http.Request) (turnCreateRequest, error) {
 	contentType := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
 	if strings.HasPrefix(contentType, "multipart/form-data") {
-		return decodeMultipartTurnCreateRequest(r, dst)
+		return decodeMultipartTurnCreateRequest(r, s.dataDir)
 	}
 
 	var req struct {
@@ -3653,20 +3814,18 @@ func decodeTurnCreateRequest(r *http.Request, dst *struct {
 		Stream bool   `json:"stream"`
 	}
 	if err := decodeJSONBody(r, &req); err != nil {
-		return err
+		return turnCreateRequest{}, err
 	}
 
-	dst.Stream = req.Stream
-	dst.Prompt = agents.TextPrompt(req.Input)
-	return nil
+	return turnCreateRequest{
+		Stream: req.Stream,
+		Prompt: agents.TextPrompt(req.Input),
+	}, nil
 }
 
-func decodeMultipartTurnCreateRequest(r *http.Request, dst *struct {
-	Prompt agents.Prompt
-	Stream bool
-}) error {
+func decodeMultipartTurnCreateRequest(r *http.Request, dataDir string) (turnCreateRequest, error) {
 	if err := r.ParseMultipartForm(maxTurnMultipartMemory); err != nil {
-		return err
+		return turnCreateRequest{}, err
 	}
 	if r.MultipartForm != nil {
 		defer r.MultipartForm.RemoveAll()
@@ -3674,9 +3833,9 @@ func decodeMultipartTurnCreateRequest(r *http.Request, dst *struct {
 
 	text := strings.TrimSpace(r.FormValue("input"))
 	stream := parseFormBoolValue(r.FormValue("stream"))
-	attachments, err := persistTurnAttachments(r.MultipartForm.File["attachments"])
+	attachments, err := persistTurnAttachments(dataDir, r.MultipartForm.File["attachments"])
 	if err != nil {
-		return err
+		return turnCreateRequest{}, err
 	}
 
 	content := make([]agents.PromptContent, 0, len(attachments)+1)
@@ -3686,11 +3845,15 @@ func decodeMultipartTurnCreateRequest(r *http.Request, dst *struct {
 			Text: text,
 		})
 	}
-	content = append(content, attachments...)
+	for _, attachment := range attachments {
+		content = append(content, attachment.PromptContent)
+	}
 
-	dst.Stream = stream
-	dst.Prompt = agents.NormalizePrompt(agents.Prompt{Content: content})
-	return nil
+	return turnCreateRequest{
+		Stream:  stream,
+		Prompt:  agents.NormalizePrompt(agents.Prompt{Content: content}),
+		Uploads: attachments,
+	}, nil
 }
 
 func parseFormBoolValue(value string) bool {
@@ -3698,14 +3861,14 @@ func parseFormBoolValue(value string) bool {
 	return value == "1" || value == "true" || value == "yes"
 }
 
-func persistTurnAttachments(files []*multipart.FileHeader) ([]agents.PromptContent, error) {
+func persistTurnAttachments(dataDir string, files []*multipart.FileHeader) ([]storedTurnAttachment, error) {
 	if len(files) == 0 {
 		return nil, nil
 	}
 
-	attachments := make([]agents.PromptContent, 0, len(files))
+	attachments := make([]storedTurnAttachment, 0, len(files))
 	for _, fileHeader := range files {
-		attachment, err := persistTurnAttachment(fileHeader)
+		attachment, err := persistTurnAttachment(dataDir, fileHeader)
 		if err != nil {
 			return nil, err
 		}
@@ -3714,49 +3877,67 @@ func persistTurnAttachments(files []*multipart.FileHeader) ([]agents.PromptConte
 	return attachments, nil
 }
 
-func persistTurnAttachment(fileHeader *multipart.FileHeader) (agents.PromptContent, error) {
+func persistTurnAttachment(dataDir string, fileHeader *multipart.FileHeader) (storedTurnAttachment, error) {
 	if fileHeader == nil {
-		return agents.PromptContent{}, errors.New("attachment is required")
+		return storedTurnAttachment{}, errors.New("attachment is required")
 	}
 
 	src, err := fileHeader.Open()
 	if err != nil {
-		return agents.PromptContent{}, fmt.Errorf("open attachment %q: %w", fileHeader.Filename, err)
+		return storedTurnAttachment{}, fmt.Errorf("open attachment %q: %w", fileHeader.Filename, err)
 	}
 	defer src.Close()
 
+	attachmentID := newAttachmentID()
 	displayName := normalizeUploadFilename(fileHeader.Filename)
-	dstFile, dstPath, err := createUploadTempFile(displayName)
+	dstFile, dstPath, err := createUploadTempFile(dataDir, attachmentID, displayName)
 	if err != nil {
-		return agents.PromptContent{}, err
+		return storedTurnAttachment{}, err
 	}
 
 	size, mimeType, copyErr := copyUploadToTempFile(dstFile, src, displayName, fileHeader.Header.Get("Content-Type"))
 	closeErr := dstFile.Close()
 	if copyErr != nil {
 		_ = os.Remove(dstPath)
-		return agents.PromptContent{}, copyErr
+		return storedTurnAttachment{}, copyErr
 	}
 	if closeErr != nil {
 		_ = os.Remove(dstPath)
-		return agents.PromptContent{}, fmt.Errorf("close temp upload %q: %w", displayName, closeErr)
+		return storedTurnAttachment{}, fmt.Errorf("close temp upload %q: %w", displayName, closeErr)
 	}
 
-	return agents.PromptContent{
-		Type:     agents.PromptContentTypeResourceLink,
-		URI:      fileURIForPath(dstPath),
-		Name:     displayName,
-		MimeType: mimeType,
-		Size:     size,
+	finalPath, err := finalizeUploadPath(dataDir, attachmentID, displayName, mimeType)
+	if err != nil {
+		_ = os.Remove(dstPath)
+		return storedTurnAttachment{}, err
+	}
+	if err := os.Rename(dstPath, finalPath); err != nil {
+		_ = os.Remove(dstPath)
+		return storedTurnAttachment{}, fmt.Errorf("move stored upload %q: %w", displayName, err)
+	}
+
+	return storedTurnAttachment{
+		PromptContent: agents.PromptContent{
+			Type:         agents.PromptContentTypeResourceLink,
+			URI:          fileURIForPath(finalPath),
+			Name:         displayName,
+			MimeType:     mimeType,
+			Size:         size,
+			AttachmentID: attachmentID,
+		},
+		FilePath: finalPath,
 	}, nil
 }
 
-func createUploadTempFile(displayName string) (*os.File, string, error) {
+func createUploadTempFile(dataDir, attachmentID, displayName string) (*os.File, string, error) {
 	displayName = normalizeUploadFilename(displayName)
 	ext := filepath.Ext(displayName)
 	stem := sanitizeUploadTempStem(strings.TrimSuffix(displayName, ext))
-	pattern := fmt.Sprintf("ngent-%s-*%s", stem, ext)
-	tempDir := uploadTempDir()
+	pattern := fmt.Sprintf("%s-%s-*%s", attachmentID, stem, ext)
+	tempDir := filepath.Join(filepath.Clean(dataDir), "attachments", ".incoming")
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		return nil, "", fmt.Errorf("create upload staging dir %q: %w", tempDir, err)
+	}
 	file, err := os.CreateTemp(tempDir, pattern)
 	if err != nil {
 		return nil, "", fmt.Errorf("create temp upload for %q: %w", displayName, err)
@@ -3859,6 +4040,90 @@ func sanitizeUploadTempStem(stem string) string {
 		return "attachment"
 	}
 	return result
+}
+
+func buildStoredUploadFilename(attachmentID, displayName string) string {
+	displayName = normalizeUploadFilename(displayName)
+	ext := strings.ToLower(filepath.Ext(displayName))
+	stem := sanitizeUploadTempStem(strings.TrimSuffix(displayName, ext))
+	if ext == "" {
+		return fmt.Sprintf("%s-%s", attachmentID, stem)
+	}
+	return fmt.Sprintf("%s-%s%s", attachmentID, stem, ext)
+}
+
+func uploadDirectoryCategory(displayName, mimeType string) string {
+	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+	ext := strings.ToLower(strings.TrimSpace(filepath.Ext(displayName)))
+	switch {
+	case strings.HasPrefix(mimeType, "image/"):
+		return "images"
+	case strings.HasPrefix(mimeType, "audio/"):
+		return "audio"
+	case strings.HasPrefix(mimeType, "video/"):
+		return "video"
+	case strings.HasPrefix(mimeType, "text/"):
+		return "text"
+	case mimeType == "application/pdf",
+		mimeType == "application/msword",
+		mimeType == "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		mimeType == "application/vnd.ms-excel",
+		mimeType == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		mimeType == "application/vnd.ms-powerpoint",
+		mimeType == "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+		return "documents"
+	case mimeType == "application/zip",
+		mimeType == "application/x-gzip",
+		mimeType == "application/gzip",
+		mimeType == "application/x-tar",
+		mimeType == "application/x-7z-compressed",
+		mimeType == "application/x-rar-compressed":
+		return "archives"
+	}
+
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg":
+		return "images"
+	case ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg":
+		return "audio"
+	case ".mp4", ".mov", ".avi", ".mkv", ".webm":
+		return "video"
+	case ".txt", ".md", ".json", ".yaml", ".yml", ".csv", ".log":
+		return "text"
+	case ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx":
+		return "documents"
+	case ".zip", ".tar", ".gz", ".tgz", ".bz2", ".7z", ".rar":
+		return "archives"
+	default:
+		return "files"
+	}
+}
+
+func finalizeUploadPath(dataDir, attachmentID, displayName, mimeType string) (string, error) {
+	category := uploadDirectoryCategory(displayName, mimeType)
+	dir := filepath.Join(filepath.Clean(dataDir), "attachments", category)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create upload dir %q: %w", dir, err)
+	}
+	return filepath.Join(dir, buildStoredUploadFilename(attachmentID, displayName)), nil
+}
+
+func newAttachmentID() string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("att_%d", time.Now().UTC().UnixMicro())
+	}
+	return fmt.Sprintf("att_%d_%s", time.Now().UTC().UnixMicro(), hex.EncodeToString(buf))
+}
+
+func removeStoredAttachments(attachments []storedTurnAttachment) {
+	for _, attachment := range attachments {
+		path := strings.TrimSpace(attachment.FilePath)
+		if path == "" {
+			continue
+		}
+		_ = os.Remove(path)
+	}
 }
 
 func uploadTempDir() string {
@@ -4004,6 +4269,20 @@ func (s *Server) isAuthorized(r *http.Request) bool {
 	}
 
 	provided := strings.TrimSpace(strings.TrimPrefix(authHeader, prefix))
+	return s.matchesAuthToken(provided)
+}
+
+func (s *Server) isAttachmentAuthorized(r *http.Request) bool {
+	if s.isAuthorized(r) {
+		return true
+	}
+	if s.authToken == "" || r == nil || r.URL == nil {
+		return s.authToken == ""
+	}
+	return s.matchesAuthToken(strings.TrimSpace(r.URL.Query().Get("access_token")))
+}
+
+func (s *Server) matchesAuthToken(provided string) bool {
 	if provided == "" {
 		return false
 	}

@@ -2419,8 +2419,10 @@ func TestTurnSessionInfoUpdateSSEAndHistory(t *testing.T) {
 
 func TestMultipartTurnUploadsAttachmentsAsResourceLinks(t *testing.T) {
 	root := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "ngent-data")
 	streamer := &promptCaptureStreamer{}
 	server := newTestServer(t, testServerOptions{
+		dataDir:      dataDir,
 		allowedRoots: []string{root},
 		turnAgentFactory: func(thread storage.Thread) (agents.Streamer, error) {
 			_ = thread
@@ -2474,11 +2476,17 @@ func TestMultipartTurnUploadsAttachmentsAsResourceLinks(t *testing.T) {
 	if got, want := resource.Size, int64(len(fileContents)); got != want {
 		t.Fatalf("prompt.Content[1].Size = %d, want %d", got, want)
 	}
-	if !strings.HasPrefix(resource.URI, "file:///tmp/") {
-		t.Fatalf("prompt.Content[1].URI = %q, want prefix %q", resource.URI, "file:///tmp/")
+	if got := resource.AttachmentID; got == "" {
+		t.Fatalf("prompt.Content[1].AttachmentID is empty")
+	}
+	if !strings.Contains(resource.URI, "/attachments/documents/") {
+		t.Fatalf("prompt.Content[1].URI = %q, want documents attachment path", resource.URI)
 	}
 
 	uploadedPath := strings.TrimPrefix(resource.URI, "file://")
+	if !strings.HasPrefix(uploadedPath, filepath.Join(dataDir, "attachments", "documents")) {
+		t.Fatalf("uploadedPath = %q, want prefix %q", uploadedPath, filepath.Join(dataDir, "attachments", "documents"))
+	}
 	uploadedBytes, err := os.ReadFile(uploadedPath)
 	if err != nil {
 		t.Fatalf("os.ReadFile(%q): %v", uploadedPath, err)
@@ -2530,9 +2538,103 @@ func TestMultipartTurnUploadsAttachmentsAsResourceLinks(t *testing.T) {
 		if got := stringField(attachment, "name"); got != "document.pdf" {
 			t.Fatalf("user_prompt attachment.name = %q, want %q", got, "document.pdf")
 		}
+		if got := stringField(attachment, "attachmentId"); got == "" {
+			t.Fatalf("user_prompt attachment.attachmentId is empty")
+		}
 	}
 	if !seenUserPrompt {
 		t.Fatal("missing persisted user_prompt event")
+	}
+
+	attachmentStatus, attachmentBody := doRawRequest(
+		t,
+		http.MethodGet,
+		fmt.Sprintf("%s/attachments/%s?client_id=%s", ts.URL, resource.AttachmentID, "client-a"),
+		nil,
+		nil,
+	)
+	if attachmentStatus != http.StatusOK {
+		t.Fatalf("attachment status = %d, want %d, body=%s", attachmentStatus, http.StatusOK, attachmentBody)
+	}
+	if attachmentBody != string(fileContents) {
+		t.Fatalf("attachment body = %q, want %q", attachmentBody, string(fileContents))
+	}
+}
+
+func TestAttachmentEndpointSupportsQueryTokenAndClientOwnership(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "ngent-data")
+	streamer := &promptCaptureStreamer{}
+	server := newTestServer(t, testServerOptions{
+		authToken:    "secret-token",
+		dataDir:      dataDir,
+		allowedRoots: []string{root},
+		turnAgentFactory: func(thread storage.Thread) (agents.Streamer, error) {
+			_ = thread
+			return streamer, nil
+		},
+	})
+	ts := httptest.NewServer(server)
+	defer ts.Close()
+
+	threadID := createThreadHTTPWithHeaders(t, ts.URL, "client-a", root, map[string]string{
+		"Authorization": "Bearer secret-token",
+	})
+	status, body := postTurnMultipartRequestWithHeaders(
+		t,
+		ts.URL,
+		"client-a",
+		threadID,
+		"Please inspect this attachment.",
+		"diagram.png",
+		[]byte("png-data"),
+		map[string]string{
+			"Authorization": "Bearer secret-token",
+		},
+	)
+	if status != http.StatusOK {
+		t.Fatalf("multipart turn status = %d, want %d, body=%s", status, http.StatusOK, body)
+	}
+
+	attachmentID := streamer.prompt.Content[1].AttachmentID
+	if attachmentID == "" {
+		t.Fatal("attachmentID is empty")
+	}
+
+	unauthorizedStatus, _ := doRawRequest(
+		t,
+		http.MethodGet,
+		fmt.Sprintf("%s/attachments/%s?client_id=%s", ts.URL, attachmentID, "client-a"),
+		nil,
+		nil,
+	)
+	if unauthorizedStatus != http.StatusUnauthorized {
+		t.Fatalf("attachment status without token = %d, want %d", unauthorizedStatus, http.StatusUnauthorized)
+	}
+
+	forbiddenStatus, _ := doRawRequest(
+		t,
+		http.MethodGet,
+		fmt.Sprintf("%s/attachments/%s?client_id=%s&access_token=%s", ts.URL, attachmentID, "client-b", "secret-token"),
+		nil,
+		nil,
+	)
+	if forbiddenStatus != http.StatusNotFound {
+		t.Fatalf("attachment status for wrong client = %d, want %d", forbiddenStatus, http.StatusNotFound)
+	}
+
+	authorizedStatus, attachmentBody := doRawRequest(
+		t,
+		http.MethodGet,
+		fmt.Sprintf("%s/attachments/%s?client_id=%s&access_token=%s", ts.URL, attachmentID, "client-a", "secret-token"),
+		nil,
+		nil,
+	)
+	if authorizedStatus != http.StatusOK {
+		t.Fatalf("attachment status with query token = %d, want %d, body=%s", authorizedStatus, http.StatusOK, attachmentBody)
+	}
+	if attachmentBody != "png-data" {
+		t.Fatalf("attachment body = %q, want %q", attachmentBody, "png-data")
 	}
 }
 
@@ -3839,6 +3941,7 @@ func TestRestartRecoveryWithInjectedContext(t *testing.T) {
 
 type testServerOptions struct {
 	authToken          string
+	dataDir            string
 	allowedRoots       []string
 	allowedAgentIDs    []string
 	agentList          []AgentInfo
@@ -3853,7 +3956,14 @@ type testServerOptions struct {
 func newTestServer(t *testing.T, opt testServerOptions) *Server {
 	t.Helper()
 
-	dbPath := filepath.Join(t.TempDir(), "api.db")
+	dataDir := strings.TrimSpace(opt.dataDir)
+	if dataDir == "" {
+		dataDir = t.TempDir()
+	}
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q): %v", dataDir, err)
+	}
+	dbPath := filepath.Join(dataDir, "api.db")
 	store, err := storage.New(dbPath)
 	if err != nil {
 		t.Fatalf("storage.New(%q): %v", dbPath, err)
@@ -3891,6 +4001,7 @@ func newTestServer(t *testing.T, opt testServerOptions) *Server {
 
 	server := New(Config{
 		AuthToken:          opt.authToken,
+		DataDir:            dataDir,
 		Agents:             agentList,
 		AllowedAgentIDs:    allowedAgentIDs,
 		AllowedRoots:       allowedRoots,
@@ -3916,6 +4027,13 @@ func newTestServerWithDBPath(t *testing.T, dbPath string, opt testServerOptions)
 	if err != nil {
 		t.Fatalf("storage.New(%q): %v", dbPath, err)
 	}
+	dataDir := strings.TrimSpace(opt.dataDir)
+	if dataDir == "" {
+		dataDir = filepath.Dir(dbPath)
+	}
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q): %v", dataDir, err)
+	}
 
 	allowedRoots := opt.allowedRoots
 	if len(allowedRoots) == 0 {
@@ -3950,6 +4068,7 @@ func newTestServerWithDBPath(t *testing.T, dbPath string, opt testServerOptions)
 
 	server := New(Config{
 		AuthToken:          opt.authToken,
+		DataDir:            dataDir,
 		Agents:             agentList,
 		AllowedAgentIDs:    allowedAgentIDs,
 		AllowedRoots:       allowedRoots,
@@ -4654,7 +4773,16 @@ func (s *sessionTranscriptStreamer) LoadCalls() int32 {
 
 func createThreadHTTP(t *testing.T, baseURL, clientID, root string) string {
 	t.Helper()
-	status, body := doJSON(t, http.MethodPost, baseURL+"/v1/threads", map[string]any{"agent": "codex", "cwd": root}, map[string]string{"X-Client-ID": clientID})
+	return createThreadHTTPWithHeaders(t, baseURL, clientID, root, nil)
+}
+
+func createThreadHTTPWithHeaders(t *testing.T, baseURL, clientID, root string, headers map[string]string) string {
+	t.Helper()
+	requestHeaders := map[string]string{"X-Client-ID": clientID}
+	for k, v := range headers {
+		requestHeaders[k] = v
+	}
+	status, body := doJSON(t, http.MethodPost, baseURL+"/v1/threads", map[string]any{"agent": "codex", "cwd": root}, requestHeaders)
 	if status != http.StatusOK {
 		t.Fatalf("create thread http status = %d, body=%s", status, body)
 	}
@@ -4671,6 +4799,25 @@ func postTurnMultipartRequest(
 	t *testing.T,
 	baseURL, clientID, threadID, input, filename string,
 	fileContents []byte,
+) (int, string) {
+	t.Helper()
+	return postTurnMultipartRequestWithHeaders(
+		t,
+		baseURL,
+		clientID,
+		threadID,
+		input,
+		filename,
+		fileContents,
+		nil,
+	)
+}
+
+func postTurnMultipartRequestWithHeaders(
+	t *testing.T,
+	baseURL, clientID, threadID, input, filename string,
+	fileContents []byte,
+	headers map[string]string,
 ) (int, string) {
 	t.Helper()
 
@@ -4703,6 +4850,9 @@ func postTurnMultipartRequest(
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("X-Client-ID", clientID)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -5004,13 +5154,21 @@ func doJSON(t *testing.T, method, url string, body any, headers map[string]strin
 		}
 		reader = bytes.NewReader(encoded)
 	}
-
-	req, err := http.NewRequest(method, url, reader)
-	if err != nil {
-		t.Fatalf("http.NewRequest: %v", err)
+	requestHeaders := map[string]string{}
+	for k, v := range headers {
+		requestHeaders[k] = v
 	}
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		requestHeaders["Content-Type"] = "application/json"
+	}
+	return doRawRequest(t, method, url, reader, requestHeaders)
+}
+
+func doRawRequest(t *testing.T, method, url string, body io.Reader, headers map[string]string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		t.Fatalf("http.NewRequest: %v", err)
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)

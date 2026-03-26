@@ -200,42 +200,41 @@ func TestSupportedAgentsOnlyIncludesAvailableAgents(t *testing.T) {
 	}
 }
 
-func TestResolveDefaultDBPath(t *testing.T) {
+func TestResolveDefaultDataPath(t *testing.T) {
 	const home = "/tmp/test-home-db-default"
 	t.Setenv("HOME", home)
 
-	got, err := resolveDefaultDBPath()
+	got, err := resolveDefaultDataPath()
 	if err != nil {
-		t.Fatalf("resolveDefaultDBPath() unexpected error: %v", err)
+		t.Fatalf("resolveDefaultDataPath() unexpected error: %v", err)
 	}
 
-	want := filepath.Join(home, ".ngent", "ngent.db")
+	want := filepath.Join(home, ".ngent")
 	if got != want {
-		t.Fatalf("resolveDefaultDBPath() = %q, want %q", got, want)
+		t.Fatalf("resolveDefaultDataPath() = %q, want %q", got, want)
 	}
 }
 
-func TestEnsureDBPathParent(t *testing.T) {
-	t.Run("create nested parent dir", func(t *testing.T) {
+func TestEnsureDataPath(t *testing.T) {
+	t.Run("create nested dir", func(t *testing.T) {
 		tmp := t.TempDir()
-		dbPath := filepath.Join(tmp, "nested", "dir", "ngent.db")
-		if err := ensureDBPathParent(dbPath); err != nil {
-			t.Fatalf("ensureDBPathParent(%q) unexpected error: %v", dbPath, err)
+		dataPath := filepath.Join(tmp, "nested", "dir")
+		if err := ensureDataPath(dataPath); err != nil {
+			t.Fatalf("ensureDataPath(%q) unexpected error: %v", dataPath, err)
 		}
 
-		parent := filepath.Dir(dbPath)
-		info, err := os.Stat(parent)
+		info, err := os.Stat(dataPath)
 		if err != nil {
-			t.Fatalf("os.Stat(%q): %v", parent, err)
+			t.Fatalf("os.Stat(%q): %v", dataPath, err)
 		}
 		if !info.IsDir() {
-			t.Fatalf("parent %q is not a directory", parent)
+			t.Fatalf("path %q is not a directory", dataPath)
 		}
 	})
 
 	t.Run("reject empty path", func(t *testing.T) {
-		if err := ensureDBPathParent("   "); err == nil {
-			t.Fatalf("ensureDBPathParent should fail for empty path")
+		if err := ensureDataPath("   "); err == nil {
+			t.Fatalf("ensureDataPath should fail for empty path")
 		}
 	})
 }
