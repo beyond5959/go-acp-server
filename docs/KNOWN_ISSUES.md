@@ -456,6 +456,19 @@
 
 ## Recently Closed
 
+- ID: KI-041
+- Title: Web UI session switch fetched whole-thread history and stalled on large multi-session threads
+- Status: Closed
+- Severity: Medium
+- Affects: Web UI session switching on threads with many persisted turns/events across multiple sessions
+- Symptom:
+  - selecting one historical session previously still triggered `GET /v1/threads/{threadId}/history?includeEvents=1` for the entire thread, then filtered by `session_bound` in the browser.
+  - on real Codex threads this could force the UI to parse roughly 19 MB / 42k events just to render one session that only needed one persisted turn.
+- Workaround:
+  - none; fixed on 2026-03-26 by adding `sessionId` filtering to `/history`, compacting historical delta runs on read, and yielding during heavy message-list replay in the Web UI.
+- Follow-up plan:
+  - monitor whether any remaining session-switch lag is dominated by `tool_call_update` volume or provider `session-history` load time rather than persisted thread history size.
+
 - ID: KI-040
 - Title: Inline base64 image placeholders in user messages rendered as raw text
 - Status: Closed

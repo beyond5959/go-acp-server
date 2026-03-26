@@ -1575,3 +1575,50 @@ Use this template for new decisions.
   - keep `--db-path` and add a second unrelated attachment-root flag (rejected: splits one local state root across two flags and makes defaults harder to reason about).
   - keep storing uploads in temp and only persist extra preview metadata (rejected: does not solve OS cleanup and still leaves the attachment file itself non-durable).
   - expose raw absolute file paths directly to the browser (rejected: browsers cannot reliably use persisted `file://` paths from the HTTP Web UI, and a routed attachment fetch keeps ownership/auth checks server-side).
+
+## ADR-060: Make thread history session-scoped for Web UI session switches
+
+- Status: Accepted
+- Date: 2026-03-26
+- Context:
+  - the Web UI session picker reconstructs the selected chat by combining provider-owned `GET /session-history` transcript replay with ngent-owned persisted turn history.
+  - before this change, every session switch still fetched `GET /v1/threads/{threadId}/history?includeEvents=1` for the entire thread and only then filtered the turns client-side by `session_bound`.
+  - on real Codex threads this became expensive enough to stall the UI: one thread with 21 turns produced roughly 19 MB of history JSON and about 42k persisted events, even though the target session needed only a single turn.
+- Decision:
+  - add an optional `sessionId` query parameter to `GET /v1/threads/{threadId}/history`.
+  - apply session filtering on the server using the same rules the Web UI already depended on:
+    - match turns by their latest `session_bound` event.
+    - if the thread has no annotated turns at all, keep returning non-ephemeral history instead of hiding legacy data.
+    - include unannotated legacy turns only when the thread has exactly one annotated session and it matches the requested `sessionId`.
+    - continue dropping cancelled turns that have no visible response text.
+  - update the Web UI to request `history?includeEvents=1&sessionId=...` when a concrete session is selected, while keeping the local filter as a compatibility fallback.
+- Consequences:
+  - session switches no longer require the browser to parse and walk the full thread history when only one historical session is being opened.
+  - the frontend keeps its existing session-reconstruction behavior, but the largest JSON payload and event traversal now happen server-side where they do not block the UI thread.
+  - the base `/history` endpoint remains unchanged for callers that still need whole-thread history.
+- Alternatives considered:
+  - keep whole-thread history and add more frontend caching only (rejected: first-open session switches from `New session` would still pay the full parse/render cost).
+  - rely only on provider `session-history` for session views (rejected: loses ngent-owned rich turn artifacts such as persisted reasoning, tool-call, and other turn events).
+  - add a brand-new endpoint just for session-filtered history (rejected: the existing `/history` contract already fit the need with one optional query parameter).
+
+## ADR-061: Compact historical delta runs on read and render large chats incrementally
+
+- Status: Accepted
+- Date: 2026-03-26
+- Context:
+  - session-scoped `/history` removed unrelated sessions from the payload, but old databases still stored every historical `message_delta` / `reasoning_delta` row separately.
+  - the provided Codex repro still showed residual UI jank on the selected session because the browser had to replay a delta-heavy turn and then rebuild the full chat DOM in one synchronous step.
+  - write-side event merging alone was insufficient because it only helps turns created after the fix ships.
+- Decision:
+  - merge consecutive same-turn `message_delta`, `reasoning_delta`, and `thought_delta` runs when serializing `/v1/threads/{threadId}/history?includeEvents=1`.
+  - keep preserving boundaries when event type changes so ordering relative to `tool_call*`, `plan_update`, `session_bound`, and other event kinds stays intact.
+  - also merge those same delta runs at storage write time in `AppendEvent(...)` so new turns persist fewer rows.
+  - render large Web UI message lists incrementally across animation frames instead of always doing one synchronous `innerHTML = msgs.map(renderMessage).join('')` rebuild.
+- Consequences:
+  - old databases immediately benefit from smaller history payloads and fewer replay events without a migration step.
+  - new databases avoid accumulating the same redundant delta rows over time.
+  - session switches remain responsive even when one persisted turn contains many delta updates, because the browser now has less replay work and can yield while rebuilding the chat.
+- Alternatives considered:
+  - migrate existing SQLite data in place (rejected: more invasive, riskier on user state, and unnecessary when read-time compaction solves the API cost directly).
+  - compact every event type aggressively, including `tool_call_update` (rejected for now: those updates can carry meaningful intermediate state transitions that should stay ordered until a clearer merge contract is defined).
+  - keep synchronous DOM rebuilds and rely only on smaller payloads (rejected: large rendered transcripts can still block the main thread even after history parsing becomes cheap).

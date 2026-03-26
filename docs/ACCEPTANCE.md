@@ -561,3 +561,39 @@ This checklist defines executable acceptance checks for requirements 1-16.
 - Verification commands (executed 2026-03-26):
   - `cd internal/webui/web && npm run build`
   - `env GOCACHE=/tmp/ngent-gocache GOFLAGS=-p=1 go test ./...`
+
+## Requirement 30: Session Switching Does Not Fetch Whole-Thread History For One Session
+
+- Operation:
+  - create or reuse a thread that contains many persisted turns/events across multiple sessions.
+  - select one historical session from the Web UI session sidebar.
+  - inspect the history request sent by the browser and the returned payload size.
+- Expected:
+  - the Web UI calls `GET /v1/threads/{threadId}/history?includeEvents=1&sessionId=<selectedSessionId>` instead of fetching the whole thread and filtering only in browser memory.
+  - the response includes only the selected session's persisted turns, subject to the legacy fallback rules for unannotated pre-`session_bound` turns.
+  - the UI still merges provider `GET /session-history` replay on top of that persisted turn history, so rich ngent-owned artifacts remain visible.
+  - for large multi-session threads, browser-side history parse time is materially lower because the payload no longer includes unrelated sessions' events.
+- Verification commands (executed 2026-03-26):
+  - `go test ./internal/httpapi -run TestThreadHistoryFiltersBySessionID -count=1`
+  - `cd internal/webui/web && npm run build`
+  - `go test ./...`
+
+## Requirement 31: Session Switching Stays Responsive On Old Delta-Heavy History
+
+- Operation:
+  - reuse a thread whose persisted history was created before write-side delta merging existed.
+  - switch from a light historical session (for example `hello`) back to a heavy session that contains many persisted `message_delta` / `reasoning_delta` rows.
+  - inspect the returned `/history?includeEvents=1&sessionId=...` payload and observe the browser during the switch.
+- Expected:
+  - `/history` compacts adjacent same-turn `message_delta`, `reasoning_delta`, and `thought_delta` runs in the response even when the SQLite rows are still stored unmerged.
+  - the Web UI history replay yields while reconstructing messages and while rebuilding a heavy message list.
+  - the switch does not produce a visible long main-thread stall from history replay alone.
+- Verification commands (executed 2026-03-26):
+  - `go test ./internal/httpapi -run TestThreadHistoryCompactsConsecutiveDeltaEvents -count=1`
+  - `go test ./internal/storage -run TestAppendEventMergesConsecutiveDeltaRuns -count=1`
+  - `cd internal/webui/web && npm run build`
+  - `go test ./...`
+  - real repro on the provided Codex thread:
+    - measured `/history?includeEvents=1&sessionId=...` payload: about `224 KB`, `40` persisted events
+    - measured browser `Response.json()` time for that payload: about `1.3 ms`
+    - measured max RAF gap during the switch: about `9.4 ms`, with no `>50 ms` gaps observed

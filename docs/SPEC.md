@@ -774,3 +774,30 @@ The integration follows the official ACP startup form `blackbox --experimental-a
   - stored message text remains the original raw content.
   - the UI copy button still copies the unmodified raw message text, including the original placeholder string.
   - surrounding user text before/after each placeholder is still rendered through the existing markdown renderer.
+
+### 18.7 Session-Scoped History For Web UI Session Switching
+
+- `GET /v1/threads/{threadId}/history` now accepts optional `sessionId=<id>` in addition to `includeEvents` / `includeInternal`.
+- When `sessionId` is present, ngent filters persisted turns server-side using the latest `session_bound` event recorded on each turn:
+  - if the thread has no annotated turns at all, ngent still returns non-ephemeral legacy history instead of hiding everything.
+  - if the thread has exactly one annotated session and it matches the requested `sessionId`, unannotated legacy turns are included with that session so old pre-annotation history remains visible.
+  - otherwise only turns whose persisted `session_bound.sessionId` matches the requested session are returned.
+  - cancelled turns with no visible `responseText` are still excluded from session-scoped replay.
+- The Web UI session switch path now calls `GET /v1/threads/{threadId}/history?includeEvents=1&sessionId=<selectedSession>` before merging in provider `GET /session-history` transcript replay.
+- The existing client-side `filterTurnsBySession()` logic remains as a compatibility fallback, but under normal same-version operation the browser now receives only the selected session's persisted turns rather than the entire thread history.
+
+### 18.8 Delta-Run Compaction And Incremental History Rendering
+
+- When `/v1/threads/{threadId}/history?includeEvents=1` serializes persisted turn events, ngent compacts consecutive runs of the same-turn delta event types:
+  - `message_delta`
+  - `reasoning_delta`
+  - `thought_delta`
+- Compaction concatenates `data.delta` only when:
+  - both adjacent events have the same `type`
+  - both belong to the same `turnId`
+  - the payloads are valid JSON objects carrying string `delta` values
+- The API keeps the first event's ordering position and only merges adjacent runs, so event boundaries across `tool_call*`, `plan_update`, `session_bound`, and other event types remain visible.
+- Storage applies the same delta-run merge while appending new events, so future turns persist fewer redundant rows.
+- The Web UI history replay path is now incremental in two stages:
+  - `turnsToMessagesAsync(...)` yields while converting `Turn[]` into `Message[]`
+  - `updateMessageList()` switches to chunked message rendering for heavier chats so the browser can yield between frames instead of monopolizing the UI thread during session switches

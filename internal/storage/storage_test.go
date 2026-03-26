@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -340,6 +341,91 @@ func TestCreateTurnAppendEventFinalizeTurn(t *testing.T) {
 	if completedAt == "" {
 		t.Fatalf("turn completed_at is empty, want non-empty")
 	}
+}
+
+func TestAppendEventMergesConsecutiveDeltaRuns(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer func() {
+		_ = store.Close()
+	}()
+
+	if err := store.UpsertClient(ctx, "client-merge"); err != nil {
+		t.Fatalf("UpsertClient(): %v", err)
+	}
+	if _, err := store.CreateThread(ctx, CreateThreadParams{
+		ThreadID:         "th-merge",
+		ClientID:         "client-merge",
+		AgentID:          "codex",
+		CWD:              "/tmp/project-merge",
+		Title:            "merge",
+		AgentOptionsJSON: "{}",
+		Summary:          "",
+	}); err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+	if _, err := store.CreateTurn(ctx, CreateTurnParams{
+		TurnID:      "tu-merge",
+		ThreadID:    "th-merge",
+		RequestText: "hello",
+		Status:      "running",
+	}); err != nil {
+		t.Fatalf("CreateTurn(): %v", err)
+	}
+
+	first, err := store.AppendEvent(ctx, "tu-merge", "message_delta", `{"turnId":"tu-merge","delta":"hel"}`)
+	if err != nil {
+		t.Fatalf("AppendEvent(message_delta #1): %v", err)
+	}
+	second, err := store.AppendEvent(ctx, "tu-merge", "message_delta", `{"turnId":"tu-merge","delta":"lo"}`)
+	if err != nil {
+		t.Fatalf("AppendEvent(message_delta #2): %v", err)
+	}
+	third, err := store.AppendEvent(ctx, "tu-merge", "reasoning_delta", `{"turnId":"tu-merge","delta":"think-"}`)
+	if err != nil {
+		t.Fatalf("AppendEvent(reasoning_delta #1): %v", err)
+	}
+	fourth, err := store.AppendEvent(ctx, "tu-merge", "reasoning_delta", `{"turnId":"tu-merge","delta":"1"}`)
+	if err != nil {
+		t.Fatalf("AppendEvent(reasoning_delta #2): %v", err)
+	}
+	fifth, err := store.AppendEvent(ctx, "tu-merge", "message_delta", `{"turnId":"tu-merge","delta":"!"}`)
+	if err != nil {
+		t.Fatalf("AppendEvent(message_delta #3): %v", err)
+	}
+
+	if got, want := first.Seq, 1; got != want {
+		t.Fatalf("first.Seq = %d, want %d", got, want)
+	}
+	if got, want := second.Seq, 1; got != want {
+		t.Fatalf("second.Seq = %d, want %d", got, want)
+	}
+	if got, want := third.Seq, 2; got != want {
+		t.Fatalf("third.Seq = %d, want %d", got, want)
+	}
+	if got, want := fourth.Seq, 2; got != want {
+		t.Fatalf("fourth.Seq = %d, want %d", got, want)
+	}
+	if got, want := fifth.Seq, 3; got != want {
+		t.Fatalf("fifth.Seq = %d, want %d", got, want)
+	}
+	if first.EventID != second.EventID {
+		t.Fatalf("message_delta merged event ids = [%d,%d], want same", first.EventID, second.EventID)
+	}
+	if third.EventID != fourth.EventID {
+		t.Fatalf("reasoning_delta merged event ids = [%d,%d], want same", third.EventID, fourth.EventID)
+	}
+
+	events, err := store.ListEventsByTurn(ctx, "tu-merge")
+	if err != nil {
+		t.Fatalf("ListEventsByTurn(): %v", err)
+	}
+	if got, want := len(events), 3; got != want {
+		t.Fatalf("len(events) = %d, want %d", got, want)
+	}
+	assertDeltaEventPayload(t, events[0].DataJSON, "tu-merge", "hello")
+	assertDeltaEventPayload(t, events[1].DataJSON, "tu-merge", "think-1")
+	assertDeltaEventPayload(t, events[2].DataJSON, "tu-merge", "!")
 }
 
 func TestTurnAttachmentsCRUD(t *testing.T) {
@@ -858,6 +944,24 @@ func loadEventSeqs(t *testing.T, db *sql.DB, turnID string) []int {
 	}
 
 	return seqs
+}
+
+func assertDeltaEventPayload(t *testing.T, rawJSON, wantTurnID, wantDelta string) {
+	t.Helper()
+
+	var payload struct {
+		TurnID string `json:"turnId"`
+		Delta  string `json:"delta"`
+	}
+	if err := json.Unmarshal([]byte(rawJSON), &payload); err != nil {
+		t.Fatalf("unmarshal delta event payload: %v", err)
+	}
+	if got := payload.TurnID; got != wantTurnID {
+		t.Fatalf("delta event turnId = %q, want %q", got, wantTurnID)
+	}
+	if got := payload.Delta; got != wantDelta {
+		t.Fatalf("delta event delta = %q, want %q", got, wantDelta)
+	}
 }
 
 func loadTurnTerminalFields(t *testing.T, db *sql.DB, turnID string) (status, stopReason, responseText, completedAt string) {

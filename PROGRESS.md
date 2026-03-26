@@ -1077,3 +1077,29 @@ This file is the source of milestone progress, validation commands, and next act
     - pass: `cd internal/webui/web && npm run build`
     - pass: `go test ./cmd/ngent ./internal/httpapi ./internal/storage ./internal/observability`
     - pass: `go test ./...`
+
+- 2026-03-26: reduced Web UI session-switch stalls by making thread history session-scoped.
+  - root cause: when the user selected one historical session, the Web UI still fetched `GET /v1/threads/{threadId}/history?includeEvents=1` for the entire thread and then filtered it client-side, so a Codex thread with `21` turns and about `19 MB` / `42k` events could block the UI even though the target session only needed one turn.
+  - added optional `sessionId` filtering to `GET /v1/threads/{threadId}/history`; the server now applies the same legacy-session fallback rules as the Web UI (`session_bound` matching, include unannotated legacy turns only when the thread has exactly one annotated session, and continue hiding ephemeral cancelled placeholders).
+  - updated the Web UI `loadHistory()` path to request `api.getHistory(threadId, requestedSessionID)` while keeping the existing local session filter as a compatibility fallback.
+  - verified the real problematic Codex thread on a patched local server:
+    - full thread history remained about `19.1 MB`
+    - `Response.json()` time for the history payload dropped from about `120-133 ms` to about `2.5 ms`
+  - executed validation:
+    - pass: `go test ./internal/httpapi -run TestThreadHistoryFiltersBySessionID -count=1`
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
+- 2026-03-26: removed the remaining session-switch jank on old high-delta history payloads.
+  - residual issue: the first session-scoped fix still left old databases carrying every historical `message_delta` / `reasoning_delta` row in `/history`, so the browser could still do too much synchronous work while replaying one heavy session even though unrelated sessions were gone.
+  - compacted consecutive same-turn history deltas server-side when serializing `/v1/threads/{threadId}/history?includeEvents=1`, covering `message_delta`, `reasoning_delta`, and `thought_delta` without changing persisted ordering across other event types.
+  - kept the write-side storage merge in `AppendEvent(...)` so new data no longer accumulates redundant delta rows in the first place.
+  - changed the Web UI message-list renderer to yield across animation frames for larger histories instead of rebuilding the whole chat synchronously in one pass.
+  - real repro on the provided Codex session after both changes:
+    - browser `Response.json()` for that history payload measured about `1.3 ms`
+    - `hello -> first session` replay no longer showed a `>50 ms` main-thread gap; measured max RAF gap was about `9.4 ms` on the patched local server
+  - executed validation:
+    - pass: `go test ./internal/httpapi -run 'TestThreadHistory(FiltersBySessionID|CompactsConsecutiveDeltaEvents)' -count=1`
+    - pass: `go test ./internal/storage -run TestAppendEventMergesConsecutiveDeltaRuns -count=1`
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`

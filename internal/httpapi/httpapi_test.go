@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2414,6 +2415,259 @@ func TestTurnSessionInfoUpdateSSEAndHistory(t *testing.T) {
 	}
 	if !foundPersisted {
 		t.Fatal("missing persisted session_info_update history event")
+	}
+}
+
+func TestThreadHistoryFiltersBySessionID(t *testing.T) {
+	root := t.TempDir()
+	h := newTestServer(t, testServerOptions{
+		allowedRoots: []string{root},
+		turnAgentFactory: func(thread storage.Thread) (agents.Streamer, error) {
+			sessionID := threadSessionID(thread.AgentOptionsJSON)
+			if sessionID != "" {
+				return &sessionBoundStreamer{sessionID: sessionID}, nil
+			}
+			return &countingClosableStreamer{}, nil
+		},
+	})
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	threadID := createThreadHTTP(t, ts.URL, "client-a", root)
+
+	legacyTurn := runTurnStreamRequest(t, ts.URL, "client-a", threadID, "legacy")
+	if legacyTurn.StatusCode != http.StatusOK {
+		t.Fatalf("legacy turn status = %d, want %d, body=%s", legacyTurn.StatusCode, http.StatusOK, legacyTurn.Body)
+	}
+
+	status, body := doJSON(
+		t,
+		http.MethodPatch,
+		ts.URL+"/v1/threads/"+threadID,
+		map[string]any{"agentOptions": map[string]any{"sessionId": "ses-a"}},
+		map[string]string{"X-Client-ID": "client-a"},
+	)
+	if status != http.StatusOK {
+		t.Fatalf("set session a status = %d, want %d, body=%s", status, http.StatusOK, body)
+	}
+
+	sessionATurn := runTurnStreamRequest(t, ts.URL, "client-a", threadID, "from-a")
+	if sessionATurn.StatusCode != http.StatusOK {
+		t.Fatalf("session a turn status = %d, want %d, body=%s", sessionATurn.StatusCode, http.StatusOK, sessionATurn.Body)
+	}
+
+	status, body = doJSON(
+		t,
+		http.MethodGet,
+		ts.URL+"/v1/threads/"+threadID+"/history?includeEvents=true&sessionId=ses-a",
+		nil,
+		map[string]string{"X-Client-ID": "client-a"},
+	)
+	if status != http.StatusOK {
+		t.Fatalf("history(sessionId=ses-a) status = %d, want %d, body=%s", status, http.StatusOK, body)
+	}
+
+	var firstHistory historyWithEventsResponse
+	if err := json.Unmarshal([]byte(body), &firstHistory); err != nil {
+		t.Fatalf("unmarshal history(sessionId=ses-a): %v", err)
+	}
+	if got, want := len(firstHistory.Turns), 2; got != want {
+		t.Fatalf("len(history(sessionId=ses-a).turns) = %d, want %d", got, want)
+	}
+	if got, want := firstHistory.Turns[0].ResponseText, "legacy"; got != want {
+		t.Fatalf("history(sessionId=ses-a).turns[0].responseText = %q, want %q", got, want)
+	}
+	if got, want := firstHistory.Turns[1].ResponseText, "from-a"; got != want {
+		t.Fatalf("history(sessionId=ses-a).turns[1].responseText = %q, want %q", got, want)
+	}
+	if len(firstHistory.Turns[1].Events) == 0 {
+		t.Fatal("history(sessionId=ses-a).turns[1].events is empty")
+	}
+	foundSessionBound := false
+	for _, event := range firstHistory.Turns[1].Events {
+		if event.Type != "session_bound" {
+			continue
+		}
+		foundSessionBound = true
+		if got := stringField(event.Data, "sessionId"); got != "ses-a" {
+			t.Fatalf("history(sessionId=ses-a) session_bound.sessionId = %q, want %q", got, "ses-a")
+		}
+	}
+	if !foundSessionBound {
+		t.Fatal("history(sessionId=ses-a) missing session_bound event")
+	}
+
+	status, body = doJSON(
+		t,
+		http.MethodPatch,
+		ts.URL+"/v1/threads/"+threadID,
+		map[string]any{"agentOptions": map[string]any{"sessionId": "ses-b"}},
+		map[string]string{"X-Client-ID": "client-a"},
+	)
+	if status != http.StatusOK {
+		t.Fatalf("set session b status = %d, want %d, body=%s", status, http.StatusOK, body)
+	}
+
+	sessionBTurn := runTurnStreamRequest(t, ts.URL, "client-a", threadID, "from-b")
+	if sessionBTurn.StatusCode != http.StatusOK {
+		t.Fatalf("session b turn status = %d, want %d, body=%s", sessionBTurn.StatusCode, http.StatusOK, sessionBTurn.Body)
+	}
+
+	status, body = doJSON(
+		t,
+		http.MethodGet,
+		ts.URL+"/v1/threads/"+threadID+"/history?sessionId=ses-a",
+		nil,
+		map[string]string{"X-Client-ID": "client-a"},
+	)
+	if status != http.StatusOK {
+		t.Fatalf("history(sessionId=ses-a) after ses-b status = %d, want %d, body=%s", status, http.StatusOK, body)
+	}
+	var filteredHistory historyResponse
+	if err := json.Unmarshal([]byte(body), &filteredHistory); err != nil {
+		t.Fatalf("unmarshal filtered history(sessionId=ses-a): %v", err)
+	}
+	if got, want := len(filteredHistory.Turns), 1; got != want {
+		t.Fatalf("len(filtered history(sessionId=ses-a).turns) = %d, want %d", got, want)
+	}
+	if got, want := filteredHistory.Turns[0].ResponseText, "from-a"; got != want {
+		t.Fatalf("filtered history(sessionId=ses-a).turns[0].responseText = %q, want %q", got, want)
+	}
+
+	status, body = doJSON(
+		t,
+		http.MethodGet,
+		ts.URL+"/v1/threads/"+threadID+"/history?sessionId=missing",
+		nil,
+		map[string]string{"X-Client-ID": "client-a"},
+	)
+	if status != http.StatusOK {
+		t.Fatalf("history(sessionId=missing) status = %d, want %d, body=%s", status, http.StatusOK, body)
+	}
+	var missingHistory historyResponse
+	if err := json.Unmarshal([]byte(body), &missingHistory); err != nil {
+		t.Fatalf("unmarshal history(sessionId=missing): %v", err)
+	}
+	if got := len(missingHistory.Turns); got != 0 {
+		t.Fatalf("len(history(sessionId=missing).turns) = %d, want 0", got)
+	}
+}
+
+func TestThreadHistoryCompactsConsecutiveDeltaEvents(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(t.TempDir(), "api.db")
+	h, cleanup := newTestServerWithDBPath(t, dbPath, testServerOptions{
+		allowedRoots: []string{root},
+	})
+	defer cleanup()
+
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	threadID := createThreadHTTP(t, ts.URL, "client-a", root)
+	storeImpl, ok := h.store.(*storage.Store)
+	if !ok {
+		t.Fatalf("server store type = %T, want *storage.Store", h.store)
+	}
+
+	const turnID = "turn-compact-history"
+	if _, err := storeImpl.CreateTurn(context.Background(), storage.CreateTurnParams{
+		TurnID:      turnID,
+		ThreadID:    threadID,
+		RequestText: "hello",
+		Status:      "running",
+	}); err != nil {
+		t.Fatalf("CreateTurn(): %v", err)
+	}
+	if err := storeImpl.FinalizeTurn(context.Background(), storage.FinalizeTurnParams{
+		TurnID:       turnID,
+		ResponseText: "hello",
+		Status:       "done",
+		StopReason:   "end_turn",
+	}); err != nil {
+		t.Fatalf("FinalizeTurn(): %v", err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open(%q): %v", dbPath, err)
+	}
+	defer func() {
+		_ = db.Close()
+	}()
+
+	createdAtBase := time.Date(2026, time.March, 26, 12, 0, 0, 0, time.UTC)
+	rawEvents := []struct {
+		seq       int
+		eventType string
+		dataJSON  string
+	}{
+		{seq: 1, eventType: "message_delta", dataJSON: `{"turnId":"turn-compact-history","delta":"hel"}`},
+		{seq: 2, eventType: "message_delta", dataJSON: `{"turnId":"turn-compact-history","delta":"lo"}`},
+		{seq: 3, eventType: "reasoning_delta", dataJSON: `{"turnId":"turn-compact-history","delta":"think-"}`},
+		{seq: 4, eventType: "reasoning_delta", dataJSON: `{"turnId":"turn-compact-history","delta":"1"}`},
+		{seq: 5, eventType: "tool_call", dataJSON: `{"toolCallId":"call-1","title":"Shell","status":"running"}`},
+	}
+	for idx, event := range rawEvents {
+		if _, err := db.Exec(`
+			INSERT INTO events (turn_id, seq, type, data_json, created_at)
+			VALUES (?, ?, ?, ?, ?);
+		`,
+			turnID,
+			event.seq,
+			event.eventType,
+			event.dataJSON,
+			createdAtBase.Add(time.Duration(idx)*time.Millisecond).Format(time.RFC3339Nano),
+		); err != nil {
+			t.Fatalf("insert raw event #%d: %v", idx+1, err)
+		}
+	}
+
+	status, body := doJSON(
+		t,
+		http.MethodGet,
+		ts.URL+"/v1/threads/"+threadID+"/history?includeEvents=true",
+		nil,
+		map[string]string{"X-Client-ID": "client-a"},
+	)
+	if status != http.StatusOK {
+		t.Fatalf("history(includeEvents=true) status = %d, want %d, body=%s", status, http.StatusOK, body)
+	}
+
+	var history historyWithEventsResponse
+	if err := json.Unmarshal([]byte(body), &history); err != nil {
+		t.Fatalf("unmarshal history(includeEvents=true): %v", err)
+	}
+	if got, want := len(history.Turns), 1; got != want {
+		t.Fatalf("len(history.turns) = %d, want %d", got, want)
+	}
+	events := history.Turns[0].Events
+	if got, want := len(events), 3; got != want {
+		t.Fatalf("len(history.turns[0].events) = %d, want %d", got, want)
+	}
+	if got, want := events[0].Type, "message_delta"; got != want {
+		t.Fatalf("history event[0].type = %q, want %q", got, want)
+	}
+	if got, want := events[0].Seq, 1; got != want {
+		t.Fatalf("history event[0].seq = %d, want %d", got, want)
+	}
+	if got, want := stringField(events[0].Data, "delta"), "hello"; got != want {
+		t.Fatalf("history event[0].delta = %q, want %q", got, want)
+	}
+	if got, want := events[1].Type, "reasoning_delta"; got != want {
+		t.Fatalf("history event[1].type = %q, want %q", got, want)
+	}
+	if got, want := events[1].Seq, 3; got != want {
+		t.Fatalf("history event[1].seq = %d, want %d", got, want)
+	}
+	if got, want := stringField(events[1].Data, "delta"), "think-1"; got != want {
+		t.Fatalf("history event[1].delta = %q, want %q", got, want)
+	}
+	if got, want := events[2].Type, "tool_call"; got != want {
+		t.Fatalf("history event[2].type = %q, want %q", got, want)
+	}
+	if got, want := events[2].Seq, 5; got != want {
+		t.Fatalf("history event[2].seq = %d, want %d", got, want)
 	}
 }
 
@@ -4947,8 +5201,10 @@ type historyResponse struct {
 
 type historyWithEventsResponse struct {
 	Turns []struct {
-		TurnID string `json:"turnId"`
-		Events []struct {
+		TurnID       string `json:"turnId"`
+		ResponseText string `json:"responseText"`
+		Events       []struct {
+			Seq  int            `json:"seq"`
 			Type string         `json:"type"`
 			Data map[string]any `json:"data"`
 		} `json:"events"`

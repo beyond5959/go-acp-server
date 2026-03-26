@@ -196,6 +196,7 @@ const sessionPanelScrollTopByThread = new Map<string, number>()
 const sessionTitleOverridesByThread = new Map<string, Map<string, string>>()
 const composerAttachmentsByThread = new Map<string, ComposerAttachmentDraft[]>()
 let sessionPanelRequestSeq = 0
+let messageListRenderSeq = 0
 
 function cloneConfigOptions(options: ConfigOption[]): ConfigOption[] {
   return options.map(option => ({
@@ -684,76 +685,6 @@ function parsePlanEntries(value: unknown): PlanEntry[] | undefined {
   return clonePlanEntries(parsed)
 }
 
-function extractTurnPlanEntries(events: TurnEvent[] | undefined): PlanEntry[] | undefined {
-  let latest: PlanEntry[] | undefined
-  for (const event of events ?? []) {
-    if (event.type !== 'plan_update') continue
-    latest = parsePlanEntries(event.data.entries)
-  }
-  return clonePlanEntries(latest)
-}
-
-function extractTurnToolCalls(events: TurnEvent[] | undefined): ToolCall[] | undefined {
-  let toolCalls: ToolCall[] = []
-  for (const event of events ?? []) {
-    if (event.type !== 'tool_call' && event.type !== 'tool_call_update') continue
-    toolCalls = applyToolCallEvent(toolCalls, event.data)
-  }
-  return cloneToolCalls(toolCalls)
-}
-
-function extractTurnReasoning(events: TurnEvent[] | undefined): string {
-  let reasoning = ''
-  for (const event of events ?? []) {
-    if (event.type !== 'reasoning_delta' && event.type !== 'thought_delta') continue
-    if (typeof event.data.delta !== 'string') continue
-    reasoning += event.data.delta
-  }
-  return reasoning
-}
-
-function extractTurnUserPrompt(events: TurnEvent[] | undefined): {
-  text: string
-  attachments?: MessageAttachment[]
-} {
-  const textParts: string[] = []
-  const attachments: MessageAttachment[] = []
-
-  for (const event of sortTurnEvents(events)) {
-    if (event.type !== 'user_prompt') continue
-    const prompt = Array.isArray(event.data.prompt) ? event.data.prompt : []
-    prompt.forEach(item => {
-      const record = asRecord(item)
-      if (!record) return
-      const type = recordString(record, 'type').toLowerCase()
-      if (type === 'text') {
-        const text = recordString(record, 'text')
-        if (text) textParts.push(text)
-        return
-      }
-      if (type !== 'resource_link') return
-      const sizeValue = record?.size
-      const attachmentId = recordString(record, 'attachmentId') || undefined
-      const persistentUrl = attachmentResourceURL(attachmentId)
-      const mimeType = recordString(record, 'mimeType') || undefined
-      attachments.push({
-        attachmentId,
-        name: recordString(record, 'name') || 'Attachment',
-        uri: recordString(record, 'uri') || undefined,
-        mimeType,
-        size: typeof sizeValue === 'number' && Number.isFinite(sizeValue) ? sizeValue : undefined,
-        previewUrl: mimeType?.startsWith('image/') ? persistentUrl : undefined,
-        downloadUrl: persistentUrl,
-      })
-    })
-  }
-
-  return {
-    text: textParts.join('\n\n'),
-    attachments: cloneMessageAttachments(attachments),
-  }
-}
-
 function sortTurnEvents(events: TurnEvent[] | undefined): TurnEvent[] {
   return [...(events ?? [])].sort((left, right) => {
     if (left.seq !== right.seq) return left.seq - right.seq
@@ -761,16 +692,73 @@ function sortTurnEvents(events: TurnEvent[] | undefined): TurnEvent[] {
   })
 }
 
-function buildMessageSegmentsFromTurn(
-  turnId: string,
-  events: TurnEvent[] | undefined,
-  responseText: string,
-): MessageSegment[] | undefined {
-  let segments: MessageSegment[] = []
-  const idPrefix = `${turnId}-segment`
+function parseTurnUserPromptEvent(event: TurnEvent): {
+  text: string
+  attachments?: MessageAttachment[]
+} {
+  const textParts: string[] = []
+  const attachments: MessageAttachment[] = []
+  const prompt = Array.isArray(event.data.prompt) ? event.data.prompt : []
+  prompt.forEach(item => {
+    const record = asRecord(item)
+    if (!record) return
+    const type = recordString(record, 'type').toLowerCase()
+    if (type === 'text') {
+      const text = recordString(record, 'text')
+      if (text) textParts.push(text)
+      return
+    }
+    if (type !== 'resource_link') return
+    const sizeValue = record?.size
+    const attachmentId = recordString(record, 'attachmentId') || undefined
+    const persistentUrl = attachmentResourceURL(attachmentId)
+    const mimeType = recordString(record, 'mimeType') || undefined
+    attachments.push({
+      attachmentId,
+      name: recordString(record, 'name') || 'Attachment',
+      uri: recordString(record, 'uri') || undefined,
+      mimeType,
+      size: typeof sizeValue === 'number' && Number.isFinite(sizeValue) ? sizeValue : undefined,
+      previewUrl: mimeType?.startsWith('image/') ? persistentUrl : undefined,
+      downloadUrl: persistentUrl,
+    })
+  })
 
-  for (const event of sortTurnEvents(events)) {
+  return {
+    text: textParts.join('\n\n'),
+    attachments: cloneMessageAttachments(attachments),
+  }
+}
+
+interface TurnReplayAnalysis {
+  userText: string
+  userAttachments?: MessageAttachment[]
+  planEntries?: PlanEntry[]
+  reasoning: string
+  toolCalls?: ToolCall[]
+  segments?: MessageSegment[]
+}
+
+function analyzeTurnReplay(turn: Turn): TurnReplayAnalysis {
+  const userTextParts: string[] = []
+  let userAttachments: MessageAttachment[] = []
+  let latestPlanEntries: PlanEntry[] | undefined
+  let reasoning = ''
+  let toolCalls: ToolCall[] = []
+  let segments: MessageSegment[] = []
+  const idPrefix = `${turn.turnId}-segment`
+
+  for (const event of sortTurnEvents(turn.events)) {
     switch (event.type) {
+      case 'user_prompt': {
+        const prompt = parseTurnUserPromptEvent(event)
+        if (prompt.text) userTextParts.push(prompt.text)
+        if (prompt.attachments?.length) userAttachments = [...userAttachments, ...prompt.attachments]
+        break
+      }
+      case 'plan_update':
+        latestPlanEntries = parsePlanEntries(event.data.entries)
+        break
       case 'message_delta': {
         if (typeof event.data.delta !== 'string' || !event.data.delta) continue
         segments = appendTextSegment(segments, 'content', event.data.delta, idPrefix)
@@ -783,11 +771,13 @@ function buildMessageSegmentsFromTurn(
       case 'reasoning_delta':
       case 'thought_delta': {
         if (typeof event.data.delta !== 'string' || !event.data.delta) continue
+        reasoning += event.data.delta
         segments = appendTextSegment(segments, 'reasoning', event.data.delta, idPrefix)
         break
       }
       case 'tool_call':
       case 'tool_call_update':
+        toolCalls = applyToolCallEvent(toolCalls, event.data)
         segments = applyToolCallSegmentEvent(segments, event.data, idPrefix)
         break
       default:
@@ -795,11 +785,18 @@ function buildMessageSegmentsFromTurn(
     }
   }
 
-  if (!messageHasContentSegment(segments) && hasVisibleContent(responseText)) {
-    segments = appendTextSegment(segments, 'content', responseText, idPrefix)
+  if (!messageHasContentSegment(segments) && hasVisibleContent(turn.responseText)) {
+    segments = appendTextSegment(segments, 'content', turn.responseText, idPrefix)
   }
 
-  return cloneMessageSegments(segments)
+  return {
+    userText: userTextParts.join('\n\n'),
+    userAttachments: cloneMessageAttachments(userAttachments),
+    planEntries: clonePlanEntries(latestPlanEntries),
+    reasoning,
+    toolCalls: cloneToolCalls(toolCalls),
+    segments: cloneMessageSegments(segments),
+  }
 }
 
 function fallbackMessageSegments(msg: Message): MessageSegment[] | undefined {
@@ -2642,20 +2639,34 @@ async function handleDeleteThread(threadId: string): Promise<void> {
 
 // ── History helpers ───────────────────────────────────────────────────────
 
-/** Convert server Turn[] to the client Message[] model. */
-function turnsToMessages(turns: Turn[]): Message[] {
+const HISTORY_REPLAY_YIELD_INTERVAL_MS = 8
+const MESSAGE_LIST_RENDER_YIELD_INTERVAL_MS = 8
+
+function waitForNextPaint(): Promise<void> {
+  return new Promise(resolve => {
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => resolve())
+      return
+    }
+    window.setTimeout(resolve, 0)
+  })
+}
+
+/** Convert server Turn[] to the client Message[] model without monopolizing the UI thread. */
+async function turnsToMessagesAsync(turns: Turn[]): Promise<Message[]> {
   const msgs: Message[] = []
+  let lastYieldAt = performance.now()
   for (const t of turns) {
     if (t.isInternal) continue
-    const userPrompt = extractTurnUserPrompt(t.events)
-    const userContent = userPrompt.text || t.requestText
+    const analysis = analyzeTurnReplay(t)
+    const userContent = analysis.userText || t.requestText
 
-    if (userContent || userPrompt.attachments?.length) {
+    if (userContent || analysis.userAttachments?.length) {
       msgs.push({
         id:        `${t.turnId}-u`,
         role:      'user',
         content:   userContent,
-        attachments: userPrompt.attachments,
+        attachments: analysis.userAttachments,
         timestamp: t.createdAt,
         status:    'done',
         turnId:    t.turnId,
@@ -2663,10 +2674,6 @@ function turnsToMessages(turns: Turn[]): Message[] {
     }
 
     if (t.status !== 'running') {
-      const planEntries = extractTurnPlanEntries(t.events)
-      const reasoning = extractTurnReasoning(t.events)
-      const toolCalls = extractTurnToolCalls(t.events)
-      const segments = buildMessageSegmentsFromTurn(t.turnId, t.events, t.responseText)
       const agentStatus: Message['status'] =
         t.status === 'cancelled' ? 'cancelled' :
         t.status === 'error'     ? 'error'     :
@@ -2681,11 +2688,16 @@ function turnsToMessages(turns: Turn[]): Message[] {
         turnId:       t.turnId,
         stopReason:   t.stopReason   || undefined,
         errorMessage: t.errorMessage || undefined,
-        segments,
-        planEntries,
-        toolCalls,
-        reasoning: hasReasoningText(reasoning) ? reasoning : undefined,
+        segments:     analysis.segments,
+        planEntries:  analysis.planEntries,
+        toolCalls:    analysis.toolCalls,
+        reasoning:    hasReasoningText(analysis.reasoning) ? analysis.reasoning : undefined,
       })
+    }
+
+    if (performance.now() - lastYieldAt >= HISTORY_REPLAY_YIELD_INTERVAL_MS) {
+      await waitForNextPaint()
+      lastYieldAt = performance.now()
     }
   }
   return msgs
@@ -2783,14 +2795,14 @@ async function loadHistory(threadId: string): Promise<void> {
   if (!requestedScopeKey) return
   if (!requestedSessionID && isFreshSessionScopeKey(requestedScopeKey)) return
   try {
-    const turns = await api.getHistory(threadId)
+    const turns = await api.getHistory(threadId, requestedSessionID)
     const state = store.get()
     if (state.activeThreadId !== threadId) return
     const activeThread = state.threads.find(item => item.threadId === threadId)
     if (!activeThread || threadSessionID(activeThread) !== requestedSessionID) return
     if (getScopeStreamState(requestedScopeKey)) return
 
-    const localMessages = turnsToMessages(filterTurnsBySession(turns, requestedSessionID))
+    const localMessages = await turnsToMessagesAsync(filterTurnsBySession(turns, requestedSessionID))
     const cachedMessages = state.messages[requestedScopeKey] ?? []
     let nextMessages = localMessages
     if (requestedSessionID) {
@@ -3688,6 +3700,94 @@ function renderMessage(msg: Message): string {
     </div>`
 }
 
+function messageRenderWeight(msg: Message): number {
+  let total = (msg.content?.length ?? 0) + (msg.reasoning?.length ?? 0)
+  total += (msg.attachments?.length ?? 0) * 256
+
+  for (const segment of msg.segments ?? []) {
+    total += segment.content?.length ?? 0
+    if (segment.contentBlock !== undefined) {
+      total += 512
+    }
+    if (segment.toolCall) {
+      total += JSON.stringify(segment.toolCall).length
+    }
+  }
+
+  return total
+}
+
+function shouldRenderMessageListAsync(msgs: Message[]): boolean {
+  if (msgs.length >= 6) return true
+
+  let totalWeight = 0
+  for (const msg of msgs) {
+    totalWeight += messageRenderWeight(msg)
+    if (totalWeight >= 2_048) {
+      return true
+    }
+  }
+  return false
+}
+
+function hideScrollToBottomButton(): void {
+  const scrollBtn = document.getElementById('scroll-bottom-btn')
+  if (scrollBtn) scrollBtn.style.display = 'none'
+}
+
+function finishMessageListRender(listEl: HTMLElement): void {
+  listEl.scrollTop = listEl.scrollHeight
+  hideScrollToBottomButton()
+}
+
+function isCurrentMessageListRender(
+  renderSeq: number,
+  scopeKey: string,
+  listEl: HTMLElement,
+): boolean {
+  if (!listEl.isConnected) return false
+  if (messageListRenderSeq !== renderSeq) return false
+
+  const { activeThreadId, threads } = store.get()
+  if (!activeThreadId) return false
+  const thread = threads.find(item => item.threadId === activeThreadId)
+  return threadChatScopeKey(thread) === scopeKey
+}
+
+async function renderMessageListAsync(
+  renderSeq: number,
+  scopeKey: string,
+  msgs: Message[],
+): Promise<void> {
+  const listEl = document.getElementById('message-list')
+  if (!(listEl instanceof HTMLElement)) return
+
+  listEl.innerHTML = ''
+  let lastYieldAt = performance.now()
+
+  for (const msg of msgs) {
+    if (!isCurrentMessageListRender(renderSeq, scopeKey, listEl)) return
+
+    const template = document.createElement('template')
+    template.innerHTML = renderMessage(msg).trim()
+    const node = template.content.firstElementChild
+    if (node instanceof HTMLElement) {
+      listEl.appendChild(node)
+      bindMarkdownControls(node)
+      bindReasoningPanels(node)
+      bindToolCallPanels(node)
+    }
+
+    if (performance.now() - lastYieldAt >= MESSAGE_LIST_RENDER_YIELD_INTERVAL_MS) {
+      await waitForNextPaint()
+      lastYieldAt = performance.now()
+    }
+  }
+
+  if (!isCurrentMessageListRender(renderSeq, scopeKey, listEl)) return
+  finishMessageListRender(listEl)
+}
+
 function renderStreamingBubbleHTML(
   messageID: string,
   segments: MessageSegment[] | undefined,
@@ -3823,6 +3923,9 @@ function updateMessageList(): void {
   const listEl = document.getElementById('message-list')
   if (!listEl) return
 
+  messageListRenderSeq += 1
+  const renderSeq = messageListRenderSeq
+
   const { activeThreadId, threads, messages } = store.get()
   if (!activeThreadId) return
 
@@ -3839,14 +3942,16 @@ function updateMessageList(): void {
     return
   }
 
+  if (shouldRenderMessageListAsync(msgs)) {
+    void renderMessageListAsync(renderSeq, scopeKey, msgs)
+    return
+  }
+
   listEl.innerHTML = msgs.map(m => renderMessage(m)).join('')
   bindMarkdownControls(listEl)
   bindReasoningPanels(listEl)
   bindToolCallPanels(listEl)
-  listEl.scrollTop = listEl.scrollHeight
-  // Sync scroll button (we just moved to the bottom)
-  const scrollBtn = document.getElementById('scroll-bottom-btn')
-  if (scrollBtn) scrollBtn.style.display = 'none'
+  finishMessageListRender(listEl)
 }
 
 // ── Input state ───────────────────────────────────────────────────────────

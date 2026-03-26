@@ -1531,6 +1531,7 @@ func (s *Server) handleThreadHistory(w http.ResponseWriter, r *http.Request, cli
 
 	includeEvents := parseBoolQuery(r, "includeEvents")
 	includeInternal := parseBoolQuery(r, "includeInternal")
+	sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
 
 	turns, err := s.store.ListTurnsByThread(r.Context(), threadID)
 	if err != nil {
@@ -1538,11 +1539,31 @@ func (s *Server) handleThreadHistory(w http.ResponseWriter, r *http.Request, cli
 		return
 	}
 
-	respTurns := make([]turnHistoryResponse, 0, len(turns))
+	loadEvents := includeEvents || sessionID != ""
+	historyTurns := make([]threadHistoryTurn, 0, len(turns))
 	for _, turn := range turns {
 		if !includeInternal && turn.IsInternal {
 			continue
 		}
+		historyTurn := threadHistoryTurn{turn: turn}
+		if loadEvents {
+			events, eventsErr := s.store.ListEventsByTurn(r.Context(), turn.TurnID)
+			if eventsErr != nil {
+				writeError(w, http.StatusInternalServerError, "INTERNAL", "failed to list events", map[string]any{"reason": eventsErr.Error()})
+				return
+			}
+			historyTurn.events = events
+		}
+		historyTurns = append(historyTurns, historyTurn)
+	}
+
+	if sessionID != "" {
+		historyTurns = filterThreadHistoryBySession(historyTurns, sessionID)
+	}
+
+	respTurns := make([]turnHistoryResponse, 0, len(historyTurns))
+	for _, item := range historyTurns {
+		turn := item.turn
 
 		respTurn := turnHistoryResponse{
 			TurnID:       turn.TurnID,
@@ -1560,11 +1581,7 @@ func (s *Server) handleThreadHistory(w http.ResponseWriter, r *http.Request, cli
 		}
 
 		if includeEvents {
-			events, eventsErr := s.store.ListEventsByTurn(r.Context(), turn.TurnID)
-			if eventsErr != nil {
-				writeError(w, http.StatusInternalServerError, "INTERNAL", "failed to list events", map[string]any{"reason": eventsErr.Error()})
-				return
-			}
+			events := compactThreadHistoryEvents(item.events)
 			respEvents := make([]eventHistoryResponse, 0, len(events))
 			for _, event := range events {
 				raw := json.RawMessage(event.DataJSON)
@@ -1586,6 +1603,184 @@ func (s *Server) handleThreadHistory(w http.ResponseWriter, r *http.Request, cli
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"turns": respTurns})
+}
+
+type threadHistoryTurn struct {
+	turn   storage.Turn
+	events []storage.Event
+}
+
+func filterThreadHistoryBySession(turns []threadHistoryTurn, sessionID string) []threadHistoryTurn {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return turns
+	}
+
+	assignments := make([]threadHistoryTurnAssignment, 0, len(turns))
+	annotatedSessions := make(map[string]struct{})
+	for _, turn := range turns {
+		assignedSessionID := extractThreadHistorySessionID(turn.events)
+		if assignedSessionID != "" {
+			annotatedSessions[assignedSessionID] = struct{}{}
+		}
+		assignments = append(assignments, threadHistoryTurnAssignment{
+			turn:      turn,
+			sessionID: assignedSessionID,
+		})
+	}
+
+	if len(annotatedSessions) == 0 {
+		filtered := make([]threadHistoryTurn, 0, len(assignments))
+		for _, item := range assignments {
+			if isEphemeralCancelledHistoryTurn(item.turn.turn) {
+				continue
+			}
+			filtered = append(filtered, item.turn)
+		}
+		return filtered
+	}
+
+	hasMatchedAnnotatedTurns := false
+	for _, item := range assignments {
+		if item.sessionID == sessionID {
+			hasMatchedAnnotatedTurns = true
+			break
+		}
+	}
+	if !hasMatchedAnnotatedTurns {
+		return nil
+	}
+
+	includeUnannotatedLegacyTurns := len(annotatedSessions) == 1
+	if includeUnannotatedLegacyTurns {
+		_, includeUnannotatedLegacyTurns = annotatedSessions[sessionID]
+	}
+
+	filtered := make([]threadHistoryTurn, 0, len(assignments))
+	for _, item := range assignments {
+		if item.sessionID == sessionID || (includeUnannotatedLegacyTurns && item.sessionID == "") {
+			filtered = append(filtered, item.turn)
+		}
+	}
+	return filtered
+}
+
+type threadHistoryTurnAssignment struct {
+	turn      threadHistoryTurn
+	sessionID string
+}
+
+func extractThreadHistorySessionID(events []storage.Event) string {
+	sessionID := ""
+	for _, event := range events {
+		if event.Type != "session_bound" {
+			continue
+		}
+		var payload struct {
+			SessionID string `json:"sessionId"`
+		}
+		if err := json.Unmarshal([]byte(event.DataJSON), &payload); err != nil {
+			continue
+		}
+		nextSessionID := strings.TrimSpace(payload.SessionID)
+		if nextSessionID != "" {
+			sessionID = nextSessionID
+		}
+	}
+	return sessionID
+}
+
+func isEphemeralCancelledHistoryTurn(turn storage.Turn) bool {
+	return turn.Status == "cancelled" && strings.TrimSpace(turn.ResponseText) == ""
+}
+
+func compactThreadHistoryEvents(events []storage.Event) []storage.Event {
+	if len(events) < 2 {
+		return events
+	}
+
+	compacted := make([]storage.Event, 0, len(events))
+	for _, event := range events {
+		if lastIdx := len(compacted) - 1; lastIdx >= 0 {
+			last := compacted[lastIdx]
+			if shouldCompactThreadHistoryDeltaEvent(last, event) {
+				mergedDataJSON, merged, err := compactThreadHistoryDeltaPayload(
+					last.TurnID,
+					last.DataJSON,
+					event.DataJSON,
+				)
+				if err != nil {
+					return events
+				}
+				if merged {
+					compacted[lastIdx].DataJSON = mergedDataJSON
+					compacted[lastIdx].CreatedAt = event.CreatedAt
+					continue
+				}
+			}
+		}
+
+		compacted = append(compacted, event)
+	}
+	return compacted
+}
+
+func shouldCompactThreadHistoryDeltaEvent(last, next storage.Event) bool {
+	if strings.TrimSpace(last.TurnID) != strings.TrimSpace(next.TurnID) {
+		return false
+	}
+	if strings.TrimSpace(last.Type) != strings.TrimSpace(next.Type) {
+		return false
+	}
+
+	switch strings.TrimSpace(next.Type) {
+	case "message_delta", "reasoning_delta", "thought_delta":
+		return true
+	default:
+		return false
+	}
+}
+
+func compactThreadHistoryDeltaPayload(turnID, currentDataJSON, nextDataJSON string) (string, bool, error) {
+	currentPayload := map[string]any{}
+	if err := json.Unmarshal([]byte(currentDataJSON), &currentPayload); err != nil {
+		return "", false, nil
+	}
+	nextPayload := map[string]any{}
+	if err := json.Unmarshal([]byte(nextDataJSON), &nextPayload); err != nil {
+		return "", false, nil
+	}
+
+	currentDelta, currentOK := currentPayload["delta"].(string)
+	nextDelta, nextOK := nextPayload["delta"].(string)
+	if !currentOK || !nextOK {
+		return "", false, nil
+	}
+	if !threadHistoryDeltaPayloadMatchesTurn(turnID, currentPayload) {
+		return "", false, nil
+	}
+	if !threadHistoryDeltaPayloadMatchesTurn(turnID, nextPayload) {
+		return "", false, nil
+	}
+
+	currentPayload["delta"] = currentDelta + nextDelta
+	mergedJSON, err := json.Marshal(currentPayload)
+	if err != nil {
+		return "", false, err
+	}
+	return string(mergedJSON), true, nil
+}
+
+func threadHistoryDeltaPayloadMatchesTurn(turnID string, payload map[string]any) bool {
+	value, ok := payload["turnId"]
+	if !ok {
+		return true
+	}
+	valueText, ok := value.(string)
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(valueText) == strings.TrimSpace(turnID)
 }
 
 func (s *Server) handleThreadSessions(w http.ResponseWriter, r *http.Request, clientID, threadID string) {

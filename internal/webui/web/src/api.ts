@@ -131,10 +131,13 @@ class ApiClient {
   }
 
   /** GET /v1/threads/{threadId}/history */
-  async getHistory(threadId: string): Promise<Turn[]> {
+  async getHistory(threadId: string, sessionId = ''): Promise<Turn[]> {
+    const params = new URLSearchParams({ includeEvents: '1' })
+    const trimmedSessionID = sessionId.trim()
+    if (trimmedSessionID) params.set('sessionId', trimmedSessionID)
     const data = await this.request<HistoryResponse>(
       'GET',
-      `/v1/threads/${encodeURIComponent(threadId)}/history?includeEvents=1`,
+      `/v1/threads/${encodeURIComponent(threadId)}/history?${params.toString()}`,
     )
     return data.turns
   }
