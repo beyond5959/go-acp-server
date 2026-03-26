@@ -456,6 +456,19 @@
 
 ## Recently Closed
 
+- ID: KI-042
+- Title: Web UI session sidebar raised 409 conflicts while another session was still streaming
+- Status: Closed
+- Severity: Medium
+- Affects: switching between sessions in the Web UI while the thread already has an active turn
+- Symptom:
+  - choosing another session from the sidebar previously always issued `PATCH /v1/threads/{threadId}` immediately.
+  - if any turn in that thread was still active, the server returned `409 thread has an active turn`, so even read-only session browsing produced an error dialog.
+- Workaround:
+  - none; fixed on 2026-03-26 by separating local viewed-session state from backend thread session binding and deferring backend sync until the thread is idle.
+- Follow-up plan:
+  - monitor whether users also need an explicit visible indicator when they are browsing a session that has not yet been synced back into backend thread state.
+
 - ID: KI-041
 - Title: Web UI session switch fetched whole-thread history and stalled on large multi-session threads
 - Status: Closed

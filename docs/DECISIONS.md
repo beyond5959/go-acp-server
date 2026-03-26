@@ -1622,3 +1622,24 @@ Use this template for new decisions.
   - migrate existing SQLite data in place (rejected: more invasive, riskier on user state, and unnecessary when read-time compaction solves the API cost directly).
   - compact every event type aggressively, including `tool_call_update` (rejected for now: those updates can carry meaningful intermediate state transitions that should stay ordered until a clearer merge contract is defined).
   - keep synchronous DOM rebuilds and rely only on smaller payloads (rejected: large rendered transcripts can still block the main thread even after history parsing becomes cheap).
+
+## ADR-062: Decouple viewed Web UI session from backend thread session during active turns
+
+- Status: Accepted
+- Date: 2026-03-26
+- Context:
+  - the Web UI session picker previously reused `thread.agentOptions.sessionId` as both the backend agent scope and the frontend "currently viewed chat" selection.
+  - when a turn was still active, switching to another session always tried `PATCH /v1/threads/{threadId}` and the server correctly rejected it with `409 thread has an active turn`.
+  - users still need to inspect older sessions while another session is waiting on a long-running response.
+- Decision:
+  - add a frontend-only per-thread session-selection override that can temporarily differ from `thread.agentOptions.sessionId`.
+  - while a thread has any active stream, session switching updates only the visible chat/history scope in the browser and skips the backend patch.
+  - once the stream finishes, or immediately before the next send when no stream is active, sync the selected session back into `PATCH /v1/threads/{threadId}` so future turns still execute in the session currently shown in the UI.
+  - represent unsaved "New session" views with a stable local `@fresh:<nonce>` selection so message/history caches keep a distinct fresh-session scope before ACP emits `session_bound`.
+- Consequences:
+  - users can browse away from a waiting session and later return without seeing a conflict alert.
+  - backend concurrency semantics stay unchanged because thread/session binding is still only mutated when the thread is idle.
+  - the frontend now owns a small amount of ephemeral session-selection state and must clear it when thread state catches up or the thread is deleted.
+- Alternatives considered:
+  - keep the old behavior and surface the 409 as a user error (rejected: browsing another session is a read-only UI action and should not feel blocked by an unrelated active turn).
+  - relax the server to accept session-changing `PATCH` during active turns (rejected: would violate the existing whole-thread conflict model and risks mutating active agent scope mid-turn).

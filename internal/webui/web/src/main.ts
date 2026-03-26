@@ -170,6 +170,7 @@ const agentSlashCommandsInFlight = new Map<string, Promise<SlashCommand[]>>()
 const threadConfigSwitching = new Set<string>()
 const sessionSwitchingThreads = new Set<string>()
 const freshSessionNonceByThread = new Map<string, string>()
+const selectedSessionOverrideByThread = new Map<string, string>()
 let slashCommandSelectedIndex = 0
 
 interface SessionPanelState {
@@ -888,6 +889,24 @@ function threadSessionScopeKey(threadId: string, sessionID = ''): string {
   return `${threadId}::${sessionID.trim()}`
 }
 
+function sessionSelectionFromScopeKey(scopeKey: string): string {
+  const parts = scopeKey.split('::', 2)
+  return parts.length === 2 ? parts[1].trim() : ''
+}
+
+function selectionSessionID(selection: string): string {
+  selection = selection.trim()
+  if (!selection || selection.startsWith('@fresh:')) {
+    return ''
+  }
+  return selection
+}
+
+function freshSelectionNonce(selection: string): string {
+  selection = selection.trim()
+  return selection.startsWith('@fresh:') ? selection.slice('@fresh:'.length) : ''
+}
+
 function threadFreshSessionScopeKey(threadId: string): string {
   const nonce = freshSessionNonceByThread.get(threadId)?.trim() ?? ''
   if (!nonce) return ''
@@ -899,13 +918,50 @@ function isFreshSessionScopeKey(scopeKey: string): boolean {
   return parts.length === 2 && parts[1].startsWith('@fresh:')
 }
 
-function threadChatScopeKey(thread: Thread | null | undefined): string {
+function defaultThreadChatScopeKey(thread: Thread | null | undefined): string {
   if (!thread) return ''
   const sessionID = threadSessionID(thread)
   if (sessionID) {
     return threadSessionScopeKey(thread.threadId, sessionID)
   }
   return threadFreshSessionScopeKey(thread.threadId) || threadSessionScopeKey(thread.threadId)
+}
+
+function selectedSessionOverride(threadId: string): string {
+  return selectedSessionOverrideByThread.get(threadId)?.trim() ?? ''
+}
+
+function setSelectedSessionOverride(threadId: string, selection: string): void {
+  selection = selection.trim()
+  if (!threadId) return
+  if (!selection) {
+    selectedSessionOverrideByThread.delete(threadId)
+    return
+  }
+  selectedSessionOverrideByThread.set(threadId, selection)
+}
+
+function clearSelectedSessionOverrideIfSynced(thread: Thread | null | undefined): void {
+  if (!thread) return
+  const override = selectedSessionOverride(thread.threadId)
+  if (!override) return
+  const currentSelection = sessionSelectionFromScopeKey(defaultThreadChatScopeKey(thread))
+  if (override === currentSelection) {
+    selectedSessionOverrideByThread.delete(thread.threadId)
+  }
+}
+
+function threadChatScopeKey(thread: Thread | null | undefined): string {
+  if (!thread) return ''
+  const override = selectedSessionOverride(thread.threadId)
+  if (override) {
+    return threadSessionScopeKey(thread.threadId, override)
+  }
+  return defaultThreadChatScopeKey(thread)
+}
+
+function selectedThreadSessionID(thread: Thread | null | undefined): string {
+  return selectionSessionID(sessionSelectionFromScopeKey(threadChatScopeKey(thread)))
 }
 
 function buildThreadAgentOptionsWithSession(
@@ -925,8 +981,10 @@ function buildThreadAgentOptionsWithSession(
 function activateFreshSessionScope(
   threadId: string,
   messages: Record<string, Message[]>,
+  selection = '',
 ): Record<string, Message[]> {
-  freshSessionNonceByThread.set(threadId, generateUUID())
+  const nonce = freshSelectionNonce(selection) || generateUUID()
+  freshSessionNonceByThread.set(threadId, nonce)
   const scopeKey = threadFreshSessionScopeKey(threadId)
   loadedHistoryScopeKeys.add(scopeKey)
   if (Object.prototype.hasOwnProperty.call(messages, scopeKey)) {
@@ -1650,6 +1708,8 @@ function updateThreadSessionID(threadId: string, sessionID: string): void {
     }
   })
   store.set({ threads: nextThreads })
+  const updatedThread = nextThreads.find(thread => thread.threadId === threadId)
+  clearSelectedSessionOverrideIfSynced(updatedThread)
 }
 
 function applySessionTitleUpdate(threadId: string, sessionID: string, title: string): void {
@@ -1746,41 +1806,68 @@ async function loadThreadSessions(threadId: string, append = false): Promise<voi
 
 async function switchThreadSession(thread: Thread, nextSessionID: string): Promise<void> {
   const targetSessionID = nextSessionID.trim()
-  const currentSessionID = threadSessionID(thread)
-  if (targetSessionID && currentSessionID === targetSessionID) return
-  if (!targetSessionID && !currentSessionID) {
-    const state = store.get()
-    store.set({
-      messages: activateFreshSessionScope(thread.threadId, state.messages),
-    })
-    return
-  }
+  const currentSelection = sessionSelectionFromScopeKey(threadChatScopeKey(thread))
+  if (targetSessionID && currentSelection === targetSessionID) return
   if (sessionSwitchingThreads.has(thread.threadId)) return
 
-  sessionSwitchingThreads.add(thread.threadId)
+  const targetSelection = targetSessionID || `@fresh:${generateUUID()}`
+  const state = store.get()
+  const nextMessages = targetSessionID
+    ? state.messages
+    : activateFreshSessionScope(thread.threadId, state.messages, targetSelection)
+  setSelectedSessionOverride(thread.threadId, targetSelection)
+  clearSelectedSessionOverrideIfSynced(thread)
+  store.set({ messages: nextMessages })
+
+  if (hasThreadStream(thread.threadId)) {
+    if (store.get().activeThreadId === thread.threadId) {
+      updateInputState()
+      updateSessionPanel()
+    }
+    return
+  }
+
+  await syncSelectedSessionSelection(thread.threadId)
+}
+
+async function syncSelectedSessionSelection(threadId: string): Promise<void> {
+  const thread = store.get().threads.find(item => item.threadId === threadId)
+  if (!thread) return
+
+  const override = selectedSessionOverride(threadId)
+  if (!override || hasThreadStream(threadId) || sessionSwitchingThreads.has(threadId)) {
+    return
+  }
+
+  const targetSessionID = selectionSessionID(override)
+  sessionSwitchingThreads.add(threadId)
   updateSessionPanel()
-  if (store.get().activeThreadId === thread.threadId) {
+  if (store.get().activeThreadId === threadId) {
     updateInputState()
   }
+
   try {
-    const updatedThread = await api.updateThread(thread.threadId, {
+    const updatedThread = await api.updateThread(threadId, {
       agentOptions: buildThreadAgentOptionsWithSession(thread.agentOptions, targetSessionID),
     })
-    threadConfigCache.delete(thread.threadId)
+    threadConfigCache.delete(threadId)
     const state = store.get()
-    const nextMessages = !targetSessionID
-      ? activateFreshSessionScope(thread.threadId, state.messages)
-      : state.messages
+    let nextMessages = state.messages
+    if (!targetSessionID) {
+      nextMessages = activateFreshSessionScope(threadId, state.messages, override)
+    }
+    const nextThreads = state.threads.map(item => (item.threadId === threadId ? updatedThread : item))
     store.set({
-      threads: state.threads.map(item => (item.threadId === thread.threadId ? updatedThread : item)),
+      threads: nextThreads,
       messages: nextMessages,
     })
+    clearSelectedSessionOverrideIfSynced(nextThreads.find(item => item.threadId === threadId))
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to update session.'
     window.alert(message)
   } finally {
-    sessionSwitchingThreads.delete(thread.threadId)
-    if (store.get().activeThreadId === thread.threadId) {
+    sessionSwitchingThreads.delete(threadId)
+    if (store.get().activeThreadId === threadId) {
       updateInputState()
       updateSessionPanel()
     }
@@ -1827,7 +1914,7 @@ function renderSessionPanel(): string {
   }
 
   const state = sessionPanelState(thread.threadId)
-  const selectedSessionID = threadSessionID(thread)
+  const selectedSessionID = selectedThreadSessionID(thread)
   const switching = sessionSwitchingThreads.has(thread.threadId)
   const disabled = switching
   const refreshDisabled = disabled || state.loading || state.loadingMore
@@ -1959,7 +2046,7 @@ function updateSessionPanel(): void {
   el.querySelectorAll<HTMLButtonElement>('.session-item[data-session-id]').forEach(btn => {
     btn.addEventListener('click', () => {
       const sessionID = btn.dataset.sessionId?.trim() ?? ''
-      if (!sessionID || sessionID === threadSessionID(thread)) return
+      if (!sessionID || sessionID === selectedThreadSessionID(thread)) return
       void switchThreadSession(thread, sessionID)
     })
   })
@@ -2623,6 +2710,7 @@ async function handleDeleteThread(threadId: string): Promise<void> {
   sessionTitleOverridesByThread.delete(threadId)
   sessionSwitchingThreads.delete(threadId)
   freshSessionNonceByThread.delete(threadId)
+  selectedSessionOverrideByThread.delete(threadId)
   clearThreadComposerAttachments(threadId)
   let nextThreadCompletionBadges = omitThreadCompletionBadge(state.threadCompletionBadges, threadId)
   if (nextActiveThreadId) {
@@ -2790,8 +2878,8 @@ function mergeSessionReplayMessages(replayMessages: Message[], localMessages: Me
 
 async function loadHistory(threadId: string): Promise<void> {
   const requestedThread = store.get().threads.find(item => item.threadId === threadId)
-  const requestedSessionID = threadSessionID(requestedThread)
   const requestedScopeKey = threadChatScopeKey(requestedThread)
+  const requestedSessionID = selectionSessionID(sessionSelectionFromScopeKey(requestedScopeKey))
   if (!requestedScopeKey) return
   if (!requestedSessionID && isFreshSessionScopeKey(requestedScopeKey)) return
   try {
@@ -2799,7 +2887,7 @@ async function loadHistory(threadId: string): Promise<void> {
     const state = store.get()
     if (state.activeThreadId !== threadId) return
     const activeThread = state.threads.find(item => item.threadId === threadId)
-    if (!activeThread || threadSessionID(activeThread) !== requestedSessionID) return
+    if (!activeThread || threadChatScopeKey(activeThread) !== requestedScopeKey) return
     if (getScopeStreamState(requestedScopeKey)) return
 
     const localMessages = await turnsToMessagesAsync(filterTurnsBySession(turns, requestedSessionID))
@@ -2817,7 +2905,7 @@ async function loadHistory(threadId: string): Promise<void> {
           const transcriptState = store.get()
           if (transcriptState.activeThreadId !== threadId) return
           const transcriptThread = transcriptState.threads.find(item => item.threadId === threadId)
-          if (!transcriptThread || threadSessionID(transcriptThread) !== requestedSessionID) return
+          if (!transcriptThread || threadChatScopeKey(transcriptThread) !== requestedScopeKey) return
           if (getScopeStreamState(requestedScopeKey)) return
 
           if (replay.supported && replay.messages.length) {
@@ -2830,7 +2918,7 @@ async function loadHistory(threadId: string): Promise<void> {
               const refreshedState = store.get()
               if (refreshedState.activeThreadId !== threadId) return
               const refreshedThread = refreshedState.threads.find(item => item.threadId === threadId)
-              if (!refreshedThread || threadSessionID(refreshedThread) !== requestedSessionID) return
+              if (!refreshedThread || threadChatScopeKey(refreshedThread) !== requestedScopeKey) return
               if (activeStreamMsgId) return
               bindThreadConfigSwitches(refreshedThread)
               updateInputState()
@@ -2845,7 +2933,7 @@ async function loadHistory(threadId: string): Promise<void> {
     const finalState = store.get()
     if (finalState.activeThreadId !== threadId) return
     const finalThread = finalState.threads.find(item => item.threadId === threadId)
-    if (!finalThread || threadSessionID(finalThread) !== requestedSessionID) return
+    if (!finalThread || threadChatScopeKey(finalThread) !== requestedScopeKey) return
     if (getScopeStreamState(requestedScopeKey)) return
 
     loadedHistoryScopeKeys.add(requestedScopeKey)
@@ -2857,7 +2945,7 @@ async function loadHistory(threadId: string): Promise<void> {
     })
   } catch {
     if (store.get().activeThreadId !== threadId) return
-    if (threadSessionID(store.get().threads.find(item => item.threadId === threadId)) !== requestedSessionID) return
+    if (threadChatScopeKey(store.get().threads.find(item => item.threadId === threadId)) !== requestedScopeKey) return
     // Show error only if no matching local history was already rendered.
     if (!loadedHistoryScopeKeys.has(requestedScopeKey)) {
       const listEl = document.getElementById('message-list')
@@ -4188,7 +4276,7 @@ function renderSessionInfoField(label: string, value: string, copyLabel: string)
 }
 
 function renderSessionInfoPopover(thread: Thread): string {
-  const sessionID = threadSessionID(thread)
+  const sessionID = selectedThreadSessionID(thread)
   if (!sessionID) return ''
 
   return `
@@ -4242,7 +4330,7 @@ function truncateSessionTitle(title: string): string {
 }
 
 function getCurrentSessionTitle(t: Thread): string {
-  const sessionID = threadSessionID(t)
+  const sessionID = selectedThreadSessionID(t)
   if (!sessionID) {
     return 'New Session'
   }
@@ -4911,7 +4999,7 @@ function bindSendHandler(): void {
   document.getElementById('send-btn')?.addEventListener('click', handleSend)
 }
 
-function handleSend(): void {
+async function handleSend(): Promise<void> {
   const inputEl = document.getElementById('message-input') as HTMLTextAreaElement | null
   if (!inputEl) return
 
@@ -4924,9 +5012,14 @@ function handleSend(): void {
 
   const thread = threads.find(t => t.threadId === activeThreadId)
   if (!thread || sessionSwitchingThreads.has(thread.threadId)) return
+  await syncSelectedSessionSelection(thread.threadId)
+  if (sessionSwitchingThreads.has(thread.threadId)) return
+
+  const refreshedThread = store.get().threads.find(t => t.threadId === activeThreadId)
+  if (!refreshedThread || selectedSessionOverride(refreshedThread.threadId)) return
   const capturedThreadID = activeThreadId
-  let capturedSessionID = threadSessionID(thread)
-  let capturedScopeKey = threadChatScopeKey(thread)
+  let capturedSessionID = selectedThreadSessionID(refreshedThread)
+  let capturedScopeKey = threadChatScopeKey(refreshedThread)
   if (getScopeStreamState(capturedScopeKey)) return
 
   // Clear input immediately
@@ -5192,6 +5285,7 @@ function handleSend(): void {
       markThreadCompletionBadge(capturedThreadID)
       void loadThreadSessions(capturedThreadID)
       void loadThreadSlashCommands(capturedThreadID, true)
+      void syncSelectedSessionSelection(capturedThreadID)
 
       addMessageToStore(capturedScopeKey, {
         id:         agentMsgID,
@@ -5228,6 +5322,7 @@ function handleSend(): void {
       clearPendingPermissions(capturedScopeKey)
       void loadThreadSessions(capturedThreadID)
       void loadThreadSlashCommands(capturedThreadID, true)
+      void syncSelectedSessionSelection(capturedThreadID)
 
       addMessageToStore(capturedScopeKey, {
         id:           agentMsgID,
@@ -5265,6 +5360,7 @@ function handleSend(): void {
       clearPendingPermissions(capturedScopeKey)
       void loadThreadSessions(capturedThreadID)
       void loadThreadSlashCommands(capturedThreadID, true)
+      void syncSelectedSessionSelection(capturedThreadID)
 
       addMessageToStore(capturedScopeKey, {
         id:           agentMsgID,

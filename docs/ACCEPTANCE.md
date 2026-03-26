@@ -597,3 +597,17 @@ This checklist defines executable acceptance checks for requirements 1-16.
     - measured `/history?includeEvents=1&sessionId=...` payload: about `224 KB`, `40` persisted events
     - measured browser `Response.json()` time for that payload: about `1.3 ms`
     - measured max RAF gap during the switch: about `9.4 ms`, with no `>50 ms` gaps observed
+
+## Requirement 32: Session Sidebar Browsing Does Not Conflict With An Active Turn
+
+- Operation:
+  - start a long-running turn in one Web UI session and keep it streaming.
+  - while that turn is still active, click a different session in the sidebar, then click back to the original session.
+  - after the turn finishes, send a follow-up message from the session that is currently selected in the UI.
+- Expected:
+  - the UI changes the visible chat/history scope immediately without surfacing `thread has an active turn`.
+  - active-turn session browsing does not require `PATCH /v1/threads/{threadId}` until the thread is idle again.
+  - once the thread is idle, the frontend synchronizes the selected session before the next send so the follow-up turn runs in the session currently shown in the chat pane.
+- Verification commands (executed 2026-03-26):
+  - `cd internal/webui/web && npm run build`
+  - `go test ./...`

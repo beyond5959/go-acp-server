@@ -801,3 +801,16 @@ The integration follows the official ACP startup form `blackbox --experimental-a
 - The Web UI history replay path is now incremental in two stages:
   - `turnsToMessagesAsync(...)` yields while converting `Turn[]` into `Message[]`
   - `updateMessageList()` switches to chunked message rendering for heavier chats so the browser can yield between frames instead of monopolizing the UI thread during session switches
+
+### 18.9 Active-Turn Session Browsing In The Web UI
+
+- The Web UI now distinguishes:
+  - the backend thread session stored in `thread.agentOptions.sessionId`
+  - the frontend-only session currently selected in the sidebar/chat pane
+- When no turn is active, switching sessions still syncs the selected session back to `PATCH /v1/threads/{threadId}` so the next turn runs in the visible session.
+- When the thread already has an active turn:
+  - clicking another session changes only the local chat scope and history/session-history requests in the browser.
+  - ngent does not try to mutate backend thread state during that active turn.
+  - switching back to the active session is therefore a local view change rather than a conflict-producing backend write.
+- Unsaved "New session" views are tracked as frontend-only `@fresh:<nonce>` selections so the UI can keep a stable empty-session scope before ACP emits a concrete `session_bound`.
+- After the active turn completes, or just before the next user send if needed, the frontend synchronizes any pending selected session back into backend thread state.

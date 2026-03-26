@@ -1103,3 +1103,12 @@ This file is the source of milestone progress, validation commands, and next act
     - pass: `go test ./internal/storage -run TestAppendEventMergesConsecutiveDeltaRuns -count=1`
     - pass: `cd internal/webui/web && npm run build`
     - pass: `go test ./...`
+
+- 2026-03-26: let the Web UI browse other sessions while one turn is still streaming.
+  - root cause: the session sidebar treated "currently viewed session" and `thread.agentOptions.sessionId` as the same thing, so clicking another session during an active turn always tried `PATCH /v1/threads/{threadId}` and surfaced `409 thread has an active turn`.
+  - introduced a local per-thread session-selection override in the Web UI; when a thread already has an active stream, session switching now only changes the visible chat scope and history target instead of immediately patching backend thread state.
+  - deferred backend `sessionId` sync until the active turn finishes, and also guard the send path by syncing any pending local selection before starting the next turn so new prompts still land in the session currently shown in the UI.
+  - kept the existing fresh-session behavior by assigning stable local `@fresh:<nonce>` scopes, and cleaned those local overrides up when the thread is deleted.
+  - executed validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
