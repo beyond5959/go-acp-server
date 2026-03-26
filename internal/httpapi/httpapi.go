@@ -1588,6 +1588,62 @@ func (s *Server) handleThreadHistory(w http.ResponseWriter, r *http.Request, cli
 	writeJSON(w, http.StatusOK, map[string]any{"turns": respTurns})
 }
 
+func mergeSessionInfo(current, incoming agents.SessionInfo) agents.SessionInfo {
+	cloned := agents.CloneSessionInfo(current)
+	next := agents.CloneSessionInfo(incoming)
+	if next.SessionID != "" {
+		cloned.SessionID = next.SessionID
+	}
+	if next.CWD != "" {
+		cloned.CWD = next.CWD
+	}
+	if next.Title != "" {
+		cloned.Title = next.Title
+	}
+	if next.UpdatedAt != "" {
+		cloned.UpdatedAt = next.UpdatedAt
+	}
+	if len(next.Meta) > 0 {
+		if cloned.Meta == nil {
+			cloned.Meta = map[string]any{}
+		}
+		for key, value := range next.Meta {
+			cloned.Meta[key] = value
+		}
+	}
+	return cloned
+}
+
+func includeCurrentThreadSession(thread storage.Thread, result agents.SessionListResult) agents.SessionListResult {
+	cloned := agents.CloneSessionListResult(result)
+	sessionID := threadSessionID(thread.AgentOptionsJSON)
+	if sessionID == "" {
+		return cloned
+	}
+
+	current := agents.SessionInfo{
+		SessionID: sessionID,
+		CWD:       thread.CWD,
+	}
+	sessions := make([]agents.SessionInfo, 0, len(cloned.Sessions)+1)
+	sessions = append(sessions, current)
+	seen := map[string]int{sessionID: 0}
+	for _, session := range cloned.Sessions {
+		item := agents.CloneSessionInfo(session)
+		if item.SessionID == "" {
+			continue
+		}
+		if index, ok := seen[item.SessionID]; ok {
+			sessions[index] = mergeSessionInfo(sessions[index], item)
+			continue
+		}
+		seen[item.SessionID] = len(sessions)
+		sessions = append(sessions, item)
+	}
+	cloned.Sessions = sessions
+	return cloned
+}
+
 func (s *Server) handleThreadSessions(w http.ResponseWriter, r *http.Request, clientID, threadID string) {
 	if err := requireMethod(r, http.MethodGet); err != nil {
 		writeMethodNotAllowed(w, r)
@@ -1645,6 +1701,7 @@ func (s *Server) handleThreadSessions(w http.ResponseWriter, r *http.Request, cl
 		return
 	}
 
+	result = includeCurrentThreadSession(thread, result)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"threadId":   thread.ThreadID,
 		"supported":  true,

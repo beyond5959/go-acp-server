@@ -1,5 +1,5 @@
-github.com/beyond5959/acp-adapter v0.3.5 h1:z1dPVutBvqYSfMzr5FzoOdU1aylWoeOm+GRi/PtKKTc=
-github.com/beyond5959/acp-adapter v0.3.5/go.mod h1:cr4I+9+la75oUge+Pr97KlcdQrkwIG6VwWHbc9ALxSE=
+github.com/beyond5959/acp-adapter v0.3.6-0.20260326090903-eabd95a51f41 h1:KY1G5Ubn8m63B4ATru/sG21czm8jztCIU5AkyEb2QVs=
+github.com/beyond5959/acp-adapter v0.3.6-0.20260326090903-eabd95a51f41/go.mod h1:cr4I+9+la75oUge+Pr97KlcdQrkwIG6VwWHbc9ALxSE=
 github.com/dustin/go-humanize v1.0.0 h1:VSnTsYCnlFHaM2/igO1h6X3HA71jcobQuxemgkq4zYo=
 github.com/dustin/go-humanize v1.0.0/go.mod h1:HtrtbFcZ19U5GC7JDqmcUSB87Iq5E25KnS6fMYU6eOk=
 github.com/google/go-cmp v0.5.3 h1:x95R7cp+rSeeqAMI2knLtQ0DKlaBhv2NrtrOvafPHRo=

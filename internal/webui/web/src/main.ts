@@ -1038,6 +1038,8 @@ let lastRenderThreadId: string | null = null
 let lastRenderChatScopeKey = ''
 /** Chat scope keys whose filtered history was loaded. */
 const loadedHistoryScopeKeys = new Set<string>()
+/** Bound session scopes that were promoted from a temporary fresh-session scope. */
+const reboundFreshSessionScopeKeys = new Set<string>()
 /** Segment ids whose final Thinking panel is currently expanded in the UI. */
 const expandedReasoningSegmentIds = new Set<string>()
 /** Segment ids whose final tool-call panel is currently expanded in the UI. */
@@ -1460,6 +1462,7 @@ function rebindScopeRuntime(oldScopeKey: string, nextScopeKey: string, nextSessi
   nextScopeKey = nextScopeKey.trim()
   nextSessionID = nextSessionID.trim()
   if (!oldScopeKey || !nextScopeKey || oldScopeKey === nextScopeKey) return
+  const promotedFromFreshScope = isFreshSessionScopeKey(oldScopeKey)
 
   if (streamsByScope.has(oldScopeKey)) {
     const stream = streamsByScope.get(oldScopeKey)
@@ -1512,6 +1515,9 @@ function rebindScopeRuntime(oldScopeKey: string, nextScopeKey: string, nextSessi
   }
   if (activeStreamScopeKey === oldScopeKey) {
     activeStreamScopeKey = nextScopeKey
+  }
+  if (promotedFromFreshScope) {
+    reboundFreshSessionScopeKeys.add(nextScopeKey)
   }
 
   const state = store.get()
@@ -1597,6 +1603,17 @@ function emptySessionPanelState(): SessionPanelState {
   }
 }
 
+function mergeSessionInfo(current: SessionInfo, incoming: SessionInfo): SessionInfo {
+  return {
+    ...current,
+    ...incoming,
+    sessionId: incoming.sessionId?.trim() || current.sessionId.trim(),
+    cwd: incoming.cwd?.trim() || current.cwd?.trim() || undefined,
+    title: incoming.title?.trim() || current.title?.trim() || undefined,
+    updatedAt: incoming.updatedAt?.trim() || current.updatedAt?.trim() || undefined,
+  }
+}
+
 function sessionPanelState(threadId: string): SessionPanelState {
   return sessionPanelStateByThread.get(threadId) ?? emptySessionPanelState()
 }
@@ -1626,20 +1643,44 @@ function setSessionPanelState(threadId: string, next: SessionPanelState): void {
 
 function dedupeSessionItems(items: SessionInfo[]): SessionInfo[] {
   const deduped: SessionInfo[] = []
-  const seen = new Set<string>()
+  const indexes = new Map<string, number>()
   for (const item of items) {
     const sessionId = item.sessionId?.trim() ?? ''
-    if (!sessionId || seen.has(sessionId)) continue
-    seen.add(sessionId)
-    deduped.push({
+    if (!sessionId) continue
+    const normalized: SessionInfo = {
       ...item,
       sessionId,
       cwd: item.cwd?.trim() || undefined,
       title: item.title?.trim() || undefined,
       updatedAt: item.updatedAt?.trim() || undefined,
-    })
+    }
+    const existingIndex = indexes.get(sessionId)
+    if (existingIndex !== undefined) {
+      deduped[existingIndex] = mergeSessionInfo(deduped[existingIndex], normalized)
+      continue
+    }
+    indexes.set(sessionId, deduped.length)
+    deduped.push(normalized)
   }
   return deduped
+}
+
+function ensureSessionPanelSession(threadId: string, sessionID: string): void {
+  const normalizedThreadID = threadId.trim()
+  const normalizedSessionID = sessionID.trim()
+  if (!normalizedThreadID || !normalizedSessionID) return
+
+  const state = sessionPanelState(normalizedThreadID)
+  const sessions = state.sessions.some(item => item.sessionId === normalizedSessionID)
+    ? state.sessions
+    : [{ sessionId: normalizedSessionID }, ...state.sessions]
+  setSessionPanelState(normalizedThreadID, {
+    ...state,
+    sessions,
+  })
+  if (store.get().activeThreadId === normalizedThreadID) {
+    updateSessionPanel()
+  }
 }
 
 function updateThreadSessionID(threadId: string, sessionID: string): void {
@@ -1855,7 +1896,7 @@ function renderSessionPanel(): string {
     bodyHTML = `<div class="session-panel-empty">Loading sessions…</div>`
   } else if (state.error && !sessions.length) {
     bodyHTML = `<div class="session-panel-empty session-panel-empty--error">${escHtml(state.error)}</div>`
-  } else if (state.supported === false) {
+  } else if (state.supported === false && !sessions.length) {
     bodyHTML = `<div class="session-panel-empty">This agent does not expose ACP session history.</div>`
   } else {
     const itemsHTML = sessions.length
@@ -2620,6 +2661,11 @@ async function handleDeleteThread(threadId: string): Promise<void> {
       loadedHistoryScopeKeys.delete(scopeKey)
     }
   })
+  Array.from(reboundFreshSessionScopeKeys).forEach(scopeKey => {
+    if (scopeKey.startsWith(threadScopePrefix)) {
+      reboundFreshSessionScopeKeys.delete(scopeKey)
+    }
+  })
   sessionPanelStateByThread.delete(threadId)
   sessionPanelRequestSeqByThread.delete(threadId)
   sessionPanelScrollTopByThread.delete(threadId)
@@ -2776,6 +2822,76 @@ function mergeSessionReplayMessages(replayMessages: Message[], localMessages: Me
   return [...replayMessages, ...localMessages.slice(overlap)]
 }
 
+function messageSegmentRichness(segments: MessageSegment[] | null | undefined): number {
+  let score = 0
+  for (const segment of cloneMessageSegments(segments) ?? []) {
+    switch (segment.kind) {
+      case 'reasoning':
+        score += hasVisibleContent(segment.content) ? 6 : 0
+        break
+      case 'tool_call':
+        score += segment.toolCall ? 5 : 0
+        break
+      case 'content':
+        if (segment.contentBlock !== undefined) {
+          score += 4
+        } else if (hasVisibleContent(segment.content)) {
+          score += 1
+        }
+        break
+    }
+  }
+  return score
+}
+
+function mergeMessageWithCachedMetadata(message: Message, cached: Message): Message {
+  const next: Message = {
+    ...message,
+    attachments: cloneMessageAttachments(message.attachments),
+    segments: cloneMessageSegments(message.segments),
+    planEntries: clonePlanEntries(message.planEntries),
+    toolCalls: cloneToolCalls(message.toolCalls),
+  }
+
+  if (!next.attachments?.length && cached.attachments?.length) {
+    next.attachments = cloneMessageAttachments(cached.attachments)
+  }
+  if (messageSegmentRichness(cached.segments) > messageSegmentRichness(next.segments)) {
+    next.segments = cloneMessageSegments(cached.segments)
+  }
+  if (!next.planEntries?.length && cached.planEntries?.length) {
+    next.planEntries = clonePlanEntries(cached.planEntries)
+  }
+  if (!(next.toolCalls?.length) && cached.toolCalls?.length) {
+    next.toolCalls = cloneToolCalls(cached.toolCalls)
+  }
+  if (!hasReasoningText(next.reasoning) && hasReasoningText(cached.reasoning)) {
+    next.reasoning = cached.reasoning
+  }
+  if (!next.turnId && cached.turnId) {
+    next.turnId = cached.turnId
+  }
+  return next
+}
+
+function hydrateMessagesFromCache(messages: Message[], cachedMessages: Message[]): Message[] {
+  if (!messages.length || !cachedMessages.length) return messages
+
+  const byReplayKey = new Map<string, Message[]>()
+  for (const cached of cachedMessages) {
+    const key = messageReplayKey(cached)
+    const queue = byReplayKey.get(key) ?? []
+    queue.push(cached)
+    byReplayKey.set(key, queue)
+  }
+
+  return messages.map(message => {
+    const queue = byReplayKey.get(messageReplayKey(message))
+    const cached = queue?.shift()
+    return cached ? mergeMessageWithCachedMetadata(message, cached) : message
+  })
+}
+
 async function loadHistory(threadId: string): Promise<void> {
   const requestedThread = store.get().threads.find(item => item.threadId === threadId)
   const requestedSessionID = threadSessionID(requestedThread)
@@ -2794,11 +2910,13 @@ async function loadHistory(threadId: string): Promise<void> {
     const cachedMessages = state.messages[requestedScopeKey] ?? []
     let nextMessages = localMessages
     if (requestedSessionID) {
+      const promotedFromFreshScope = reboundFreshSessionScopeKeys.has(requestedScopeKey)
       // When a fresh ACP session is created from "Current: new", Codex transcripts
       // include the injected context prompt. Reuse the in-memory turn messages in
       // that transition instead of replaying transcript noise back into the chat.
-      if (!loadedHistoryScopeKeys.has(requestedScopeKey) && loadedHistoryScopeKeys.has(threadSessionScopeKey(threadId, '')) && localMessages.length && cachedMessages.length) {
+      if (promotedFromFreshScope && cachedMessages.length) {
         nextMessages = mergeSessionReplayMessages(cachedMessages, localMessages)
+        reboundFreshSessionScopeKeys.delete(requestedScopeKey)
       } else {
         try {
           const replay = await api.getThreadSessionHistory(threadId, requestedSessionID)
@@ -2829,6 +2947,8 @@ async function loadHistory(threadId: string): Promise<void> {
         }
       }
     }
+    nextMessages = hydrateMessagesFromCache(nextMessages, localMessages)
+    nextMessages = hydrateMessagesFromCache(nextMessages, cachedMessages)
 
     const finalState = store.get()
     if (finalState.activeThreadId !== threadId) return
@@ -5055,6 +5175,7 @@ function handleSend(): void {
     onSessionBound({ sessionId }: SessionBoundPayload) {
       const nextSessionID = sessionId.trim()
       if (!nextSessionID || nextSessionID === capturedSessionID) return
+      ensureSessionPanelSession(capturedThreadID, nextSessionID)
       const previousScopeKey = capturedScopeKey
       capturedSessionID = nextSessionID
       capturedScopeKey = threadSessionScopeKey(capturedThreadID, capturedSessionID)
