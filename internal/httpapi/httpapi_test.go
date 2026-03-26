@@ -1001,6 +1001,67 @@ func TestThreadSessionsListEndpoint(t *testing.T) {
 	}
 }
 
+func TestThreadSessionsListEndpointIncludesCurrentBoundSession(t *testing.T) {
+	root := t.TempDir()
+	streamer := &sessionListStreamer{
+		result: agents.SessionListResult{
+			Sessions: []agents.SessionInfo{{
+				SessionID: "ses_existing",
+				CWD:       root,
+				Title:     "Existing session",
+			}},
+		},
+	}
+
+	h := newTestServer(t, testServerOptions{
+		allowedRoots: []string{root},
+		turnAgentFactory: func(thread storage.Thread) (agents.Streamer, error) {
+			_ = thread
+			return streamer, nil
+		},
+	})
+
+	threadID := createThreadForClient(t, h, "client-a", root)
+	updateRR := performJSONRequest(t, h, http.MethodPatch, "/v1/threads/"+threadID, map[string]any{
+		"agentOptions": map[string]any{
+			"sessionId": "ses_bound_current",
+		},
+	}, map[string]string{"X-Client-ID": "client-a"})
+	if updateRR.Code != http.StatusOK {
+		t.Fatalf("update thread status code = %d, want %d", updateRR.Code, http.StatusOK)
+	}
+
+	rr := performJSONRequest(t, h, http.MethodGet, "/v1/threads/"+threadID+"/sessions", nil, map[string]string{
+		"X-Client-ID": "client-a",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var body struct {
+		Supported bool                 `json:"supported"`
+		Sessions  []agents.SessionInfo `json:"sessions"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if !body.Supported {
+		t.Fatal("supported = false, want true")
+	}
+	if got, want := len(body.Sessions), 2; got != want {
+		t.Fatalf("len(sessions) = %d, want %d", got, want)
+	}
+	if got := body.Sessions[0].SessionID; got != "ses_bound_current" {
+		t.Fatalf("sessions[0].sessionId = %q, want %q", got, "ses_bound_current")
+	}
+	if got := body.Sessions[0].CWD; got != root {
+		t.Fatalf("sessions[0].cwd = %q, want %q", got, root)
+	}
+	if got := body.Sessions[1].SessionID; got != "ses_existing" {
+		t.Fatalf("sessions[1].sessionId = %q, want %q", got, "ses_existing")
+	}
+}
+
 func TestThreadSessionHistoryEndpoint(t *testing.T) {
 	root := t.TempDir()
 	streamer := &sessionTranscriptStreamer{
