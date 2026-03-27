@@ -56,12 +56,12 @@ All files live under `internal/webui/web/src/`.
 |---|---|
 | `types.ts` | All TypeScript interfaces: `AgentInfo`, `Thread`, `Turn`, `TurnEvent`, `Message`, `PermissionRequest`, `StreamState`, `AppState`. |
 | `utils.ts` | `generateUUID`, `formatTimestamp`, `formatRelativeTime`, `isAbsolutePath`, `escHtml`, `debounce`. |
-| `store.ts` | Singleton `AppStore`: `get()` / `set(patch)` / `subscribe(fn) → unsub`. Persists `clientId`, `authToken`, `serverUrl`, `theme` to `localStorage` (keys `ngent:*`). Never persists runtime data. |
-| `api.ts` | `ApiClient` singleton (`api`): reads `serverUrl`/`clientId`/`authToken` from store on every call. Methods: `getAgents`, `getThreads`, `getHistory`, `createThread`, `startTurn`, `cancelTurn`, `resolvePermission`. |
+| `store.ts` | Singleton `AppStore`: `get()` / `set(patch)` / `subscribe(fn) → unsub`. Persists `authToken`, `serverUrl`, `theme` to `localStorage` (keys `ngent:*`). Never persists runtime data. |
+| `api.ts` | `ApiClient` singleton (`api`): reads `serverUrl`/`authToken` from store on every call and sends a fixed compatibility `X-Client-ID` header internally. Methods: `getAgents`, `getThreads`, `getHistory`, `createThread`, `startTurn`, `cancelTurn`, `resolvePermission`. |
 | `sse.ts` | `TurnStream` class: POST SSE via `fetch` + `ReadableStream` (not `EventSource` — lacks POST/custom-header support). Parses `event:\ndata:\n\n` blocks. Callbacks: `onTurnStarted`, `onDelta`, `onCompleted`, `onError`, `onPermissionRequired`, `onDisconnect`. `abort()` sets `terminated=true` and aborts fetch. |
 | `markdown.ts` | Configures `marked` renderer: `html()` → `escHtml()` (XSS guard); `code()` → `.code-block` with hljs highlight, copy button, optional "Show all N lines" fold (>20 lines). Exports `renderMarkdown(text)` and `bindMarkdownControls(container)` (idempotent, `data-bound` guard). |
 | `main.ts` | App entry: `renderShell()`, `init()`, all DOM wiring. See patterns below. |
-| `components/settings-panel.ts` | Slide-in drawer: Client ID display/copy/reset, Bearer Token, Server URL, Light/Dark/System theme toggle. |
+| `components/settings-panel.ts` | Slide-in drawer: Bearer Token, Server URL, Light/Dark/System theme toggle. |
 | `components/new-thread-modal.ts` | Modal: agent card grid (radio, disabled for unavailable), absolute-path CWD validation, optional title, collapsible JSON agent-options textarea. |
 | `components/permission-card.ts` | `mountPermissionCard(listEl, event)`: appends ephemeral card with a 15 s countdown, renders all agent-advertised permission options (falls back to Allow/Deny when none are provided), and shows resolved states. Calls `api.resolvePermission()`; ignores 409. |
 | `style.css` | All styles. CSS custom properties (`--bg`, `--accent`, etc.) with `[data-theme="dark"]` override block. hljs tokens use CSS variables (`--hljs-fg`, `--hljs-kw`, …). |

@@ -15,6 +15,20 @@
 
 ## Open Issues
 
+- ID: KI-043
+- Title: `X-Client-ID` no longer isolates data between callers on the same ngent instance
+- Status: Open
+- Severity: Medium
+- Affects: deployments that expected separate browsers or separate users behind one ngent instance to have isolated thread/session state
+- Symptom:
+  - thread list, thread metadata, session views, permission resolution, and persisted attachment fetches are shared across all callers that can reach the same ngent instance.
+  - changing browser profiles changes the local `clientId`, but no longer hides or fences off previously created threads.
+- Workaround:
+  - run separate ngent instances or separate `--data-path` roots for each isolation boundary you need.
+  - if the service is exposed beyond localhost, put it behind stronger caller authentication/authorization than `X-Client-ID`.
+- Follow-up plan:
+  - evaluate whether ngent should eventually add an explicit optional namespace/project isolation flag instead of relying on browser-local identifiers.
+
 - ID: KI-035
 - Title: Premium Web UI visuals vary slightly by host browser/font stack
 - Status: Open

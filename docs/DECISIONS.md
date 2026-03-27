@@ -2,6 +2,7 @@
 
 ## ADR Index
 
+- ADR-064: Share threads and sessions across browser-scoped client IDs on the same ngent instance. (Accepted)
 - ADR-058: Render bracketed inline base64 user-image placeholders as safe Web UI previews. (Accepted)
 - ADR-054: Refresh the embedded Web UI as a premium workbench without changing behavior. (Accepted)
 - ADR-053: Replace `slog` JSON output with a human-readable stderr logger and colored access logs. (Accepted)
@@ -1666,3 +1667,26 @@ Use this template for new decisions.
   - recolor only the CLI banner and keep the Web UI monogram (rejected: still leaves two product marks).
   - introduce a second compact ASCII variant for the sidebar (rejected: still creates a visible mismatch between terminal and browser branding).
   - color the whole startup banner box rather than just the logo (rejected: the request was to unify the logo treatment, and extra color on operational details would reduce contrast for server metadata).
+
+## ADR-064: Share threads and sessions across browser-scoped client IDs on the same ngent instance
+
+- Status: Accepted
+- Date: 2026-03-27
+- Context:
+  - browser-local `clientId` generation made the same ngent data look artificially partitioned by browser profile, so threads created in Safari were invisible from another browser even though both were talking to the same local service and sqlite database.
+  - the product request is for one local shared workspace per ngent instance: thread list, session list, permissions, and persisted attachments should all be visible regardless of which browser-scoped `clientId` originated them.
+  - ngent still benefits from a caller identifier for API compatibility, so dropping `X-Client-ID` entirely would be a larger breaking change than needed.
+- Decision:
+  - keep requiring `X-Client-ID` on `/v1/*` requests as a compatibility header, but stop persisting it in sqlite.
+  - stop using `clientId` as an authorization/tenancy gate for thread-scoped APIs, permission resolution, or persisted attachment fetches.
+  - list threads globally from sqlite and resolve thread access by `threadId` only.
+  - remove `threads.client_id`, drop the obsolete `clients` table, and make `recent-directories` global instead of browser-scoped.
+  - remove the Web UI's visible Client ID display/reset controls and send one fixed compatibility header internally from the browser.
+- Consequences:
+  - multiple browsers connected to the same ngent instance now see the same thread/session state and can continue the same conversation without copying browser-local IDs around.
+  - `X-Client-ID` is now a compatibility field, not a persisted identity record and not a security boundary.
+  - operators who need true user isolation must use separate ngent instances, separate `--data-path` values, or an external auth/proxy layer instead of relying on browser-local client IDs.
+- Alternatives considered:
+  - force users to copy one shared `clientId` across browsers (rejected: brittle manual workaround and still couples visibility to browser-local storage).
+  - remove `X-Client-ID` from the API entirely (rejected for now: unnecessary breakage for existing clients when header-compatibility is enough).
+  - keep thread ownership but special-case only `/sessions` (rejected: inconsistent UX because the main thread list would still disappear across browsers).

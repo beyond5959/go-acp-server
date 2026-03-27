@@ -3424,42 +3424,6 @@ button:active:not(:disabled),
   color: var(--text-3);
 }
 
-/* Client ID row */
-.settings-id-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 8px;
-  background: var(--bg-inset);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 8px 10px 8px 12px;
-}
-
-.settings-client-id {
-  flex: 1;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-  color: var(--text-2);
-  word-break: break-all;
-  line-height: 1.5;
-}
-
-.settings-copy-btn {
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
-}
-
-.settings-reset-btn {
-  color: var(--error);
-}
-
-.settings-reset-btn:hover:not(:disabled) {
-  background: var(--error-bg);
-  color: var(--error);
-}
-
 /* Theme button group */
 .theme-btn-group {
   display: flex;

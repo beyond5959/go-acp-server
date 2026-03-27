@@ -9,7 +9,7 @@ Build a local-first Ngent Server that:
 - supports multi-client and multi-thread execution.
 - is designed to support ACP-compatible agents (for example Claude Code, Cursor CLI, Gemini, Kimi, OpenCode, Qwen, BLACKBOX AI, Codex).
 - persists interaction state/events in SQLite.
-- forwards runtime permissions to the owning client with fail-closed behavior.
+- forwards runtime permissions to connected clients with fail-closed behavior.
 
 ## 2. High-Level Architecture
 
@@ -78,7 +78,6 @@ Turn-side auxiliary callbacks:
 
 SQLite stores:
 
-- clients
 - threads
 - turns
 - events (append-only stream records)
@@ -308,7 +307,7 @@ and upstream ACP schema:
 - Added `GET /v1/agents/{agentId}/models`:
   - backend queries provider ACP handshake (`initialize` + `session/new`) and extracts runtime model options from `configOptions` / `models.availableModels`.
   - returns normalized `[{"id","name"}]` entries for Web UI dropdowns.
-- Ownership rule is unchanged (`404` for cross-client or missing thread).
+- Visibility rule is server-global (`404` only when the thread is missing).
 - Active turn safety is strict:
   - when the thread currently has an active turn, update returns `409 CONFLICT`.
 - On successful update:
@@ -471,7 +470,7 @@ The integration follows the official ACP startup form `blackbox --experimental-a
 ### 15.2 Backend API
 
 - New endpoint: `GET /v1/threads/{threadId}/sessions`
-  - ownership/tenancy matches existing thread endpoints.
+  - visibility matches existing thread endpoints; any caller that can reach the same ngent instance can inspect the thread's provider sessions.
   - query string:
     - `cursor` (optional): forwarded to ACP `session/list`.
   - response:
@@ -569,13 +568,13 @@ The integration follows the official ACP startup form `blackbox --experimental-a
 ### 16.2 HTTP API
 
 - Add `GET /v1/threads/{threadId}/slash-commands`.
-- Ownership model matches other thread-scoped endpoints.
+- Visibility model matches other thread-scoped endpoints.
 - Response shape:
   - `threadId`
   - `agentId`
   - `commands`
 - Read semantics:
-  - resolve owned thread.
+  - resolve accessible thread.
   - read cached slash commands by `thread.agent_id`.
   - if the active provider supports exposing a live slash-command snapshot and sqlite does not have one yet, initialization flows such as `GET /v1/threads/{threadId}/config-options` may backfill sqlite before the composer asks for `/slash-commands`; Codex uses this path so a fresh thread can surface slash commands before the first turn.
   - if `GET /v1/threads/{threadId}/slash-commands` still misses sqlite, the handler may probe the live provider through `SlashCommandsProvider` and persist the result before responding; this removes races between thread-open initialization and the user's first `/`.
@@ -760,7 +759,7 @@ The integration follows the official ACP startup form `blackbox --experimental-a
   - the composer footer order is `Attachment -> Model -> Reasoning` on the left, mirrored by `Send` on the right.
   - attachments are held in thread-local in-memory draft state until send, with image previews when possible.
   - the transcript renders sent user attachments as cards and rebuilds them from `user_prompt` history events after reload.
-  - persisted attachments are served back through `GET /attachments/{attachmentId}?client_id=...&access_token=...` so image/file cards remain visible after stream completion and service restart without exposing raw `file://` paths to the browser.
+  - persisted attachments are served back through `GET /attachments/{attachmentId}?access_token=...` so image/file cards remain visible after stream completion and service restart without exposing raw `file://` paths to the browser.
 
 ### 18.6 Web UI Inline Base64 User Images
 

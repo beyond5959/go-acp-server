@@ -11,7 +11,20 @@ This file is the source of milestone progress, validation commands, and next act
 
 - `Post-M8` ACP multi-agent readiness and maintenance.
 
-## Latest Update (2026-03-26)
+## Latest Update (2026-03-27)
+
+- `Post-M8` shared-browser thread/session visibility completed:
+  - changed thread list/get/update/delete and other thread-scoped APIs to resolve threads globally by `threadId` instead of requiring the creating browser's `X-Client-ID`.
+  - stopped binding runtime permission decisions and persisted attachment fetches to the original browser-local `clientId`, so another browser can continue the same thread and open the same uploads.
+  - removed the obsolete sqlite `threads.client_id` field and dropped the old `clients` table; `X-Client-ID` remains only as a required compatibility header and is no longer persisted.
+  - changed recent-directory suggestions to use one global recency list instead of browser-scoped filtering.
+  - updated the Web UI attachment URL builder to stop sending `client_id` on `/attachments/*`.
+  - removed the Web UI's visible Client ID settings entirely; the browser now sends one fixed compatibility `X-Client-ID` header internally instead of exposing per-browser identity controls.
+  - validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
+## Previous Update (2026-03-26)
 
 - `Post-M8` Web UI fresh-session binding/render preservation fix completed:
   - when a fresh session receives `session_bound`, the left session panel now upserts that bound `sessionId` immediately and forces a panel refresh instead of waiting for the first turn to finish and refresh session history.

@@ -559,7 +559,7 @@ func TestUpdateThreadAgentOptions(t *testing.T) {
 	}
 }
 
-func TestUpdateThreadAgentOptionsCrossClientReturnsNotFound(t *testing.T) {
+func TestUpdateThreadAgentOptionsAcrossClients(t *testing.T) {
 	root := t.TempDir()
 	h := newTestServer(t, testServerOptions{allowedRoots: []string{root}})
 
@@ -575,10 +575,21 @@ func TestUpdateThreadAgentOptionsCrossClientReturnsNotFound(t *testing.T) {
 	updateRR := performJSONRequest(t, h, http.MethodPatch, "/v1/threads/"+threadID, map[string]any{
 		"agentOptions": map[string]any{"modelId": "gpt-5"},
 	}, map[string]string{"X-Client-ID": "client-b"})
-	if updateRR.Code != http.StatusNotFound {
-		t.Fatalf("cross-client update status = %d, want %d", updateRR.Code, http.StatusNotFound)
+	if updateRR.Code != http.StatusOK {
+		t.Fatalf("cross-client update status = %d, want %d", updateRR.Code, http.StatusOK)
 	}
-	assertErrorCode(t, updateRR.Body.Bytes(), "NOT_FOUND")
+
+	var updateBody struct {
+		Thread struct {
+			AgentOptions map[string]any `json:"agentOptions"`
+		} `json:"thread"`
+	}
+	if err := json.Unmarshal(updateRR.Body.Bytes(), &updateBody); err != nil {
+		t.Fatalf("unmarshal update response: %v", err)
+	}
+	if got := fmt.Sprintf("%v", updateBody.Thread.AgentOptions["modelId"]); got != "gpt-5" {
+		t.Fatalf("cross-client updated modelId = %q, want %q", got, "gpt-5")
+	}
 }
 
 func TestUpdateThreadTitle(t *testing.T) {
@@ -636,7 +647,7 @@ func TestUpdateThreadTitle(t *testing.T) {
 	}
 }
 
-func TestThreadAccessAcrossClientsReturnsNotFound(t *testing.T) {
+func TestThreadAccessAcrossClientsSharesThreads(t *testing.T) {
 	root := t.TempDir()
 	h := newTestServer(t, testServerOptions{allowedRoots: []string{root}})
 
@@ -646,11 +657,27 @@ func TestThreadAccessAcrossClientsReturnsNotFound(t *testing.T) {
 	}
 	threadID := extractThreadID(t, createRR.Body.Bytes())
 
-	getRR := performJSONRequest(t, h, http.MethodGet, "/v1/threads/"+threadID, nil, map[string]string{"X-Client-ID": "client-b"})
-	if getRR.Code != http.StatusNotFound {
-		t.Fatalf("cross-client get status code = %d, want %d", getRR.Code, http.StatusNotFound)
+	listRR := performJSONRequest(t, h, http.MethodGet, "/v1/threads", nil, map[string]string{"X-Client-ID": "client-b"})
+	if listRR.Code != http.StatusOK {
+		t.Fatalf("cross-client list status code = %d, want %d", listRR.Code, http.StatusOK)
 	}
-	assertErrorCode(t, getRR.Body.Bytes(), "NOT_FOUND")
+	var listBody struct {
+		Threads []threadResponse `json:"threads"`
+	}
+	if err := json.Unmarshal(listRR.Body.Bytes(), &listBody); err != nil {
+		t.Fatalf("unmarshal list response: %v", err)
+	}
+	if got, want := len(listBody.Threads), 1; got != want {
+		t.Fatalf("cross-client len(threads) = %d, want %d", got, want)
+	}
+	if got := listBody.Threads[0].ThreadID; got != threadID {
+		t.Fatalf("cross-client listed threadId = %q, want %q", got, threadID)
+	}
+
+	getRR := performJSONRequest(t, h, http.MethodGet, "/v1/threads/"+threadID, nil, map[string]string{"X-Client-ID": "client-b"})
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("cross-client get status code = %d, want %d", getRR.Code, http.StatusOK)
+	}
 }
 
 func TestDeleteThreadRemovesThreadAndHistory(t *testing.T) {
@@ -2248,7 +2275,7 @@ func TestThreadConfigOptionsRestoreFromSessionCacheAfterSessionSwitch(t *testing
 	}
 }
 
-func TestThreadConfigOptionsCrossClientNotFound(t *testing.T) {
+func TestThreadConfigOptionsAcrossClients(t *testing.T) {
 	root := t.TempDir()
 	streamer := newConfigOptionStreamer("gpt-5.3-codex", []agents.ConfigOptionValue{
 		{Value: "gpt-5.3-codex", Name: "gpt-5.3-codex"},
@@ -2262,6 +2289,13 @@ func TestThreadConfigOptionsCrossClientNotFound(t *testing.T) {
 	})
 
 	threadID := createThreadForClient(t, h, "client-a", root)
+	turnRR := performJSONRequest(t, h, http.MethodPost, "/v1/threads/"+threadID+"/turns", map[string]any{
+		"input":  "warm config options",
+		"stream": true,
+	}, map[string]string{"X-Client-ID": "client-a"})
+	if turnRR.Code != http.StatusOK {
+		t.Fatalf("warm turn status = %d, want %d, body=%s", turnRR.Code, http.StatusOK, turnRR.Body.String())
+	}
 	rr := performJSONRequest(
 		t,
 		h,
@@ -2270,10 +2304,19 @@ func TestThreadConfigOptionsCrossClientNotFound(t *testing.T) {
 		nil,
 		map[string]string{"X-Client-ID": "client-b"},
 	)
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("cross-client config options status = %d, want %d", rr.Code, http.StatusNotFound)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("cross-client config options status = %d, want %d", rr.Code, http.StatusOK)
 	}
-	assertErrorCode(t, rr.Body.Bytes(), "NOT_FOUND")
+
+	var body struct {
+		ConfigOptions []agents.ConfigOption `json:"configOptions"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal config options response: %v", err)
+	}
+	if got := acpmodel.CurrentValueForConfig(body.ConfigOptions, "model"); got != "gpt-5.3-codex" {
+		t.Fatalf("cross-client model = %q, want %q", got, "gpt-5.3-codex")
+	}
 }
 
 func TestThreadConfigOptionsUnsupportedManager(t *testing.T) {
@@ -2876,7 +2919,7 @@ func TestMultipartTurnUploadsAttachmentsAsResourceLinks(t *testing.T) {
 	}
 }
 
-func TestAttachmentEndpointSupportsQueryTokenAndClientOwnership(t *testing.T) {
+func TestAttachmentEndpointSupportsQueryTokenAcrossClients(t *testing.T) {
 	root := t.TempDir()
 	dataDir := filepath.Join(t.TempDir(), "ngent-data")
 	streamer := &promptCaptureStreamer{}
@@ -2919,7 +2962,7 @@ func TestAttachmentEndpointSupportsQueryTokenAndClientOwnership(t *testing.T) {
 	unauthorizedStatus, _ := doRawRequest(
 		t,
 		http.MethodGet,
-		fmt.Sprintf("%s/attachments/%s?client_id=%s", ts.URL, attachmentID, "client-a"),
+		fmt.Sprintf("%s/attachments/%s", ts.URL, attachmentID),
 		nil,
 		nil,
 	)
@@ -2927,21 +2970,21 @@ func TestAttachmentEndpointSupportsQueryTokenAndClientOwnership(t *testing.T) {
 		t.Fatalf("attachment status without token = %d, want %d", unauthorizedStatus, http.StatusUnauthorized)
 	}
 
-	forbiddenStatus, _ := doRawRequest(
+	crossClientStatus, _ := doRawRequest(
 		t,
 		http.MethodGet,
-		fmt.Sprintf("%s/attachments/%s?client_id=%s&access_token=%s", ts.URL, attachmentID, "client-b", "secret-token"),
+		fmt.Sprintf("%s/attachments/%s?access_token=%s", ts.URL, attachmentID, "secret-token"),
 		nil,
 		nil,
 	)
-	if forbiddenStatus != http.StatusNotFound {
-		t.Fatalf("attachment status for wrong client = %d, want %d", forbiddenStatus, http.StatusNotFound)
+	if crossClientStatus != http.StatusOK {
+		t.Fatalf("attachment status across clients = %d, want %d", crossClientStatus, http.StatusOK)
 	}
 
 	authorizedStatus, attachmentBody := doRawRequest(
 		t,
 		http.MethodGet,
-		fmt.Sprintf("%s/attachments/%s?client_id=%s&access_token=%s", ts.URL, attachmentID, "client-a", "secret-token"),
+		fmt.Sprintf("%s/attachments/%s?access_token=%s", ts.URL, attachmentID, "secret-token"),
 		nil,
 		nil,
 	)
@@ -2958,7 +3001,7 @@ func TestBuildInjectedPromptKeepsResourceLinksWhenInjectingContext(t *testing.T)
 	server := newTestServer(t, testServerOptions{allowedRoots: []string{root}})
 	threadID := createThreadForClient(t, server, "client-a", root)
 
-	thread, ok := server.getOwnedThread(context.Background(), "client-a", threadID)
+	thread, ok := server.getAccessibleThread(context.Background(), threadID)
 	if !ok {
 		t.Fatalf("thread %q not found", threadID)
 	}

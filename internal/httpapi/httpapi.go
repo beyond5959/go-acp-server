@@ -56,7 +56,7 @@ type ThreadStore interface {
 	UpsertSessionTranscriptCache(ctx context.Context, params storage.UpsertSessionTranscriptCacheParams) error
 	GetSessionConfigCache(ctx context.Context, agentID, cwd, sessionID string) (storage.SessionConfigCache, error)
 	UpsertSessionConfigCache(ctx context.Context, params storage.UpsertSessionConfigCacheParams) error
-	ListThreadsByClient(ctx context.Context, clientID string) ([]storage.Thread, error)
+	ListThreads(ctx context.Context) ([]storage.Thread, error)
 	CreateTurn(ctx context.Context, params storage.CreateTurnParams) (storage.Turn, error)
 	CreateTurnAttachments(ctx context.Context, params []storage.CreateTurnAttachmentParams) error
 	GetTurnAttachment(ctx context.Context, attachmentID string) (storage.TurnAttachment, error)
@@ -404,13 +404,6 @@ func (s *Server) handleAttachment(w http.ResponseWriter, r *http.Request, attach
 		return
 	}
 
-	clientID := strings.TrimSpace(r.URL.Query().Get("client_id"))
-	if clientID == "" {
-		writeError(w, http.StatusBadRequest, codeInvalidArgument, "missing required query parameter client_id", map[string]any{
-			"query": "client_id",
-		})
-		return
-	}
 	if s.store == nil {
 		writeError(w, http.StatusInternalServerError, codeInternal, "storage is not configured", map[string]any{})
 		return
@@ -428,8 +421,7 @@ func (s *Server) handleAttachment(w http.ResponseWriter, r *http.Request, attach
 		return
 	}
 
-	turn, err := s.store.GetTurn(r.Context(), attachment.TurnID)
-	if err != nil {
+	if _, err := s.store.GetTurn(r.Context(), attachment.TurnID); err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			writeError(w, http.StatusNotFound, codeNotFound, "attachment not found", map[string]any{})
 			return
@@ -439,11 +431,6 @@ func (s *Server) handleAttachment(w http.ResponseWriter, r *http.Request, attach
 		})
 		return
 	}
-	if _, ok := s.getOwnedThread(r.Context(), clientID, turn.ThreadID); !ok {
-		writeError(w, http.StatusNotFound, codeNotFound, "attachment not found", map[string]any{})
-		return
-	}
-
 	attachmentPath := filepath.Clean(strings.TrimSpace(attachment.FilePath))
 	if attachmentPath == "" || !isPathAllowed(attachmentPath, []string{s.dataDir}) {
 		writeError(w, http.StatusInternalServerError, codeInternal, "attachment path is invalid", map[string]any{})
@@ -653,7 +640,6 @@ func (s *Server) handleCreateThread(w http.ResponseWriter, r *http.Request, clie
 	threadID := newThreadID()
 	_, err = s.store.CreateThread(r.Context(), storage.CreateThreadParams{
 		ThreadID:         threadID,
-		ClientID:         clientID,
 		AgentID:          req.Agent,
 		CWD:              cwd,
 		Title:            req.Title,
@@ -674,7 +660,7 @@ func (s *Server) handleListThreads(w http.ResponseWriter, r *http.Request, clien
 		return
 	}
 
-	threads, err := s.store.ListThreadsByClient(r.Context(), clientID)
+	threads, err := s.store.ListThreads(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "INTERNAL", "failed to list threads", map[string]any{"reason": err.Error()})
 		return
@@ -699,7 +685,7 @@ func (s *Server) handleGetThread(w http.ResponseWriter, r *http.Request, clientI
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, threadID)
+	thread, ok := s.getAccessibleThread(r.Context(), threadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "thread not found", map[string]any{})
 		return
@@ -720,7 +706,7 @@ func (s *Server) handleUpdateThread(w http.ResponseWriter, r *http.Request, clie
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, threadID)
+	thread, ok := s.getAccessibleThread(r.Context(), threadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, codeNotFound, "thread not found", map[string]any{})
 		return
@@ -817,7 +803,7 @@ func (s *Server) handleUpdateThread(w http.ResponseWriter, r *http.Request, clie
 		}
 	}
 
-	updatedThread, ok := s.getOwnedThread(r.Context(), clientID, thread.ThreadID)
+	updatedThread, ok := s.getAccessibleThread(r.Context(), thread.ThreadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, codeNotFound, "thread not found", map[string]any{})
 		return
@@ -838,7 +824,7 @@ func (s *Server) handleDeleteThread(w http.ResponseWriter, r *http.Request, clie
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, threadID)
+	thread, ok := s.getAccessibleThread(r.Context(), threadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, codeNotFound, "thread not found", map[string]any{})
 		return
@@ -878,7 +864,7 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, threadID)
+	thread, ok := s.getAccessibleThread(r.Context(), threadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "thread not found", map[string]any{})
 		return
@@ -1010,7 +996,7 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 
 	turnCtx = agents.WithPermissionHandler(turnCtx, func(permissionCtx context.Context, req agents.PermissionRequest) (agents.PermissionResponse, error) {
 		permissionID := s.nextPermissionID(req.RequestID)
-		pending := newPendingPermission(clientID, req.Options)
+		pending := newPendingPermission(req.Options)
 		s.registerPermission(permissionID, pending)
 		defer s.unregisterPermission(permissionID, pending)
 
@@ -1215,7 +1201,7 @@ func (s *Server) handleCompactThread(w http.ResponseWriter, r *http.Request, cli
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, threadID)
+	thread, ok := s.getAccessibleThread(r.Context(), threadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "thread not found", map[string]any{})
 		return
@@ -1418,7 +1404,7 @@ func (s *Server) handleCancelTurn(w http.ResponseWriter, r *http.Request, client
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, turn.ThreadID)
+	thread, ok := s.getAccessibleThread(r.Context(), turn.ThreadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "turn not found", map[string]any{})
 		return
@@ -1475,7 +1461,7 @@ func (s *Server) handlePermissionDecision(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	resolvedResponse, err := s.resolvePermission(permissionID, clientID, response)
+	resolvedResponse, err := s.resolvePermission(permissionID, response)
 	if err != nil {
 		if errors.Is(err, errPermissionNotFound) {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "permission not found", map[string]any{})
@@ -1524,7 +1510,7 @@ func (s *Server) handleThreadHistory(w http.ResponseWriter, r *http.Request, cli
 		return
 	}
 
-	if _, ok := s.getOwnedThread(r.Context(), clientID, threadID); !ok {
+	if _, ok := s.getAccessibleThread(r.Context(), threadID); !ok {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "thread not found", map[string]any{})
 		return
 	}
@@ -1845,7 +1831,7 @@ func (s *Server) handleThreadSessions(w http.ResponseWriter, r *http.Request, cl
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, threadID)
+	thread, ok := s.getAccessibleThread(r.Context(), threadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, codeNotFound, "thread not found", map[string]any{})
 		return
@@ -1911,7 +1897,7 @@ func (s *Server) handleThreadSessionHistory(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, threadID)
+	thread, ok := s.getAccessibleThread(r.Context(), threadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, codeNotFound, "thread not found", map[string]any{})
 		return
@@ -2119,7 +2105,7 @@ func (s *Server) handleThreadConfigOptions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, threadID)
+	thread, ok := s.getAccessibleThread(r.Context(), threadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, codeNotFound, "thread not found", map[string]any{})
 		return
@@ -2230,7 +2216,7 @@ func (s *Server) handleThreadSlashCommands(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, threadID)
+	thread, ok := s.getAccessibleThread(r.Context(), threadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, codeNotFound, "thread not found", map[string]any{})
 		return
@@ -2763,12 +2749,9 @@ func classifyStreamErrorCode(err error) string {
 	return codeUpstreamUnavailable
 }
 
-func (s *Server) getOwnedThread(ctx context.Context, clientID, threadID string) (storage.Thread, bool) {
+func (s *Server) getAccessibleThread(ctx context.Context, threadID string) (storage.Thread, bool) {
 	thread, err := s.store.GetThread(ctx, threadID)
 	if err != nil {
-		return storage.Thread{}, false
-	}
-	if thread.ClientID != clientID {
 		return storage.Thread{}, false
 	}
 	return thread, true
@@ -2814,8 +2797,6 @@ var (
 )
 
 type pendingPermission struct {
-	clientID string
-
 	options map[string]agents.PermissionOption
 
 	ch   chan agents.PermissionResponse
@@ -2836,7 +2817,7 @@ type threadConfigSelectionState interface {
 	CurrentConfigOverrides() map[string]string
 }
 
-func newPendingPermission(clientID string, options []agents.PermissionOption) *pendingPermission {
+func newPendingPermission(options []agents.PermissionOption) *pendingPermission {
 	optionMap := make(map[string]agents.PermissionOption, len(options))
 	for _, option := range options {
 		optionID := strings.TrimSpace(option.OptionID)
@@ -2850,9 +2831,8 @@ func newPendingPermission(clientID string, options []agents.PermissionOption) *p
 		}
 	}
 	return &pendingPermission{
-		clientID: clientID,
-		options:  optionMap,
-		ch:       make(chan agents.PermissionResponse, 1),
+		options: optionMap,
+		ch:      make(chan agents.PermissionResponse, 1),
 	}
 }
 
@@ -3096,14 +3076,11 @@ func (s *Server) waitPermissionResponse(ctx context.Context, pending *pendingPer
 	return response
 }
 
-func (s *Server) resolvePermission(permissionID, clientID string, response agents.PermissionResponse) (agents.PermissionResponse, error) {
+func (s *Server) resolvePermission(permissionID string, response agents.PermissionResponse) (agents.PermissionResponse, error) {
 	s.permissionsMu.Lock()
 	pending, ok := s.permissions[permissionID]
 	s.permissionsMu.Unlock()
 	if !ok {
-		return agents.PermissionResponse{}, errPermissionNotFound
-	}
-	if pending.clientID != clientID {
 		return agents.PermissionResponse{}, errPermissionNotFound
 	}
 	normalized, err := pending.normalizeDecision(response)
@@ -4732,7 +4709,7 @@ func (s *Server) searchDirectories(homeDir, query string) []string {
 	return results
 }
 
-// handleRecentDirectories returns the most recently used directories for the client.
+// handleRecentDirectories returns the most recently used directories globally.
 func (s *Server) handleRecentDirectories(w http.ResponseWriter, r *http.Request, clientID string) {
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w, r)

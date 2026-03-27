@@ -62,6 +62,8 @@ interface DeleteThreadResponse  { threadId: string; status: string }
 interface PathSearchResponse    { query: string; results: string[] }
 interface RecentDirectoriesResponse { directories: string[] }
 
+const compatClientID = 'ngent-web-ui'
+
 // ── Client ─────────────────────────────────────────────────────────────────
 
 class ApiClient {
@@ -70,8 +72,8 @@ class ApiClient {
   }
 
   private headers(contentType: string | null = 'application/json'): Record<string, string> {
-    const { clientId, authToken } = store.get()
-    const h: Record<string, string> = { 'X-Client-ID': clientId }
+    const { authToken } = store.get()
+    const h: Record<string, string> = { 'X-Client-ID': compatClientID }
     if (contentType) h['Content-Type'] = contentType
     if (authToken) h['Authorization'] = `Bearer ${authToken}`
     return h

@@ -91,6 +91,114 @@ func TestMigrateRenamesLegacyDefaultAgentConfigCatalogModelID(t *testing.T) {
 	}
 }
 
+func TestMigrateDropsThreadClientIDAndClientsTable(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "hub.db")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open(): %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE schema_migrations (
+			version INTEGER PRIMARY KEY,
+			name TEXT NOT NULL,
+			applied_at TEXT NOT NULL
+		);
+	`); err != nil {
+		t.Fatalf("create schema_migrations: %v", err)
+	}
+	for _, m := range migrations {
+		if m.version >= 12 {
+			break
+		}
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO schema_migrations (version, name, applied_at)
+			VALUES (?, ?, ?)
+		`, m.version, m.name, "2026-03-27T00:00:00Z"); err != nil {
+			t.Fatalf("insert schema_migrations version %d: %v", m.version, err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE clients (
+			client_id TEXT PRIMARY KEY,
+			created_at TEXT NOT NULL,
+			last_seen_at TEXT NOT NULL
+		);
+	`); err != nil {
+		t.Fatalf("create legacy clients: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE threads (
+			thread_id TEXT PRIMARY KEY,
+			client_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL,
+			cwd TEXT NOT NULL,
+			title TEXT NOT NULL,
+			agent_options_json TEXT NOT NULL,
+			summary TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			FOREIGN KEY (client_id) REFERENCES clients(client_id)
+		);
+	`); err != nil {
+		t.Fatalf("create legacy threads: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE INDEX idx_threads_client_id ON threads(client_id);`); err != nil {
+		t.Fatalf("create legacy idx_threads_client_id: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO clients (client_id, created_at, last_seen_at)
+		VALUES ('client-legacy', '2026-03-27T00:00:00Z', '2026-03-27T00:00:00Z')
+	`); err != nil {
+		t.Fatalf("insert legacy client: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO threads (
+			thread_id,
+			client_id,
+			agent_id,
+			cwd,
+			title,
+			agent_options_json,
+			summary,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "th-legacy", "client-legacy", "codex", "/tmp/legacy", "legacy", "{}", "summary", "2026-03-27T00:00:00Z", "2026-03-27T00:00:00Z"); err != nil {
+		t.Fatalf("insert legacy thread: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New() migrated open: %v", err)
+	}
+	defer func() {
+		_ = store.Close()
+	}()
+
+	if has := tableExists(t, store.db, "clients"); has {
+		t.Fatalf("clients table should be dropped after migration")
+	}
+	if has := columnExists(t, store.db, "threads", "client_id"); has {
+		t.Fatalf("threads.client_id should be dropped after migration")
+	}
+
+	thread, err := store.GetThread(ctx, "th-legacy")
+	if err != nil {
+		t.Fatalf("GetThread(th-legacy): %v", err)
+	}
+	if got, want := thread.ThreadID, "th-legacy"; got != want {
+		t.Fatalf("thread.ThreadID = %q, want %q", got, want)
+	}
+	if got, want := thread.CWD, "/tmp/legacy"; got != want {
+		t.Fatalf("thread.CWD = %q, want %q", got, want)
+	}
+}
+
 func TestCreateListGetThread(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
@@ -111,7 +219,6 @@ func TestCreateListGetThread(t *testing.T) {
 
 	threadOne, err := store.CreateThread(ctx, CreateThreadParams{
 		ThreadID:         "th-1",
-		ClientID:         "client-a",
 		AgentID:          "codex",
 		CWD:              "/tmp/project-a",
 		Title:            "first",
@@ -124,7 +231,6 @@ func TestCreateListGetThread(t *testing.T) {
 
 	_, err = store.CreateThread(ctx, CreateThreadParams{
 		ThreadID:         "th-2",
-		ClientID:         "client-a",
 		AgentID:          "codex",
 		CWD:              "/tmp/project-b",
 		Title:            "second",
@@ -146,9 +252,9 @@ func TestCreateListGetThread(t *testing.T) {
 		t.Fatalf("GetThread cwd = %q, want %q", gotThread.CWD, threadOne.CWD)
 	}
 
-	threads, err := store.ListThreadsByClient(ctx, "client-a")
+	threads, err := store.ListThreads(ctx)
 	if err != nil {
-		t.Fatalf("ListThreadsByClient(): %v", err)
+		t.Fatalf("ListThreads(): %v", err)
 	}
 	if got, want := len(threads), 2; got != want {
 		t.Fatalf("len(threads) = %d, want %d", got, want)
@@ -158,6 +264,66 @@ func TestCreateListGetThread(t *testing.T) {
 	}
 	if threads[1].ThreadID != "th-1" {
 		t.Fatalf("threads[1].thread_id = %q, want %q", threads[1].ThreadID, "th-1")
+	}
+}
+
+func TestListRecentDirectoriesIsGlobal(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer func() {
+		_ = store.Close()
+	}()
+
+	base := time.Date(2026, 3, 27, 10, 0, 0, 0, time.UTC)
+	counter := 0
+	store.now = func() time.Time {
+		counter++
+		return base.Add(time.Duration(counter) * time.Second)
+	}
+
+	if err := store.UpsertClient(ctx, "client-a"); err != nil {
+		t.Fatalf("UpsertClient(client-a): %v", err)
+	}
+	if err := store.UpsertClient(ctx, "client-b"); err != nil {
+		t.Fatalf("UpsertClient(client-b): %v", err)
+	}
+	if _, err := store.CreateThread(ctx, CreateThreadParams{
+		ThreadID:         "th-recent-1",
+		AgentID:          "codex",
+		CWD:              "/tmp/project-a",
+		Title:            "first",
+		AgentOptionsJSON: "{}",
+		Summary:          "",
+	}); err != nil {
+		t.Fatalf("CreateThread(th-recent-1): %v", err)
+	}
+	if _, err := store.CreateThread(ctx, CreateThreadParams{
+		ThreadID:         "th-recent-2",
+		AgentID:          "codex",
+		CWD:              "/tmp/project-b",
+		Title:            "second",
+		AgentOptionsJSON: "{}",
+		Summary:          "",
+	}); err != nil {
+		t.Fatalf("CreateThread(th-recent-2): %v", err)
+	}
+
+	dirsA, err := store.ListRecentDirectories(ctx, "client-a", 5)
+	if err != nil {
+		t.Fatalf("ListRecentDirectories(client-a): %v", err)
+	}
+	dirsB, err := store.ListRecentDirectories(ctx, "client-b", 5)
+	if err != nil {
+		t.Fatalf("ListRecentDirectories(client-b): %v", err)
+	}
+	if got, want := len(dirsA), 2; got != want {
+		t.Fatalf("len(dirsA) = %d, want %d", got, want)
+	}
+	if dirsA[0] != "/tmp/project-b" || dirsA[1] != "/tmp/project-a" {
+		t.Fatalf("dirsA = %#v, want [/tmp/project-b /tmp/project-a]", dirsA)
+	}
+	if fmt.Sprintf("%v", dirsA) != fmt.Sprintf("%v", dirsB) {
+		t.Fatalf("dirsA = %#v, dirsB = %#v, want same global ordering", dirsA, dirsB)
 	}
 }
 
@@ -174,7 +340,6 @@ func TestDeleteThreadCascadeData(t *testing.T) {
 
 	_, err := store.CreateThread(ctx, CreateThreadParams{
 		ThreadID:         "th-delete",
-		ClientID:         "client-delete",
 		AgentID:          "codex",
 		CWD:              "/tmp/project-delete",
 		Title:            "to-delete",
@@ -267,7 +432,6 @@ func TestCreateTurnAppendEventFinalizeTurn(t *testing.T) {
 
 	_, err := store.CreateThread(ctx, CreateThreadParams{
 		ThreadID:         "th-turn",
-		ClientID:         "client-b",
 		AgentID:          "codex",
 		CWD:              "/tmp/project-turn",
 		Title:            "turn-test",
@@ -355,7 +519,6 @@ func TestAppendEventMergesConsecutiveDeltaRuns(t *testing.T) {
 	}
 	if _, err := store.CreateThread(ctx, CreateThreadParams{
 		ThreadID:         "th-merge",
-		ClientID:         "client-merge",
 		AgentID:          "codex",
 		CWD:              "/tmp/project-merge",
 		Title:            "merge",
@@ -440,7 +603,6 @@ func TestTurnAttachmentsCRUD(t *testing.T) {
 	}
 	if _, err := store.CreateThread(ctx, CreateThreadParams{
 		ThreadID:         "th-attachments",
-		ClientID:         "client-attachments",
 		AgentID:          "codex",
 		CWD:              "/tmp/project-attachments",
 		Title:            "attachments",
@@ -509,7 +671,6 @@ func TestUpdateThreadSummaryAndInternalTurnFlag(t *testing.T) {
 	}
 	_, err := store.CreateThread(ctx, CreateThreadParams{
 		ThreadID:         "th-summary",
-		ClientID:         "client-c",
 		AgentID:          "codex",
 		CWD:              "/tmp/project-summary",
 		Title:            "summary-test",
@@ -563,7 +724,6 @@ func TestUpdateThreadAgentOptions(t *testing.T) {
 	}
 	_, err := store.CreateThread(ctx, CreateThreadParams{
 		ThreadID:         "th-model",
-		ClientID:         "client-model",
 		AgentID:          "codex",
 		CWD:              "/tmp/project-model",
 		Title:            "model-test",
@@ -603,7 +763,6 @@ func TestUpdateThreadTitle(t *testing.T) {
 	}
 	_, err := store.CreateThread(ctx, CreateThreadParams{
 		ThreadID:         "th-title",
-		ClientID:         "client-title",
 		AgentID:          "codex",
 		CWD:              "/tmp/project-title",
 		Title:            "before",
@@ -916,6 +1075,55 @@ func countRows(t *testing.T, db *sql.DB, tableName string) int {
 		t.Fatalf("count rows from %s: %v", tableName, err)
 	}
 	return count
+}
+
+func tableExists(t *testing.T, db *sql.DB, tableName string) bool {
+	t.Helper()
+
+	var name string
+	err := db.QueryRow(`
+		SELECT name
+		FROM sqlite_master
+		WHERE type = 'table' AND name = ?
+	`, tableName).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false
+	}
+	if err != nil {
+		t.Fatalf("query sqlite_master for table %s: %v", tableName, err)
+	}
+	return name == tableName
+}
+
+func columnExists(t *testing.T, db *sql.DB, tableName, columnName string) bool {
+	t.Helper()
+
+	rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, tableName))
+	if err != nil {
+		t.Fatalf("pragma table_info(%s): %v", tableName, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			t.Fatalf("scan pragma table_info(%s): %v", tableName, err)
+		}
+		if name == columnName {
+			return true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate pragma table_info(%s): %v", tableName, err)
+	}
+	return false
 }
 
 func legacyDefaultAgentConfigCatalogModelID() string {

@@ -440,10 +440,13 @@ function attachmentResourceURL(attachmentId: string | null | undefined): string 
   const normalized = attachmentId?.trim() ?? ''
   if (!normalized) return undefined
 
-  const { serverUrl, clientId, authToken } = store.get()
-  const params = new URLSearchParams({ client_id: clientId })
+  const { serverUrl, authToken } = store.get()
+  const params = new URLSearchParams()
   if (authToken.trim()) params.set('access_token', authToken.trim())
-  return `${serverUrl}/attachments/${encodeURIComponent(normalized)}?${params.toString()}`
+  const suffix = params.toString()
+  return suffix
+    ? `${serverUrl}/attachments/${encodeURIComponent(normalized)}?${suffix}`
+    : `${serverUrl}/attachments/${encodeURIComponent(normalized)}`
 }
 
 function revokeAttachmentPreview(attachment: { previewUrl?: string } | null | undefined): void {

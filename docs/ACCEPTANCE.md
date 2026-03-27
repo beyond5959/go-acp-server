@@ -14,10 +14,10 @@ This checklist defines executable acceptance checks for requirements 1-16.
 
 ## Requirement 2: Multi-client and multi-thread support
 
-- Operation: create threads under different `X-Client-ID` headers and verify isolation.
-- Expected: no cross-client leakage.
+- Operation: create a thread under one `X-Client-ID` and verify a different `X-Client-ID` can list and open the same thread.
+- Expected: thread/session state is shared across browser clients connected to the same ngent instance.
 - Verification command:
-  - `go test ./internal/httpapi -run TestThreadAccessAcrossClientsReturnsNotFound -count=1`
+  - `go test ./internal/httpapi -run 'TestThreadAccessAcrossClientsSharesThreads|TestUpdateThreadAgentOptionsAcrossClients|TestThreadConfigOptionsAcrossClients' -count=1`
 
 ## Requirement 3: Per-thread independent agent instance
 
@@ -214,9 +214,9 @@ This checklist defines executable acceptance checks for requirements 1-16.
 
 ## Requirement 17: Thread Delete Lifecycle
 
-- Operation: delete an existing thread from API/UI, verify ownership behavior, conflict behavior, and provider cleanup.
+- Operation: delete an existing thread from API/UI, verify shared-visibility behavior, conflict behavior, and provider cleanup.
 - Expected:
-  - `DELETE /v1/threads/{threadId}` returns `200` with `status=deleted` for same-client thread.
+  - `DELETE /v1/threads/{threadId}` returns `200` with `status=deleted` for an existing thread regardless of which browser-scoped `X-Client-ID` created it.
   - deleting a thread with an active turn returns `409 CONFLICT`.
   - deleted thread is no longer visible in list/get/history endpoints.
   - cached thread agent provider is closed when the thread is deleted.
@@ -542,8 +542,8 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - ACP-backed agents receive `session/prompt.prompt[]` with ordinary text items plus `resource_link` items containing `uri`, `name`, `mimeType`, and `size`.
   - ngent persists a readable `requestText` summary plus a structured `user_prompt` history event carrying stable attachment ids so attachment cards can be reconstructed after reload.
   - the Web UI renders uploaded user attachments as cards in the transcript both immediately after send and after history reload, and persisted image attachments continue to preview through the backend attachment route instead of disappearing after the stream finishes.
-- Verification commands (executed 2026-03-26):
-  - `go test ./internal/httpapi -run 'Test(MultipartTurnUploadsAttachmentsAsResourceLinks|AttachmentEndpointSupportsQueryTokenAndClientOwnership|BuildInjectedPromptKeepsResourceLinksWhenInjectingContext)' -count=1`
+- Verification commands (executed 2026-03-27):
+  - `go test ./internal/httpapi -run 'Test(MultipartTurnUploadsAttachmentsAsResourceLinks|AttachmentEndpointSupportsQueryTokenAcrossClients|BuildInjectedPromptKeepsResourceLinksWhenInjectingContext)' -count=1`
   - `go test ./internal/agents/opencode -run 'TestStreamPromptSendsResourceLinks' -count=1`
   - `cd internal/webui/web && npm run build`
   - `go test ./...`

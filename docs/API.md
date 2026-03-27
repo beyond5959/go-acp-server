@@ -6,7 +6,8 @@ This document defines the current HTTP API contract.
 
 - JSON response content type: `application/json; charset=utf-8`.
 - Except `/healthz`, every `/v1/*` endpoint requires `X-Client-ID` header (non-empty).
-- For every `/v1/*` request with valid `X-Client-ID`, server upserts client presence (`UpsertClient`).
+- `X-Client-ID` is retained as a required compatibility header, but it is not persisted in SQLite and it is not a thread/session access boundary.
+- threads, sessions, permissions, persisted attachments, and recent-directory suggestions are shared across callers connected to the same ngent instance.
 - Optional auth switch:
   - if server starts with `--auth-token=<token>`, `/v1/*` also requires `Authorization: Bearer <token>`.
 
@@ -137,6 +138,8 @@ All errors use:
 
 4. `GET /v1/threads`
 - Headers: `X-Client-ID` (required), optional bearer auth if enabled.
+- Behavior:
+  - returns every persisted thread on the current ngent instance, not just threads created by the current `X-Client-ID`.
 - Response `200`:
 
 ```json
@@ -158,8 +161,8 @@ All errors use:
 
 5. `GET /v1/threads/{threadId}`
 - Headers: `X-Client-ID` (required), optional bearer auth if enabled.
-- Ownership rule:
-  - if thread does not exist OR does not belong to `X-Client-ID`, return `404`.
+- Visibility rule:
+  - if thread does not exist, return `404`.
 - Response `200`:
 
 ```json
@@ -179,8 +182,8 @@ All errors use:
 
 5.1 `PATCH /v1/threads/{threadId}`
 - Headers: `X-Client-ID` (required), optional bearer auth if enabled.
-- Ownership rule:
-  - if thread does not exist OR does not belong to `X-Client-ID`, return `404`.
+- Visibility rule:
+  - if thread does not exist, return `404`.
 - Request:
 
 ```json
@@ -219,8 +222,8 @@ All errors use:
 
 5.2 `DELETE /v1/threads/{threadId}`
 - Headers: `X-Client-ID` (required), optional bearer auth if enabled.
-- Ownership rule:
-  - if thread does not exist OR does not belong to `X-Client-ID`, return `404`.
+- Visibility rule:
+  - if thread does not exist, return `404`.
 - Behavior:
   - hard-deletes thread history (thread row + turns + events).
   - if any session on the thread has an active turn, returns `409 CONFLICT`.
@@ -367,7 +370,7 @@ Or submit the provider's exact option id when the permission request advertised 
 
 - Validation:
   - `outcome` must be one of `approved|declined|cancelled`.
-  - `permissionId` must exist and belong to the same `X-Client-ID`.
+  - `permissionId` must exist.
   - already-resolved permission returns `409 CONFLICT`.
 
 - Response `200`:
@@ -385,7 +388,7 @@ Or submit the provider's exact option id when the permission request advertised 
 - `INVALID_ARGUMENT`: validation failed.
 - `UNAUTHORIZED`: bearer token missing or invalid.
 - `FORBIDDEN`: path/policy denied.
-- `NOT_FOUND`: endpoint/resource missing, including cross-client thread/turn access.
+- `NOT_FOUND`: endpoint/resource missing.
 - `CONFLICT`: active-turn conflict or invalid cancel state.
 - `TIMEOUT`: upstream/model operation exceeded allowed time budget.
 - `UPSTREAM_UNAVAILABLE`: configured agent/provider is unavailable or failed to start/respond.

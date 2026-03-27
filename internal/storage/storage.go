@@ -31,7 +31,6 @@ type Store struct {
 // Thread stores one persisted thread row.
 type Thread struct {
 	ThreadID         string
-	ClientID         string
 	AgentID          string
 	CWD              string
 	Title            string
@@ -44,7 +43,6 @@ type Thread struct {
 // CreateThreadParams contains input for CreateThread.
 type CreateThreadParams struct {
 	ThreadID         string
-	ClientID         string
 	AgentID          string
 	CWD              string
 	Title            string
@@ -250,22 +248,14 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return nil
 }
 
-// UpsertClient creates a client row or updates its last_seen_at.
+// UpsertClient validates the compatibility client id header.
+// Client ids are no longer persisted.
 func (s *Store) UpsertClient(ctx context.Context, clientID string) error {
+	_ = ctx
 	clientID = strings.TrimSpace(clientID)
 	if clientID == "" {
 		return errors.New("storage: clientID is required")
 	}
-
-	ts := formatTime(s.now())
-	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO clients (client_id, created_at, last_seen_at)
-		VALUES (?, ?, ?)
-		ON CONFLICT(client_id) DO UPDATE SET last_seen_at = excluded.last_seen_at;
-	`, clientID, ts, ts); err != nil {
-		return fmt.Errorf("storage: upsert client: %w", err)
-	}
-
 	return nil
 }
 
@@ -273,9 +263,6 @@ func (s *Store) UpsertClient(ctx context.Context, clientID string) error {
 func (s *Store) CreateThread(ctx context.Context, params CreateThreadParams) (Thread, error) {
 	if strings.TrimSpace(params.ThreadID) == "" {
 		return Thread{}, errors.New("storage: threadID is required")
-	}
-	if strings.TrimSpace(params.ClientID) == "" {
-		return Thread{}, errors.New("storage: clientID is required")
 	}
 	if strings.TrimSpace(params.AgentID) == "" {
 		return Thread{}, errors.New("storage: agentID is required")
@@ -293,7 +280,6 @@ func (s *Store) CreateThread(ctx context.Context, params CreateThreadParams) (Th
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO threads (
 			thread_id,
-			client_id,
 			agent_id,
 			cwd,
 			title,
@@ -301,10 +287,9 @@ func (s *Store) CreateThread(ctx context.Context, params CreateThreadParams) (Th
 			summary,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 	`,
 		params.ThreadID,
-		params.ClientID,
 		params.AgentID,
 		params.CWD,
 		params.Title,
@@ -318,7 +303,6 @@ func (s *Store) CreateThread(ctx context.Context, params CreateThreadParams) (Th
 
 	return Thread{
 		ThreadID:         params.ThreadID,
-		ClientID:         params.ClientID,
 		AgentID:          params.AgentID,
 		CWD:              params.CWD,
 		Title:            params.Title,
@@ -334,7 +318,6 @@ func (s *Store) GetThread(ctx context.Context, threadID string) (Thread, error) 
 	row := s.db.QueryRowContext(ctx, `
 		SELECT
 			thread_id,
-			client_id,
 			agent_id,
 			cwd,
 			title,
@@ -353,7 +336,6 @@ func (s *Store) GetThread(ctx context.Context, threadID string) (Thread, error) 
 	)
 	if err := row.Scan(
 		&thread.ThreadID,
-		&thread.ClientID,
 		&thread.AgentID,
 		&thread.CWD,
 		&thread.Title,
@@ -910,12 +892,11 @@ func (s *Store) UpsertSessionConfigCache(
 	return nil
 }
 
-// ListThreadsByClient returns all threads for one client.
-func (s *Store) ListThreadsByClient(ctx context.Context, clientID string) ([]Thread, error) {
+// ListThreads returns all persisted threads across clients.
+func (s *Store) ListThreads(ctx context.Context) ([]Thread, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			thread_id,
-			client_id,
 			agent_id,
 			cwd,
 			title,
@@ -924,9 +905,8 @@ func (s *Store) ListThreadsByClient(ctx context.Context, clientID string) ([]Thr
 			created_at,
 			updated_at
 		FROM threads
-		WHERE client_id = ?
 		ORDER BY created_at DESC;
-	`, clientID)
+	`)
 	if err != nil {
 		return nil, fmt.Errorf("storage: list threads: %w", err)
 	}
@@ -941,7 +921,6 @@ func (s *Store) ListThreadsByClient(ctx context.Context, clientID string) ([]Thr
 		)
 		if err := rows.Scan(
 			&thread.ThreadID,
-			&thread.ClientID,
 			&thread.AgentID,
 			&thread.CWD,
 			&thread.Title,
@@ -1529,6 +1508,15 @@ func (s *Store) migrationApplied(ctx context.Context, version int) (bool, error)
 }
 
 func (s *Store) applyMigration(ctx context.Context, m migration) error {
+	if m.disableForeignKeys {
+		if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys = OFF;`); err != nil {
+			return fmt.Errorf("storage: disable foreign_keys for migration %d: %w", m.version, err)
+		}
+		defer func() {
+			_, _ = s.db.ExecContext(context.Background(), `PRAGMA foreign_keys = ON;`)
+		}()
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("storage: begin migration %d: %w", m.version, err)
@@ -1627,17 +1615,18 @@ func sqliteIntToBool(v int) bool {
 // ListRecentDirectories returns the most recently used directories from threads.
 // Returns up to limit unique directories, ordered by most recent update time.
 func (s *Store) ListRecentDirectories(ctx context.Context, clientID string, limit int) ([]string, error) {
+	_ = clientID
 	if limit <= 0 {
 		limit = 5
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT DISTINCT cwd
+		SELECT cwd
 		FROM threads
-		WHERE client_id = ?
-		ORDER BY updated_at DESC
+		GROUP BY cwd
+		ORDER BY MAX(updated_at) DESC
 		LIMIT ?
-	`, clientID, limit)
+	`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query recent directories: %w", err)
 	}

@@ -1,9 +1,10 @@
 package storage
 
 type migration struct {
-	version int
-	name    string
-	sql     []string
+	version            int
+	name               string
+	sql                []string
+	disableForeignKeys bool
 }
 
 var migrations = []migration{
@@ -156,6 +157,46 @@ var migrations = []migration{
 				FOREIGN KEY (turn_id) REFERENCES turns(turn_id)
 			);`,
 			`CREATE INDEX IF NOT EXISTS idx_turn_attachments_turn_id ON turn_attachments(turn_id);`,
+		},
+	},
+	{
+		version:            12,
+		name:               "drop_thread_client_id_and_clients_table",
+		disableForeignKeys: true,
+		sql: []string{
+			`CREATE TABLE threads_new (
+				thread_id TEXT PRIMARY KEY,
+				agent_id TEXT NOT NULL,
+				cwd TEXT NOT NULL,
+				title TEXT NOT NULL,
+				agent_options_json TEXT NOT NULL,
+				summary TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);`,
+			`INSERT INTO threads_new (
+				thread_id,
+				agent_id,
+				cwd,
+				title,
+				agent_options_json,
+				summary,
+				created_at,
+				updated_at
+			)
+			SELECT
+				thread_id,
+				agent_id,
+				cwd,
+				title,
+				agent_options_json,
+				summary,
+				created_at,
+				updated_at
+			FROM threads;`,
+			`DROP TABLE threads;`,
+			`ALTER TABLE threads_new RENAME TO threads;`,
+			`DROP TABLE IF EXISTS clients;`,
 		},
 	},
 }

@@ -1,10 +1,8 @@
 import type { AppState, Theme } from './types.ts'
-import { generateUUID } from './utils.ts'
 
 // ── Storage keys ───────────────────────────────────────────────────────────
 
 const LS = {
-  clientId:  'ngent:clientId',
   authToken: 'ngent:authToken',
   serverUrl: 'ngent:serverUrl',
   theme:     'ngent:theme',
@@ -44,28 +42,13 @@ class AppStore {
     return () => this.listeners.delete(fn)
   }
 
-  // ── Helpers ──────────────────────────────────────────────────────────────
-
-  /** Resets the client ID to a fresh UUID and persists it. */
-  resetClientId(): void {
-    const clientId = generateUUID()
-    localStorage.setItem(LS.clientId, clientId)
-    this.set({ clientId })
-  }
-
   // ── Internals ────────────────────────────────────────────────────────────
 
   private buildInitialState(): AppState {
-    // Ensure client ID always exists
-    let clientId = localStorage.getItem(LS.clientId) || ''
-    if (!clientId) {
-      clientId = generateUUID()
-      localStorage.setItem(LS.clientId, clientId)
-    }
+    localStorage.removeItem('ngent:clientId')
 
     return {
       // Persisted
-      clientId,
       authToken: localStorage.getItem(LS.authToken) || '',
       serverUrl: localStorage.getItem(LS.serverUrl) || window.location.origin,
       theme: (localStorage.getItem(LS.theme) as Theme | null) ?? 'system',
@@ -94,7 +77,6 @@ class AppStore {
     if (patch.theme !== undefined) {
       localStorage.setItem(LS.theme, patch.theme)
     }
-    // clientId is only written via resetClientId() to avoid accidental overwrites
   }
 
   private notify(): void {
