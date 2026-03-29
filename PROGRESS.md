@@ -36,6 +36,16 @@ This file is the source of milestone progress, validation commands, and next act
     - pass: `cd internal/webui/web && npm run build`
     - pass: `go test ./...`
 
+- `Post-M8` Web UI fresh-session binding/render preservation fix completed:
+  - when a fresh session receives `session_bound`, the left session panel now upserts that bound `sessionId` immediately and forces a panel refresh instead of waiting for the first turn to finish and refresh session history.
+  - session-panel dedupe now preserves richer later metadata (`title`, `cwd`, `updatedAt`) for duplicate session ids, so temporary placeholders do not block later server-provided session details.
+  - history reload now recognizes fresh-session scope promotion into a bound session and reuses the in-memory message cache for that first replay pass, preventing immediate transcript/history refresh from stripping streamed `thinking` / `tool_call` sections off the just-finished first reply.
+  - full-page refresh is also preserved now: when transcript replay overlaps with persisted turn history, the Web UI rehydrates the replayed messages from the richer event-backed local turn reconstruction so `reasoning` / `tool_call` sections survive reload.
+  - backend `GET /v1/threads/{threadId}/sessions` now also prepends the thread's currently bound `sessionId`, so the active session remains visible even when the upstream provider `session/list` result is stale or has not surfaced that new session yet.
+  - validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
 - `Post-M8` Web UI premium visual refresh completed:
   - kept the existing no-framework SPA data flow, SSE behavior, store semantics, and API contracts unchanged; the change set is UI-only.
   - rebuilt the shell into a glass-panel workspace with a richer desktop feel: layered backdrop, elevated sidebars, stronger header hierarchy, cleaner empty states, and improved chat/composer surfaces.
