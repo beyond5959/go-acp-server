@@ -3960,6 +3960,18 @@ function renderMessage(msg: Message): string {
     </div>`
 }
 
+function createMessageNode(msg: Message): HTMLElement | null {
+  const template = document.createElement('template')
+  template.innerHTML = renderMessage(msg).trim()
+  const node = template.content.firstElementChild
+  if (!(node instanceof HTMLElement)) return null
+
+  bindMarkdownControls(node)
+  bindReasoningPanels(node)
+  bindToolCallPanels(node)
+  return node
+}
+
 function messageRenderWeight(msg: Message): number {
   let total = (msg.content?.length ?? 0) + (msg.reasoning?.length ?? 0)
   total += (msg.attachments?.length ?? 0) * 256
@@ -4000,6 +4012,10 @@ function finishMessageListRender(listEl: HTMLElement): void {
   hideScrollToBottomButton()
 }
 
+function invalidateMessageListRender(): void {
+  messageListRenderSeq += 1
+}
+
 function isCurrentMessageListRender(
   renderSeq: number,
   scopeKey: string,
@@ -4028,14 +4044,9 @@ async function renderMessageListAsync(
   for (const msg of msgs) {
     if (!isCurrentMessageListRender(renderSeq, scopeKey, listEl)) return
 
-    const template = document.createElement('template')
-    template.innerHTML = renderMessage(msg).trim()
-    const node = template.content.firstElementChild
-    if (node instanceof HTMLElement) {
+    const node = createMessageNode(msg)
+    if (node) {
       listEl.appendChild(node)
-      bindMarkdownControls(node)
-      bindReasoningPanels(node)
-      bindToolCallPanels(node)
     }
 
     if (performance.now() - lastYieldAt >= MESSAGE_LIST_RENDER_YIELD_INTERVAL_MS) {
@@ -4045,6 +4056,14 @@ async function renderMessageListAsync(
   }
 
   if (!isCurrentMessageListRender(renderSeq, scopeKey, listEl)) return
+  finishMessageListRender(listEl)
+}
+
+function renderMessageListSync(listEl: HTMLElement, msgs: Message[]): void {
+  listEl.innerHTML = msgs.map(m => renderMessage(m)).join('')
+  bindMarkdownControls(listEl)
+  bindReasoningPanels(listEl)
+  bindToolCallPanels(listEl)
   finishMessageListRender(listEl)
 }
 
@@ -4183,7 +4202,7 @@ function updateMessageList(): void {
   const listEl = document.getElementById('message-list')
   if (!listEl) return
 
-  messageListRenderSeq += 1
+  invalidateMessageListRender()
   const renderSeq = messageListRenderSeq
 
   const { activeThreadId, threads, messages } = store.get()
@@ -4207,11 +4226,20 @@ function updateMessageList(): void {
     return
   }
 
-  listEl.innerHTML = msgs.map(m => renderMessage(m)).join('')
-  bindMarkdownControls(listEl)
-  bindReasoningPanels(listEl)
-  bindToolCallPanels(listEl)
-  finishMessageListRender(listEl)
+  renderMessageListSync(listEl, msgs)
+}
+
+function flushActiveMessageList(scopeKey: string): void {
+  if (!scopeKey || activeChatScopeKey() !== scopeKey) return
+
+  const listEl = document.getElementById('message-list')
+  if (!(listEl instanceof HTMLElement)) return
+
+  const msgs = store.get().messages[scopeKey] ?? []
+  // Abort any in-flight async render so the just-sent user message is
+  // committed before we append the live streaming bubble below it.
+  invalidateMessageListRender()
+  renderMessageListSync(listEl, msgs)
 }
 
 // ── Input state ───────────────────────────────────────────────────────────
@@ -4697,10 +4725,19 @@ function updateChatArea(): void {
   // Show locally loaded messages immediately (including empty threads).
   // Show the loading state when the cache belongs to a different selected session.
   const scopeKey = threadChatScopeKey(thread)
+  const streamState = getScopeStreamState(scopeKey)
   const hasLocalHistory = Object.prototype.hasOwnProperty.call(store.get().messages, scopeKey)
   const hasMatchingLocalHistory = hasLocalHistory && loadedHistoryScopeKeys.has(scopeKey)
   if (hasMatchingLocalHistory) {
-    updateMessageList()
+    if (streamState) {
+      // When we rebuild the chat shell mid-stream, keep the persisted message
+      // list stable before restoring the live bubble. An async render can yield
+      // and resume after the bubble is appended, which places later messages
+      // after the live bubble and makes the reply jump above the latest user turn.
+      flushActiveMessageList(scopeKey)
+    } else {
+      updateMessageList()
+    }
   } else {
     const listEl = document.getElementById('message-list')
     if (listEl) {
@@ -5222,6 +5259,7 @@ async function handleSend(): Promise<void> {
     status:    'done',
   }
   addMessageToStore(capturedScopeKey, userMsg)
+  flushActiveMessageList(capturedScopeKey)
 
   // ── 2. Reserve streaming message ID before touching stream state ───────────
   //    This prevents subscribe → updateMessageList from wiping the bubble.

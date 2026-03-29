@@ -25,6 +25,7 @@ Modules:
 - `internal/storage`: SQLite repository and migration management.
 - `internal/observability`: human-readable stderr logging, access-log formatting, ANSI-color helpers, and redaction helpers.
 - `internal/webui`: embedded Vite + TypeScript SPA with a no-framework DOM renderer; premium visual refreshes must remain presentation-only and must not change API/runtime behavior.
+  - on the send path, the Web UI invalidates any in-flight async message-list render and synchronously flushes persisted messages before mounting the live streaming reply bubble, so streaming replies stay directly below the just-sent user message even on long/heavy transcripts.
 
 ## 3. Concurrency Model
 
