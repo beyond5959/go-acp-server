@@ -1,17 +1,43 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <defs>
-    <linearGradient id="ngent-favicon-gradient" x1="4" y1="4" x2="28" y2="28" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#0f766e" />
-      <stop offset="1" stop-color="#2563eb" />
+    <linearGradient id="ngent-favicon-bg" x1="5" y1="3" x2="27" y2="29" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#081715" />
+      <stop offset="0.56" stop-color="#0c3a36" />
+      <stop offset="1" stop-color="#0f766e" />
+    </linearGradient>
+    <radialGradient id="ngent-favicon-glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(11 8.5) rotate(40) scale(17 14)">
+      <stop stop-color="#6ee7d5" stop-opacity="0.28" />
+      <stop offset="1" stop-color="#6ee7d5" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="ngent-favicon-ink" x1="8" y1="6.5" x2="24" y2="25.5" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff" />
+      <stop offset="1" stop-color="#d5f5ee" />
+    </linearGradient>
+    <linearGradient id="ngent-favicon-shadow" x1="13" y1="11" x2="24" y2="24" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0b4b46" stop-opacity="0.34" />
+      <stop offset="1" stop-color="#0b4b46" stop-opacity="0" />
     </linearGradient>
   </defs>
-  <rect x="2" y="2" width="28" height="28" rx="8" fill="url(#ngent-favicon-gradient)" />
+  <rect x="2" y="2" width="28" height="28" rx="8" fill="url(#ngent-favicon-bg)" />
+  <rect x="2" y="2" width="28" height="28" rx="8" fill="url(#ngent-favicon-glow)" />
+  <rect x="2.75" y="2.75" width="26.5" height="26.5" rx="7.25" fill="none" stroke="#a7f3d0" stroke-opacity="0.14" />
   <path
-    d="M9 23V9l14 14V9"
-    fill="none"
-    stroke="#fff"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="3.25"
+    d="M8.7 24.7V7.3h4.55l6.3 9.1V7.3h4.75v17.4h-4.55l-6.3-9.1v9.1H8.7Z"
+    fill="#062b28"
+    opacity="0.34"
+    transform="translate(0.65 0.7)"
+  />
+  <path
+    d="M8.7 24.7V7.3h4.55l6.3 9.1V7.3h4.75v17.4h-4.55l-6.3-9.1v9.1H8.7Z"
+    fill="url(#ngent-favicon-ink)"
+  />
+  <path
+    d="M13.25 7.3h3.6l7.45 10.85v4.5h-3.6L13.25 11.8V7.3Z"
+    fill="url(#ngent-favicon-shadow)"
+  />
+  <path
+    d="M13.25 7.3h1.55l7.9 11.45v3.05h-1.55L13.25 10.35V7.3Z"
+    fill="#ffffff"
+    opacity="0.18"
   />
 </svg>

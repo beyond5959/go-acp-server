@@ -15,6 +15,20 @@
 
 ## Open Issues
 
+- ID: KI-043
+- Title: `X-Client-ID` no longer isolates data between callers on the same ngent instance
+- Status: Open
+- Severity: Medium
+- Affects: deployments that expected separate browsers or separate users behind one ngent instance to have isolated thread/session state
+- Symptom:
+  - thread list, thread metadata, session views, permission resolution, and persisted attachment fetches are shared across all callers that can reach the same ngent instance.
+  - changing browser profiles changes the local `clientId`, but no longer hides or fences off previously created threads.
+- Workaround:
+  - run separate ngent instances or separate `--data-path` roots for each isolation boundary you need.
+  - if the service is exposed beyond localhost, put it behind stronger caller authentication/authorization than `X-Client-ID`.
+- Follow-up plan:
+  - evaluate whether ngent should eventually add an explicit optional namespace/project isolation flag instead of relying on browser-local identifiers.
+
 - ID: KI-035
 - Title: Premium Web UI visuals vary slightly by host browser/font stack
 - Status: Open
@@ -455,6 +469,32 @@
   - add an age-based or thread-reference-aware attachment janitor once real usage clarifies safe retention expectations for provider retries and history-driven debugging.
 
 ## Recently Closed
+
+- ID: KI-042
+- Title: Web UI session sidebar raised 409 conflicts while another session was still streaming
+- Status: Closed
+- Severity: Medium
+- Affects: switching between sessions in the Web UI while the thread already has an active turn
+- Symptom:
+  - choosing another session from the sidebar previously always issued `PATCH /v1/threads/{threadId}` immediately.
+  - if any turn in that thread was still active, the server returned `409 thread has an active turn`, so even read-only session browsing produced an error dialog.
+- Workaround:
+  - none; fixed on 2026-03-26 by separating local viewed-session state from backend thread session binding and deferring backend sync until the thread is idle.
+- Follow-up plan:
+  - monitor whether users also need an explicit visible indicator when they are browsing a session that has not yet been synced back into backend thread state.
+
+- ID: KI-041
+- Title: Web UI session switch fetched whole-thread history and stalled on large multi-session threads
+- Status: Closed
+- Severity: Medium
+- Affects: Web UI session switching on threads with many persisted turns/events across multiple sessions
+- Symptom:
+  - selecting one historical session previously still triggered `GET /v1/threads/{threadId}/history?includeEvents=1` for the entire thread, then filtered by `session_bound` in the browser.
+  - on real Codex threads this could force the UI to parse roughly 19 MB / 42k events just to render one session that only needed one persisted turn.
+- Workaround:
+  - none; fixed on 2026-03-26 by adding `sessionId` filtering to `/history`, compacting historical delta runs on read, and yielding during heavy message-list replay in the Web UI.
+- Follow-up plan:
+  - monitor whether any remaining session-switch lag is dominated by `tool_call_update` volume or provider `session-history` load time rather than persisted thread history size.
 
 - ID: KI-040
 - Title: Inline base64 image placeholders in user messages rendered as raw text

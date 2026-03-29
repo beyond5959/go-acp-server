@@ -11,7 +11,30 @@ This file is the source of milestone progress, validation commands, and next act
 
 - `Post-M8` ACP multi-agent readiness and maintenance.
 
-## Latest Update (2026-03-26)
+## Latest Update (2026-03-27)
+
+- `Post-M8` shared-browser thread/session visibility completed:
+  - changed thread list/get/update/delete and other thread-scoped APIs to resolve threads globally by `threadId` instead of requiring the creating browser's `X-Client-ID`.
+  - stopped binding runtime permission decisions and persisted attachment fetches to the original browser-local `clientId`, so another browser can continue the same thread and open the same uploads.
+  - removed the obsolete sqlite `threads.client_id` field and dropped the old `clients` table; `X-Client-ID` remains only as a required compatibility header and is no longer persisted.
+  - changed recent-directory suggestions to use one global recency list instead of browser-scoped filtering.
+  - updated the Web UI attachment URL builder to stop sending `client_id` on `/attachments/*`.
+  - removed the Web UI's visible Client ID settings entirely; the browser now sends one fixed compatibility `X-Client-ID` header internally instead of exposing per-browser identity controls.
+  - validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
+## Previous Update (2026-03-26)
+
+- `Post-M8` Web UI fresh-session binding/render preservation fix completed:
+  - when a fresh session receives `session_bound`, the left session panel now upserts that bound `sessionId` immediately and forces a panel refresh instead of waiting for the first turn to finish and refresh session history.
+  - session-panel dedupe now preserves richer later metadata (`title`, `cwd`, `updatedAt`) for duplicate session ids, so temporary placeholders do not block later server-provided session details.
+  - history reload now recognizes fresh-session scope promotion into a bound session and reuses the in-memory message cache for that first replay pass, preventing immediate transcript/history refresh from stripping streamed `thinking` / `tool_call` sections off the just-finished first reply.
+  - full-page refresh is also preserved now: when transcript replay overlaps with persisted turn history, the Web UI rehydrates the replayed messages from the richer event-backed local turn reconstruction so `reasoning` / `tool_call` sections survive reload.
+  - backend `GET /v1/threads/{threadId}/sessions` now also prepends the thread's currently bound `sessionId`, so the active session remains visible even when the upstream provider `session/list` result is stale or has not surfaced that new session yet.
+  - validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
 
 - `Post-M8` Web UI fresh-session binding/render preservation fix completed:
   - when a fresh session receives `session_bound`, the left session panel now upserts that bound `sessionId` immediately and forces a panel refresh instead of waiting for the first turn to finish and refresh session history.
@@ -29,6 +52,7 @@ This file is the source of milestone progress, validation commands, and next act
   - upgraded interaction polish across thread rows, session cards, slash-command popover, settings drawer, new-agent modal, permission cards, and attachment chips.
   - refreshed the visual token system around a restrained teal accent, warmer neutral surfaces, deeper shadows, larger radii, and a more intentional system-font stack while keeping light/dark themes and responsive behavior.
   - follow-up: reduced the chat-header session title size on both desktop and narrow/mobile breakpoints so long titles feel less heavy and consume less vertical attention.
+  - follow-up: switched sidebar/chat provider avatars from inline `<img>` tags to CSS background-image icons so session switches and `New session` resets no longer trigger repeat icon fetches for Codex avatars.
   - validation:
     - pass: `cd internal/webui/web && npm run build`
     - pass: `go test ./...`
@@ -1087,3 +1111,47 @@ This file is the source of milestone progress, validation commands, and next act
     - pass: `cd internal/webui/web && npm run build`
     - pass: `go test ./cmd/ngent ./internal/httpapi ./internal/storage ./internal/observability`
     - pass: `go test ./...`
+
+- 2026-03-26: reduced Web UI session-switch stalls by making thread history session-scoped.
+  - root cause: when the user selected one historical session, the Web UI still fetched `GET /v1/threads/{threadId}/history?includeEvents=1` for the entire thread and then filtered it client-side, so a Codex thread with `21` turns and about `19 MB` / `42k` events could block the UI even though the target session only needed one turn.
+  - added optional `sessionId` filtering to `GET /v1/threads/{threadId}/history`; the server now applies the same legacy-session fallback rules as the Web UI (`session_bound` matching, include unannotated legacy turns only when the thread has exactly one annotated session, and continue hiding ephemeral cancelled placeholders).
+  - updated the Web UI `loadHistory()` path to request `api.getHistory(threadId, requestedSessionID)` while keeping the existing local session filter as a compatibility fallback.
+  - verified the real problematic Codex thread on a patched local server:
+    - full thread history remained about `19.1 MB`
+    - `Response.json()` time for the history payload dropped from about `120-133 ms` to about `2.5 ms`
+  - executed validation:
+    - pass: `go test ./internal/httpapi -run TestThreadHistoryFiltersBySessionID -count=1`
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
+- 2026-03-26: removed the remaining session-switch jank on old high-delta history payloads.
+  - residual issue: the first session-scoped fix still left old databases carrying every historical `message_delta` / `reasoning_delta` row in `/history`, so the browser could still do too much synchronous work while replaying one heavy session even though unrelated sessions were gone.
+  - compacted consecutive same-turn history deltas server-side when serializing `/v1/threads/{threadId}/history?includeEvents=1`, covering `message_delta`, `reasoning_delta`, and `thought_delta` without changing persisted ordering across other event types.
+  - kept the write-side storage merge in `AppendEvent(...)` so new data no longer accumulates redundant delta rows in the first place.
+  - changed the Web UI message-list renderer to yield across animation frames for larger histories instead of rebuilding the whole chat synchronously in one pass.
+  - real repro on the provided Codex session after both changes:
+    - browser `Response.json()` for that history payload measured about `1.3 ms`
+    - `hello -> first session` replay no longer showed a `>50 ms` main-thread gap; measured max RAF gap was about `9.4 ms` on the patched local server
+  - executed validation:
+    - pass: `go test ./internal/httpapi -run 'TestThreadHistory(FiltersBySessionID|CompactsConsecutiveDeltaEvents)' -count=1`
+    - pass: `go test ./internal/storage -run TestAppendEventMergesConsecutiveDeltaRuns -count=1`
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
+- 2026-03-26: let the Web UI browse other sessions while one turn is still streaming.
+  - root cause: the session sidebar treated "currently viewed session" and `thread.agentOptions.sessionId` as the same thing, so clicking another session during an active turn always tried `PATCH /v1/threads/{threadId}` and surfaced `409 thread has an active turn`.
+  - introduced a local per-thread session-selection override in the Web UI; when a thread already has an active stream, session switching now only changes the visible chat scope and history target instead of immediately patching backend thread state.
+  - deferred backend `sessionId` sync until the active turn finishes, and also guard the send path by syncing any pending local selection before starting the next turn so new prompts still land in the session currently shown in the UI.
+  - kept the existing fresh-session behavior by assigning stable local `@fresh:<nonce>` scopes, and cleaned those local overrides up when the thread is deleted.
+  - executed validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `go test ./...`
+
+- 2026-03-26: unified the startup banner and Web UI sidebar around an ink-green ASCII `NGENT` brand mark.
+  - recolored the startup ASCII logo to the same ink-green used by the Web UI accent (`#0f766e`), but only when stderr is attached to a TTY so redirected output stays plain text without raw ANSI escapes.
+  - replaced the Web UI sidebar's old `N` monogram plus `Ngent` wordmark with the exact same multi-line block `NGENT` art used by the CLI banner, scaling it down with CSS and showing it directly in the sidebar header instead of inside a framed badge.
+  - refined the Web UI brand spacing by rendering `N/G/E/N/T` as separate block-art columns with flex `gap`, so only inter-letter spacing changes while each letter's internal ASCII strokes stay identical to the CLI glyphs.
+  - added CLI logo regression coverage for both ANSI-enabled rendering and non-TTY plain-text rendering.
+  - executed validation:
+    - pass: `cd internal/webui/web && npm run build`
+    - pass: `env GOCACHE=/tmp/ngent-gocache GOFLAGS=-p=1 /usr/local/go/bin/go test ./... -count=1`

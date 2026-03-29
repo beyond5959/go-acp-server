@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -30,7 +31,6 @@ type Store struct {
 // Thread stores one persisted thread row.
 type Thread struct {
 	ThreadID         string
-	ClientID         string
 	AgentID          string
 	CWD              string
 	Title            string
@@ -43,7 +43,6 @@ type Thread struct {
 // CreateThreadParams contains input for CreateThread.
 type CreateThreadParams struct {
 	ThreadID         string
-	ClientID         string
 	AgentID          string
 	CWD              string
 	Title            string
@@ -249,22 +248,14 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return nil
 }
 
-// UpsertClient creates a client row or updates its last_seen_at.
+// UpsertClient validates the compatibility client id header.
+// Client ids are no longer persisted.
 func (s *Store) UpsertClient(ctx context.Context, clientID string) error {
+	_ = ctx
 	clientID = strings.TrimSpace(clientID)
 	if clientID == "" {
 		return errors.New("storage: clientID is required")
 	}
-
-	ts := formatTime(s.now())
-	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO clients (client_id, created_at, last_seen_at)
-		VALUES (?, ?, ?)
-		ON CONFLICT(client_id) DO UPDATE SET last_seen_at = excluded.last_seen_at;
-	`, clientID, ts, ts); err != nil {
-		return fmt.Errorf("storage: upsert client: %w", err)
-	}
-
 	return nil
 }
 
@@ -272,9 +263,6 @@ func (s *Store) UpsertClient(ctx context.Context, clientID string) error {
 func (s *Store) CreateThread(ctx context.Context, params CreateThreadParams) (Thread, error) {
 	if strings.TrimSpace(params.ThreadID) == "" {
 		return Thread{}, errors.New("storage: threadID is required")
-	}
-	if strings.TrimSpace(params.ClientID) == "" {
-		return Thread{}, errors.New("storage: clientID is required")
 	}
 	if strings.TrimSpace(params.AgentID) == "" {
 		return Thread{}, errors.New("storage: agentID is required")
@@ -292,7 +280,6 @@ func (s *Store) CreateThread(ctx context.Context, params CreateThreadParams) (Th
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO threads (
 			thread_id,
-			client_id,
 			agent_id,
 			cwd,
 			title,
@@ -300,10 +287,9 @@ func (s *Store) CreateThread(ctx context.Context, params CreateThreadParams) (Th
 			summary,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 	`,
 		params.ThreadID,
-		params.ClientID,
 		params.AgentID,
 		params.CWD,
 		params.Title,
@@ -317,7 +303,6 @@ func (s *Store) CreateThread(ctx context.Context, params CreateThreadParams) (Th
 
 	return Thread{
 		ThreadID:         params.ThreadID,
-		ClientID:         params.ClientID,
 		AgentID:          params.AgentID,
 		CWD:              params.CWD,
 		Title:            params.Title,
@@ -333,7 +318,6 @@ func (s *Store) GetThread(ctx context.Context, threadID string) (Thread, error) 
 	row := s.db.QueryRowContext(ctx, `
 		SELECT
 			thread_id,
-			client_id,
 			agent_id,
 			cwd,
 			title,
@@ -352,7 +336,6 @@ func (s *Store) GetThread(ctx context.Context, threadID string) (Thread, error) 
 	)
 	if err := row.Scan(
 		&thread.ThreadID,
-		&thread.ClientID,
 		&thread.AgentID,
 		&thread.CWD,
 		&thread.Title,
@@ -909,12 +892,11 @@ func (s *Store) UpsertSessionConfigCache(
 	return nil
 }
 
-// ListThreadsByClient returns all threads for one client.
-func (s *Store) ListThreadsByClient(ctx context.Context, clientID string) ([]Thread, error) {
+// ListThreads returns all persisted threads across clients.
+func (s *Store) ListThreads(ctx context.Context) ([]Thread, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			thread_id,
-			client_id,
 			agent_id,
 			cwd,
 			title,
@@ -923,9 +905,8 @@ func (s *Store) ListThreadsByClient(ctx context.Context, clientID string) ([]Thr
 			created_at,
 			updated_at
 		FROM threads
-		WHERE client_id = ?
 		ORDER BY created_at DESC;
-	`, clientID)
+	`)
 	if err != nil {
 		return nil, fmt.Errorf("storage: list threads: %w", err)
 	}
@@ -940,7 +921,6 @@ func (s *Store) ListThreadsByClient(ctx context.Context, clientID string) ([]Thr
 		)
 		if err := rows.Scan(
 			&thread.ThreadID,
-			&thread.ClientID,
 			&thread.AgentID,
 			&thread.CWD,
 			&thread.Title,
@@ -1326,16 +1306,56 @@ func (s *Store) AppendEvent(ctx context.Context, turnID, eventType, dataJSON str
 		_ = tx.Rollback()
 	}()
 
-	var maxSeq int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT COALESCE(MAX(seq), 0)
+	var (
+		lastEventID       int64
+		lastSeq           int
+		lastType          string
+		lastDataJSON      string
+		lastCreatedAtText string
+	)
+	lastEventErr := tx.QueryRowContext(ctx, `
+		SELECT event_id, seq, type, data_json, created_at
 		FROM events
-		WHERE turn_id = ?;
-	`, turnID).Scan(&maxSeq); err != nil {
-		return Event{}, fmt.Errorf("storage: read max event seq: %w", err)
+		WHERE turn_id = ?
+		ORDER BY seq DESC
+		LIMIT 1;
+	`, turnID).Scan(&lastEventID, &lastSeq, &lastType, &lastDataJSON, &lastCreatedAtText)
+	if lastEventErr != nil && !errors.Is(lastEventErr, sql.ErrNoRows) {
+		return Event{}, fmt.Errorf("storage: read last event: %w", lastEventErr)
 	}
 
-	nextSeq := maxSeq + 1
+	if lastEventErr == nil && shouldMergeDeltaEvent(lastType, eventType) {
+		mergedDataJSON, merged, mergeErr := mergeDeltaEventJSON(turnID, lastDataJSON, dataJSON)
+		if mergeErr != nil {
+			return Event{}, fmt.Errorf("storage: merge delta event: %w", mergeErr)
+		}
+		if merged {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE events
+				SET data_json = ?
+				WHERE event_id = ?;
+			`, mergedDataJSON, lastEventID); err != nil {
+				return Event{}, fmt.Errorf("storage: update merged event: %w", err)
+			}
+			if err := tx.Commit(); err != nil {
+				return Event{}, fmt.Errorf("storage: commit merged event tx: %w", err)
+			}
+			createdAt, err := parseTime(lastCreatedAtText)
+			if err != nil {
+				return Event{}, fmt.Errorf("storage: parse merged event.created_at: %w", err)
+			}
+			return Event{
+				EventID:   lastEventID,
+				TurnID:    turnID,
+				Seq:       lastSeq,
+				Type:      lastType,
+				DataJSON:  mergedDataJSON,
+				CreatedAt: createdAt,
+			}, nil
+		}
+	}
+
+	nextSeq := lastSeq + 1
 	now := s.now().UTC()
 	nowText := formatTime(now)
 
@@ -1364,6 +1384,57 @@ func (s *Store) AppendEvent(ctx context.Context, turnID, eventType, dataJSON str
 		DataJSON:  dataJSON,
 		CreatedAt: now,
 	}, nil
+}
+
+func shouldMergeDeltaEvent(lastType, nextType string) bool {
+	if lastType != nextType {
+		return false
+	}
+	switch strings.TrimSpace(nextType) {
+	case "message_delta", "reasoning_delta", "thought_delta":
+		return true
+	default:
+		return false
+	}
+}
+
+func mergeDeltaEventJSON(turnID, currentDataJSON, nextDataJSON string) (string, bool, error) {
+	currentPayload := map[string]any{}
+	if err := json.Unmarshal([]byte(currentDataJSON), &currentPayload); err != nil {
+		return "", false, nil
+	}
+	nextPayload := map[string]any{}
+	if err := json.Unmarshal([]byte(nextDataJSON), &nextPayload); err != nil {
+		return "", false, nil
+	}
+
+	currentDelta, currentOK := currentPayload["delta"].(string)
+	nextDelta, nextOK := nextPayload["delta"].(string)
+	if !currentOK || !nextOK {
+		return "", false, nil
+	}
+	if !sameTurnIDForDeltaPayload(turnID, currentPayload) || !sameTurnIDForDeltaPayload(turnID, nextPayload) {
+		return "", false, nil
+	}
+
+	currentPayload["delta"] = currentDelta + nextDelta
+	mergedJSON, err := json.Marshal(currentPayload)
+	if err != nil {
+		return "", false, err
+	}
+	return string(mergedJSON), true, nil
+}
+
+func sameTurnIDForDeltaPayload(turnID string, payload map[string]any) bool {
+	value, ok := payload["turnId"]
+	if !ok {
+		return true
+	}
+	valueText, ok := value.(string)
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(valueText) == strings.TrimSpace(turnID)
 }
 
 // FinalizeTurn updates terminal turn fields and sets completed_at.
@@ -1437,6 +1508,15 @@ func (s *Store) migrationApplied(ctx context.Context, version int) (bool, error)
 }
 
 func (s *Store) applyMigration(ctx context.Context, m migration) error {
+	if m.disableForeignKeys {
+		if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys = OFF;`); err != nil {
+			return fmt.Errorf("storage: disable foreign_keys for migration %d: %w", m.version, err)
+		}
+		defer func() {
+			_, _ = s.db.ExecContext(context.Background(), `PRAGMA foreign_keys = ON;`)
+		}()
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("storage: begin migration %d: %w", m.version, err)
@@ -1535,17 +1615,18 @@ func sqliteIntToBool(v int) bool {
 // ListRecentDirectories returns the most recently used directories from threads.
 // Returns up to limit unique directories, ordered by most recent update time.
 func (s *Store) ListRecentDirectories(ctx context.Context, clientID string, limit int) ([]string, error) {
+	_ = clientID
 	if limit <= 0 {
 		limit = 5
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT DISTINCT cwd
+		SELECT cwd
 		FROM threads
-		WHERE client_id = ?
-		ORDER BY updated_at DESC
+		GROUP BY cwd
+		ORDER BY MAX(updated_at) DESC
 		LIMIT ?
-	`, clientID, limit)
+	`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query recent directories: %w", err)
 	}

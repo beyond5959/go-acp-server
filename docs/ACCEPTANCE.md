@@ -14,10 +14,10 @@ This checklist defines executable acceptance checks for requirements 1-16.
 
 ## Requirement 2: Multi-client and multi-thread support
 
-- Operation: create threads under different `X-Client-ID` headers and verify isolation.
-- Expected: no cross-client leakage.
+- Operation: create a thread under one `X-Client-ID` and verify a different `X-Client-ID` can list and open the same thread.
+- Expected: thread/session state is shared across browser clients connected to the same ngent instance.
 - Verification command:
-  - `go test ./internal/httpapi -run TestThreadAccessAcrossClientsReturnsNotFound -count=1`
+  - `go test ./internal/httpapi -run 'TestThreadAccessAcrossClientsSharesThreads|TestUpdateThreadAgentOptionsAcrossClients|TestThreadConfigOptionsAcrossClients' -count=1`
 
 ## Requirement 3: Per-thread independent agent instance
 
@@ -103,12 +103,12 @@ This checklist defines executable acceptance checks for requirements 1-16.
 ## Requirement 13: Embedded Web UI
 
 - Operation: start server; open browser at `http://127.0.0.1:8686/`.
-- Expected: UI loads, threads can be created, turns stream in real time, ACP plan/reasoning updates render as live agent-side sections, live reasoning shows `Thinking`, finalized reasoning shows `Thought`, finalized reasoning uses a lightweight inline toggle, renders markdown, and collapses by default, permissions can be resolved, history is browsable, and the shell/composer/modals render with the refreshed premium workbench styling on both desktop and narrow/mobile widths; on desktop the session panel fully retracts without leaving a strip, and its collapse/expand affordance is revealed from the chat panel's left edge.
+- Expected: UI loads, threads can be created, turns stream in real time, ACP plan/reasoning updates render as live agent-side sections, live reasoning shows `Thinking`, finalized reasoning shows `Thought`, finalized reasoning uses a lightweight inline toggle, renders markdown, and collapses by default, permissions can be resolved, history is browsable, and the shell/composer/modals render with the refreshed premium workbench styling on both desktop and narrow/mobile widths; on desktop the session panel fully retracts without leaving a strip, and its collapse/expand affordance is revealed from the chat panel's left edge. In long/heavy chats that use async message-list rendering, the newest user message must be committed before the live agent bubble so the visible order remains `... previous message -> new user -> streaming reply`. Unsent composer text must also survive switching to another session/agent and back, and must survive response completion if the user typed while the current turn was still streaming.
 - Verification command:
   - `go test ./internal/webui -count=1` (checks `GET /` returns 200 with `text/html` content-type and SPA fallback)
   - `go test ./internal/httpapi -run TestTurnsSSEIncludesReasoningAndPersistsHistory -count=1`
   - `cd internal/webui/web && npm run build`
-  - manual: `make run` → open `http://127.0.0.1:8686/` or scan the startup QR code from another device, confirm the refreshed glass-panel shell/sidebars/chat composer render cleanly, live `Thinking` stays expanded while streaming, finalized reasoning label changes to `Thought`, markdown inside expanded `Thought` renders correctly, the section collapses after the turn completes, the session panel fully retracts and reopens from the chat-left hover handle on desktop, and settings/new-agent overlays remain polished and usable
+  - manual: `make run` → open `http://127.0.0.1:8686/` or scan the startup QR code from another device, confirm the refreshed glass-panel shell/sidebars/chat composer render cleanly, live `Thinking` stays expanded while streaming, finalized reasoning label changes to `Thought`, markdown inside expanded `Thought` renders correctly, the section collapses after the turn completes, the session panel fully retracts and reopens from the chat-left hover handle on desktop, settings/new-agent overlays remain polished and usable, in a long existing session the visible order stays `... previous message -> new user -> streaming reply`, and unsent textarea content survives both session/agent switches and turn completion rebuilds
 
 ## Global Gate
 
@@ -214,9 +214,9 @@ This checklist defines executable acceptance checks for requirements 1-16.
 
 ## Requirement 17: Thread Delete Lifecycle
 
-- Operation: delete an existing thread from API/UI, verify ownership behavior, conflict behavior, and provider cleanup.
+- Operation: delete an existing thread from API/UI, verify shared-visibility behavior, conflict behavior, and provider cleanup.
 - Expected:
-  - `DELETE /v1/threads/{threadId}` returns `200` with `status=deleted` for same-client thread.
+  - `DELETE /v1/threads/{threadId}` returns `200` with `status=deleted` for an existing thread regardless of which browser-scoped `X-Client-ID` created it.
   - deleting a thread with an active turn returns `409 CONFLICT`.
   - deleted thread is no longer visible in list/get/history endpoints.
   - cached thread agent provider is closed when the thread is deleted.
@@ -542,8 +542,8 @@ This checklist defines executable acceptance checks for requirements 1-16.
   - ACP-backed agents receive `session/prompt.prompt[]` with ordinary text items plus `resource_link` items containing `uri`, `name`, `mimeType`, and `size`.
   - ngent persists a readable `requestText` summary plus a structured `user_prompt` history event carrying stable attachment ids so attachment cards can be reconstructed after reload.
   - the Web UI renders uploaded user attachments as cards in the transcript both immediately after send and after history reload, and persisted image attachments continue to preview through the backend attachment route instead of disappearing after the stream finishes.
-- Verification commands (executed 2026-03-26):
-  - `go test ./internal/httpapi -run 'Test(MultipartTurnUploadsAttachmentsAsResourceLinks|AttachmentEndpointSupportsQueryTokenAndClientOwnership|BuildInjectedPromptKeepsResourceLinksWhenInjectingContext)' -count=1`
+- Verification commands (executed 2026-03-27):
+  - `go test ./internal/httpapi -run 'Test(MultipartTurnUploadsAttachmentsAsResourceLinks|AttachmentEndpointSupportsQueryTokenAcrossClients|BuildInjectedPromptKeepsResourceLinksWhenInjectingContext)' -count=1`
   - `go test ./internal/agents/opencode -run 'TestStreamPromptSendsResourceLinks' -count=1`
   - `cd internal/webui/web && npm run build`
   - `go test ./...`
@@ -561,3 +561,69 @@ This checklist defines executable acceptance checks for requirements 1-16.
 - Verification commands (executed 2026-03-26):
   - `cd internal/webui/web && npm run build`
   - `env GOCACHE=/tmp/ngent-gocache GOFLAGS=-p=1 go test ./...`
+
+## Requirement 30: Session Switching Does Not Fetch Whole-Thread History For One Session
+
+- Operation:
+  - create or reuse a thread that contains many persisted turns/events across multiple sessions.
+  - select one historical session from the Web UI session sidebar.
+  - inspect the history request sent by the browser and the returned payload size.
+- Expected:
+  - the Web UI calls `GET /v1/threads/{threadId}/history?includeEvents=1&sessionId=<selectedSessionId>` instead of fetching the whole thread and filtering only in browser memory.
+  - the response includes only the selected session's persisted turns, subject to the legacy fallback rules for unannotated pre-`session_bound` turns.
+  - the UI still merges provider `GET /session-history` replay on top of that persisted turn history, so rich ngent-owned artifacts remain visible.
+  - for large multi-session threads, browser-side history parse time is materially lower because the payload no longer includes unrelated sessions' events.
+- Verification commands (executed 2026-03-26):
+  - `go test ./internal/httpapi -run TestThreadHistoryFiltersBySessionID -count=1`
+  - `cd internal/webui/web && npm run build`
+  - `go test ./...`
+
+## Requirement 31: Session Switching Stays Responsive On Old Delta-Heavy History
+
+- Operation:
+  - reuse a thread whose persisted history was created before write-side delta merging existed.
+  - switch from a light historical session (for example `hello`) back to a heavy session that contains many persisted `message_delta` / `reasoning_delta` rows.
+  - inspect the returned `/history?includeEvents=1&sessionId=...` payload and observe the browser during the switch.
+- Expected:
+  - `/history` compacts adjacent same-turn `message_delta`, `reasoning_delta`, and `thought_delta` runs in the response even when the SQLite rows are still stored unmerged.
+  - the Web UI history replay yields while reconstructing messages and while rebuilding a heavy message list.
+  - the switch does not produce a visible long main-thread stall from history replay alone.
+- Verification commands (executed 2026-03-26):
+  - `go test ./internal/httpapi -run TestThreadHistoryCompactsConsecutiveDeltaEvents -count=1`
+  - `go test ./internal/storage -run TestAppendEventMergesConsecutiveDeltaRuns -count=1`
+  - `cd internal/webui/web && npm run build`
+  - `go test ./...`
+  - real repro on the provided Codex thread:
+    - measured `/history?includeEvents=1&sessionId=...` payload: about `224 KB`, `40` persisted events
+    - measured browser `Response.json()` time for that payload: about `1.3 ms`
+    - measured max RAF gap during the switch: about `9.4 ms`, with no `>50 ms` gaps observed
+
+## Requirement 32: Session Sidebar Browsing Does Not Conflict With An Active Turn
+
+- Operation:
+  - start a long-running turn in one Web UI session and keep it streaming.
+  - while that turn is still active, click a different session in the sidebar, then click back to the original session.
+  - after the turn finishes, send a follow-up message from the session that is currently selected in the UI.
+- Expected:
+  - the UI changes the visible chat/history scope immediately without surfacing `thread has an active turn`.
+  - active-turn session browsing does not require `PATCH /v1/threads/{threadId}` until the thread is idle again.
+  - once the thread is idle, the frontend synchronizes the selected session before the next send so the follow-up turn runs in the session currently shown in the chat pane.
+- Verification commands (executed 2026-03-26):
+  - `cd internal/webui/web && npm run build`
+  - `go test ./...`
+
+## Requirement 33: Startup Banner And Web UI Share The Same ASCII NGENT Brand
+
+- Operation:
+  - start ngent from an interactive terminal and observe the startup banner on stderr.
+  - open the Web UI and inspect the top-left sidebar brand block.
+  - optionally redirect stderr to a file or buffer and inspect the captured startup output.
+- Expected:
+  - the startup banner begins with the existing ASCII `NGENT` logo rendered in the same ink-green family used by the Web UI accent.
+  - ANSI color is applied only for interactive TTY output; redirected/non-TTY startup output remains plain text without raw escape sequences.
+  - the Web UI sidebar no longer shows the separate `N` monogram plus `Ngent` label and instead renders the same multi-line block `NGENT` art used by the startup banner.
+  - the Web UI logo is rendered directly in the sidebar header, not inside an extra white/framed card.
+  - the browser and terminal marks use the same glyphs; the only intended difference is rendered size.
+- Verification commands (executed 2026-03-26):
+  - `cd internal/webui/web && npm run build`
+  - `env GOCACHE=/tmp/ngent-gocache GOFLAGS=-p=1 /usr/local/go/bin/go test ./... -count=1`

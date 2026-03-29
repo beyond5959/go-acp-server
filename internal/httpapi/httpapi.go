@@ -56,7 +56,7 @@ type ThreadStore interface {
 	UpsertSessionTranscriptCache(ctx context.Context, params storage.UpsertSessionTranscriptCacheParams) error
 	GetSessionConfigCache(ctx context.Context, agentID, cwd, sessionID string) (storage.SessionConfigCache, error)
 	UpsertSessionConfigCache(ctx context.Context, params storage.UpsertSessionConfigCacheParams) error
-	ListThreadsByClient(ctx context.Context, clientID string) ([]storage.Thread, error)
+	ListThreads(ctx context.Context) ([]storage.Thread, error)
 	CreateTurn(ctx context.Context, params storage.CreateTurnParams) (storage.Turn, error)
 	CreateTurnAttachments(ctx context.Context, params []storage.CreateTurnAttachmentParams) error
 	GetTurnAttachment(ctx context.Context, attachmentID string) (storage.TurnAttachment, error)
@@ -404,13 +404,6 @@ func (s *Server) handleAttachment(w http.ResponseWriter, r *http.Request, attach
 		return
 	}
 
-	clientID := strings.TrimSpace(r.URL.Query().Get("client_id"))
-	if clientID == "" {
-		writeError(w, http.StatusBadRequest, codeInvalidArgument, "missing required query parameter client_id", map[string]any{
-			"query": "client_id",
-		})
-		return
-	}
 	if s.store == nil {
 		writeError(w, http.StatusInternalServerError, codeInternal, "storage is not configured", map[string]any{})
 		return
@@ -428,8 +421,7 @@ func (s *Server) handleAttachment(w http.ResponseWriter, r *http.Request, attach
 		return
 	}
 
-	turn, err := s.store.GetTurn(r.Context(), attachment.TurnID)
-	if err != nil {
+	if _, err := s.store.GetTurn(r.Context(), attachment.TurnID); err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			writeError(w, http.StatusNotFound, codeNotFound, "attachment not found", map[string]any{})
 			return
@@ -439,11 +431,6 @@ func (s *Server) handleAttachment(w http.ResponseWriter, r *http.Request, attach
 		})
 		return
 	}
-	if _, ok := s.getOwnedThread(r.Context(), clientID, turn.ThreadID); !ok {
-		writeError(w, http.StatusNotFound, codeNotFound, "attachment not found", map[string]any{})
-		return
-	}
-
 	attachmentPath := filepath.Clean(strings.TrimSpace(attachment.FilePath))
 	if attachmentPath == "" || !isPathAllowed(attachmentPath, []string{s.dataDir}) {
 		writeError(w, http.StatusInternalServerError, codeInternal, "attachment path is invalid", map[string]any{})
@@ -653,7 +640,6 @@ func (s *Server) handleCreateThread(w http.ResponseWriter, r *http.Request, clie
 	threadID := newThreadID()
 	_, err = s.store.CreateThread(r.Context(), storage.CreateThreadParams{
 		ThreadID:         threadID,
-		ClientID:         clientID,
 		AgentID:          req.Agent,
 		CWD:              cwd,
 		Title:            req.Title,
@@ -674,7 +660,7 @@ func (s *Server) handleListThreads(w http.ResponseWriter, r *http.Request, clien
 		return
 	}
 
-	threads, err := s.store.ListThreadsByClient(r.Context(), clientID)
+	threads, err := s.store.ListThreads(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "INTERNAL", "failed to list threads", map[string]any{"reason": err.Error()})
 		return
@@ -699,7 +685,7 @@ func (s *Server) handleGetThread(w http.ResponseWriter, r *http.Request, clientI
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, threadID)
+	thread, ok := s.getAccessibleThread(r.Context(), threadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "thread not found", map[string]any{})
 		return
@@ -720,7 +706,7 @@ func (s *Server) handleUpdateThread(w http.ResponseWriter, r *http.Request, clie
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, threadID)
+	thread, ok := s.getAccessibleThread(r.Context(), threadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, codeNotFound, "thread not found", map[string]any{})
 		return
@@ -817,7 +803,7 @@ func (s *Server) handleUpdateThread(w http.ResponseWriter, r *http.Request, clie
 		}
 	}
 
-	updatedThread, ok := s.getOwnedThread(r.Context(), clientID, thread.ThreadID)
+	updatedThread, ok := s.getAccessibleThread(r.Context(), thread.ThreadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, codeNotFound, "thread not found", map[string]any{})
 		return
@@ -838,7 +824,7 @@ func (s *Server) handleDeleteThread(w http.ResponseWriter, r *http.Request, clie
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, threadID)
+	thread, ok := s.getAccessibleThread(r.Context(), threadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, codeNotFound, "thread not found", map[string]any{})
 		return
@@ -878,7 +864,7 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, threadID)
+	thread, ok := s.getAccessibleThread(r.Context(), threadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "thread not found", map[string]any{})
 		return
@@ -1010,7 +996,7 @@ func (s *Server) handleCreateTurnStream(w http.ResponseWriter, r *http.Request, 
 
 	turnCtx = agents.WithPermissionHandler(turnCtx, func(permissionCtx context.Context, req agents.PermissionRequest) (agents.PermissionResponse, error) {
 		permissionID := s.nextPermissionID(req.RequestID)
-		pending := newPendingPermission(clientID, req.Options)
+		pending := newPendingPermission(req.Options)
 		s.registerPermission(permissionID, pending)
 		defer s.unregisterPermission(permissionID, pending)
 
@@ -1215,7 +1201,7 @@ func (s *Server) handleCompactThread(w http.ResponseWriter, r *http.Request, cli
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, threadID)
+	thread, ok := s.getAccessibleThread(r.Context(), threadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "thread not found", map[string]any{})
 		return
@@ -1418,7 +1404,7 @@ func (s *Server) handleCancelTurn(w http.ResponseWriter, r *http.Request, client
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, turn.ThreadID)
+	thread, ok := s.getAccessibleThread(r.Context(), turn.ThreadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "turn not found", map[string]any{})
 		return
@@ -1475,7 +1461,7 @@ func (s *Server) handlePermissionDecision(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	resolvedResponse, err := s.resolvePermission(permissionID, clientID, response)
+	resolvedResponse, err := s.resolvePermission(permissionID, response)
 	if err != nil {
 		if errors.Is(err, errPermissionNotFound) {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "permission not found", map[string]any{})
@@ -1524,13 +1510,14 @@ func (s *Server) handleThreadHistory(w http.ResponseWriter, r *http.Request, cli
 		return
 	}
 
-	if _, ok := s.getOwnedThread(r.Context(), clientID, threadID); !ok {
+	if _, ok := s.getAccessibleThread(r.Context(), threadID); !ok {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "thread not found", map[string]any{})
 		return
 	}
 
 	includeEvents := parseBoolQuery(r, "includeEvents")
 	includeInternal := parseBoolQuery(r, "includeInternal")
+	sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
 
 	turns, err := s.store.ListTurnsByThread(r.Context(), threadID)
 	if err != nil {
@@ -1538,11 +1525,31 @@ func (s *Server) handleThreadHistory(w http.ResponseWriter, r *http.Request, cli
 		return
 	}
 
-	respTurns := make([]turnHistoryResponse, 0, len(turns))
+	loadEvents := includeEvents || sessionID != ""
+	historyTurns := make([]threadHistoryTurn, 0, len(turns))
 	for _, turn := range turns {
 		if !includeInternal && turn.IsInternal {
 			continue
 		}
+		historyTurn := threadHistoryTurn{turn: turn}
+		if loadEvents {
+			events, eventsErr := s.store.ListEventsByTurn(r.Context(), turn.TurnID)
+			if eventsErr != nil {
+				writeError(w, http.StatusInternalServerError, "INTERNAL", "failed to list events", map[string]any{"reason": eventsErr.Error()})
+				return
+			}
+			historyTurn.events = events
+		}
+		historyTurns = append(historyTurns, historyTurn)
+	}
+
+	if sessionID != "" {
+		historyTurns = filterThreadHistoryBySession(historyTurns, sessionID)
+	}
+
+	respTurns := make([]turnHistoryResponse, 0, len(historyTurns))
+	for _, item := range historyTurns {
+		turn := item.turn
 
 		respTurn := turnHistoryResponse{
 			TurnID:       turn.TurnID,
@@ -1560,11 +1567,7 @@ func (s *Server) handleThreadHistory(w http.ResponseWriter, r *http.Request, cli
 		}
 
 		if includeEvents {
-			events, eventsErr := s.store.ListEventsByTurn(r.Context(), turn.TurnID)
-			if eventsErr != nil {
-				writeError(w, http.StatusInternalServerError, "INTERNAL", "failed to list events", map[string]any{"reason": eventsErr.Error()})
-				return
-			}
+			events := compactThreadHistoryEvents(item.events)
 			respEvents := make([]eventHistoryResponse, 0, len(events))
 			for _, event := range events {
 				raw := json.RawMessage(event.DataJSON)
@@ -1586,6 +1589,184 @@ func (s *Server) handleThreadHistory(w http.ResponseWriter, r *http.Request, cli
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"turns": respTurns})
+}
+
+type threadHistoryTurn struct {
+	turn   storage.Turn
+	events []storage.Event
+}
+
+func filterThreadHistoryBySession(turns []threadHistoryTurn, sessionID string) []threadHistoryTurn {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return turns
+	}
+
+	assignments := make([]threadHistoryTurnAssignment, 0, len(turns))
+	annotatedSessions := make(map[string]struct{})
+	for _, turn := range turns {
+		assignedSessionID := extractThreadHistorySessionID(turn.events)
+		if assignedSessionID != "" {
+			annotatedSessions[assignedSessionID] = struct{}{}
+		}
+		assignments = append(assignments, threadHistoryTurnAssignment{
+			turn:      turn,
+			sessionID: assignedSessionID,
+		})
+	}
+
+	if len(annotatedSessions) == 0 {
+		filtered := make([]threadHistoryTurn, 0, len(assignments))
+		for _, item := range assignments {
+			if isEphemeralCancelledHistoryTurn(item.turn.turn) {
+				continue
+			}
+			filtered = append(filtered, item.turn)
+		}
+		return filtered
+	}
+
+	hasMatchedAnnotatedTurns := false
+	for _, item := range assignments {
+		if item.sessionID == sessionID {
+			hasMatchedAnnotatedTurns = true
+			break
+		}
+	}
+	if !hasMatchedAnnotatedTurns {
+		return nil
+	}
+
+	includeUnannotatedLegacyTurns := len(annotatedSessions) == 1
+	if includeUnannotatedLegacyTurns {
+		_, includeUnannotatedLegacyTurns = annotatedSessions[sessionID]
+	}
+
+	filtered := make([]threadHistoryTurn, 0, len(assignments))
+	for _, item := range assignments {
+		if item.sessionID == sessionID || (includeUnannotatedLegacyTurns && item.sessionID == "") {
+			filtered = append(filtered, item.turn)
+		}
+	}
+	return filtered
+}
+
+type threadHistoryTurnAssignment struct {
+	turn      threadHistoryTurn
+	sessionID string
+}
+
+func extractThreadHistorySessionID(events []storage.Event) string {
+	sessionID := ""
+	for _, event := range events {
+		if event.Type != "session_bound" {
+			continue
+		}
+		var payload struct {
+			SessionID string `json:"sessionId"`
+		}
+		if err := json.Unmarshal([]byte(event.DataJSON), &payload); err != nil {
+			continue
+		}
+		nextSessionID := strings.TrimSpace(payload.SessionID)
+		if nextSessionID != "" {
+			sessionID = nextSessionID
+		}
+	}
+	return sessionID
+}
+
+func isEphemeralCancelledHistoryTurn(turn storage.Turn) bool {
+	return turn.Status == "cancelled" && strings.TrimSpace(turn.ResponseText) == ""
+}
+
+func compactThreadHistoryEvents(events []storage.Event) []storage.Event {
+	if len(events) < 2 {
+		return events
+	}
+
+	compacted := make([]storage.Event, 0, len(events))
+	for _, event := range events {
+		if lastIdx := len(compacted) - 1; lastIdx >= 0 {
+			last := compacted[lastIdx]
+			if shouldCompactThreadHistoryDeltaEvent(last, event) {
+				mergedDataJSON, merged, err := compactThreadHistoryDeltaPayload(
+					last.TurnID,
+					last.DataJSON,
+					event.DataJSON,
+				)
+				if err != nil {
+					return events
+				}
+				if merged {
+					compacted[lastIdx].DataJSON = mergedDataJSON
+					compacted[lastIdx].CreatedAt = event.CreatedAt
+					continue
+				}
+			}
+		}
+
+		compacted = append(compacted, event)
+	}
+	return compacted
+}
+
+func shouldCompactThreadHistoryDeltaEvent(last, next storage.Event) bool {
+	if strings.TrimSpace(last.TurnID) != strings.TrimSpace(next.TurnID) {
+		return false
+	}
+	if strings.TrimSpace(last.Type) != strings.TrimSpace(next.Type) {
+		return false
+	}
+
+	switch strings.TrimSpace(next.Type) {
+	case "message_delta", "reasoning_delta", "thought_delta":
+		return true
+	default:
+		return false
+	}
+}
+
+func compactThreadHistoryDeltaPayload(turnID, currentDataJSON, nextDataJSON string) (string, bool, error) {
+	currentPayload := map[string]any{}
+	if err := json.Unmarshal([]byte(currentDataJSON), &currentPayload); err != nil {
+		return "", false, nil
+	}
+	nextPayload := map[string]any{}
+	if err := json.Unmarshal([]byte(nextDataJSON), &nextPayload); err != nil {
+		return "", false, nil
+	}
+
+	currentDelta, currentOK := currentPayload["delta"].(string)
+	nextDelta, nextOK := nextPayload["delta"].(string)
+	if !currentOK || !nextOK {
+		return "", false, nil
+	}
+	if !threadHistoryDeltaPayloadMatchesTurn(turnID, currentPayload) {
+		return "", false, nil
+	}
+	if !threadHistoryDeltaPayloadMatchesTurn(turnID, nextPayload) {
+		return "", false, nil
+	}
+
+	currentPayload["delta"] = currentDelta + nextDelta
+	mergedJSON, err := json.Marshal(currentPayload)
+	if err != nil {
+		return "", false, err
+	}
+	return string(mergedJSON), true, nil
+}
+
+func threadHistoryDeltaPayloadMatchesTurn(turnID string, payload map[string]any) bool {
+	value, ok := payload["turnId"]
+	if !ok {
+		return true
+	}
+	valueText, ok := value.(string)
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(valueText) == strings.TrimSpace(turnID)
 }
 
 func mergeSessionInfo(current, incoming agents.SessionInfo) agents.SessionInfo {
@@ -1650,7 +1831,7 @@ func (s *Server) handleThreadSessions(w http.ResponseWriter, r *http.Request, cl
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, threadID)
+	thread, ok := s.getAccessibleThread(r.Context(), threadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, codeNotFound, "thread not found", map[string]any{})
 		return
@@ -1716,7 +1897,7 @@ func (s *Server) handleThreadSessionHistory(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, threadID)
+	thread, ok := s.getAccessibleThread(r.Context(), threadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, codeNotFound, "thread not found", map[string]any{})
 		return
@@ -1924,7 +2105,7 @@ func (s *Server) handleThreadConfigOptions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, threadID)
+	thread, ok := s.getAccessibleThread(r.Context(), threadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, codeNotFound, "thread not found", map[string]any{})
 		return
@@ -2035,7 +2216,7 @@ func (s *Server) handleThreadSlashCommands(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	thread, ok := s.getOwnedThread(r.Context(), clientID, threadID)
+	thread, ok := s.getAccessibleThread(r.Context(), threadID)
 	if !ok {
 		writeError(w, http.StatusNotFound, codeNotFound, "thread not found", map[string]any{})
 		return
@@ -2568,12 +2749,9 @@ func classifyStreamErrorCode(err error) string {
 	return codeUpstreamUnavailable
 }
 
-func (s *Server) getOwnedThread(ctx context.Context, clientID, threadID string) (storage.Thread, bool) {
+func (s *Server) getAccessibleThread(ctx context.Context, threadID string) (storage.Thread, bool) {
 	thread, err := s.store.GetThread(ctx, threadID)
 	if err != nil {
-		return storage.Thread{}, false
-	}
-	if thread.ClientID != clientID {
 		return storage.Thread{}, false
 	}
 	return thread, true
@@ -2619,8 +2797,6 @@ var (
 )
 
 type pendingPermission struct {
-	clientID string
-
 	options map[string]agents.PermissionOption
 
 	ch   chan agents.PermissionResponse
@@ -2641,7 +2817,7 @@ type threadConfigSelectionState interface {
 	CurrentConfigOverrides() map[string]string
 }
 
-func newPendingPermission(clientID string, options []agents.PermissionOption) *pendingPermission {
+func newPendingPermission(options []agents.PermissionOption) *pendingPermission {
 	optionMap := make(map[string]agents.PermissionOption, len(options))
 	for _, option := range options {
 		optionID := strings.TrimSpace(option.OptionID)
@@ -2655,9 +2831,8 @@ func newPendingPermission(clientID string, options []agents.PermissionOption) *p
 		}
 	}
 	return &pendingPermission{
-		clientID: clientID,
-		options:  optionMap,
-		ch:       make(chan agents.PermissionResponse, 1),
+		options: optionMap,
+		ch:      make(chan agents.PermissionResponse, 1),
 	}
 }
 
@@ -2901,14 +3076,11 @@ func (s *Server) waitPermissionResponse(ctx context.Context, pending *pendingPer
 	return response
 }
 
-func (s *Server) resolvePermission(permissionID, clientID string, response agents.PermissionResponse) (agents.PermissionResponse, error) {
+func (s *Server) resolvePermission(permissionID string, response agents.PermissionResponse) (agents.PermissionResponse, error) {
 	s.permissionsMu.Lock()
 	pending, ok := s.permissions[permissionID]
 	s.permissionsMu.Unlock()
 	if !ok {
-		return agents.PermissionResponse{}, errPermissionNotFound
-	}
-	if pending.clientID != clientID {
 		return agents.PermissionResponse{}, errPermissionNotFound
 	}
 	normalized, err := pending.normalizeDecision(response)
@@ -4537,7 +4709,7 @@ func (s *Server) searchDirectories(homeDir, query string) []string {
 	return results
 }
 
-// handleRecentDirectories returns the most recently used directories for the client.
+// handleRecentDirectories returns the most recently used directories globally.
 func (s *Server) handleRecentDirectories(w http.ResponseWriter, r *http.Request, clientID string) {
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w, r)

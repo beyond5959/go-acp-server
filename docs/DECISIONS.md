@@ -2,6 +2,7 @@
 
 ## ADR Index
 
+- ADR-064: Share threads and sessions across browser-scoped client IDs on the same ngent instance. (Accepted)
 - ADR-058: Render bracketed inline base64 user-image placeholders as safe Web UI previews. (Accepted)
 - ADR-054: Refresh the embedded Web UI as a premium workbench without changing behavior. (Accepted)
 - ADR-053: Replace `slog` JSON output with a human-readable stderr logger and colored access logs. (Accepted)
@@ -1575,3 +1576,117 @@ Use this template for new decisions.
   - keep `--db-path` and add a second unrelated attachment-root flag (rejected: splits one local state root across two flags and makes defaults harder to reason about).
   - keep storing uploads in temp and only persist extra preview metadata (rejected: does not solve OS cleanup and still leaves the attachment file itself non-durable).
   - expose raw absolute file paths directly to the browser (rejected: browsers cannot reliably use persisted `file://` paths from the HTTP Web UI, and a routed attachment fetch keeps ownership/auth checks server-side).
+
+## ADR-060: Make thread history session-scoped for Web UI session switches
+
+- Status: Accepted
+- Date: 2026-03-26
+- Context:
+  - the Web UI session picker reconstructs the selected chat by combining provider-owned `GET /session-history` transcript replay with ngent-owned persisted turn history.
+  - before this change, every session switch still fetched `GET /v1/threads/{threadId}/history?includeEvents=1` for the entire thread and only then filtered the turns client-side by `session_bound`.
+  - on real Codex threads this became expensive enough to stall the UI: one thread with 21 turns produced roughly 19 MB of history JSON and about 42k persisted events, even though the target session needed only a single turn.
+- Decision:
+  - add an optional `sessionId` query parameter to `GET /v1/threads/{threadId}/history`.
+  - apply session filtering on the server using the same rules the Web UI already depended on:
+    - match turns by their latest `session_bound` event.
+    - if the thread has no annotated turns at all, keep returning non-ephemeral history instead of hiding legacy data.
+    - include unannotated legacy turns only when the thread has exactly one annotated session and it matches the requested `sessionId`.
+    - continue dropping cancelled turns that have no visible response text.
+  - update the Web UI to request `history?includeEvents=1&sessionId=...` when a concrete session is selected, while keeping the local filter as a compatibility fallback.
+- Consequences:
+  - session switches no longer require the browser to parse and walk the full thread history when only one historical session is being opened.
+  - the frontend keeps its existing session-reconstruction behavior, but the largest JSON payload and event traversal now happen server-side where they do not block the UI thread.
+  - the base `/history` endpoint remains unchanged for callers that still need whole-thread history.
+- Alternatives considered:
+  - keep whole-thread history and add more frontend caching only (rejected: first-open session switches from `New session` would still pay the full parse/render cost).
+  - rely only on provider `session-history` for session views (rejected: loses ngent-owned rich turn artifacts such as persisted reasoning, tool-call, and other turn events).
+  - add a brand-new endpoint just for session-filtered history (rejected: the existing `/history` contract already fit the need with one optional query parameter).
+
+## ADR-061: Compact historical delta runs on read and render large chats incrementally
+
+- Status: Accepted
+- Date: 2026-03-26
+- Context:
+  - session-scoped `/history` removed unrelated sessions from the payload, but old databases still stored every historical `message_delta` / `reasoning_delta` row separately.
+  - the provided Codex repro still showed residual UI jank on the selected session because the browser had to replay a delta-heavy turn and then rebuild the full chat DOM in one synchronous step.
+  - write-side event merging alone was insufficient because it only helps turns created after the fix ships.
+- Decision:
+  - merge consecutive same-turn `message_delta`, `reasoning_delta`, and `thought_delta` runs when serializing `/v1/threads/{threadId}/history?includeEvents=1`.
+  - keep preserving boundaries when event type changes so ordering relative to `tool_call*`, `plan_update`, `session_bound`, and other event kinds stays intact.
+  - also merge those same delta runs at storage write time in `AppendEvent(...)` so new turns persist fewer rows.
+  - render large Web UI message lists incrementally across animation frames instead of always doing one synchronous `innerHTML = msgs.map(renderMessage).join('')` rebuild.
+- Consequences:
+  - old databases immediately benefit from smaller history payloads and fewer replay events without a migration step.
+  - new databases avoid accumulating the same redundant delta rows over time.
+  - session switches remain responsive even when one persisted turn contains many delta updates, because the browser now has less replay work and can yield while rebuilding the chat.
+- Alternatives considered:
+  - migrate existing SQLite data in place (rejected: more invasive, riskier on user state, and unnecessary when read-time compaction solves the API cost directly).
+  - compact every event type aggressively, including `tool_call_update` (rejected for now: those updates can carry meaningful intermediate state transitions that should stay ordered until a clearer merge contract is defined).
+  - keep synchronous DOM rebuilds and rely only on smaller payloads (rejected: large rendered transcripts can still block the main thread even after history parsing becomes cheap).
+
+## ADR-062: Decouple viewed Web UI session from backend thread session during active turns
+
+- Status: Accepted
+- Date: 2026-03-26
+- Context:
+  - the Web UI session picker previously reused `thread.agentOptions.sessionId` as both the backend agent scope and the frontend "currently viewed chat" selection.
+  - when a turn was still active, switching to another session always tried `PATCH /v1/threads/{threadId}` and the server correctly rejected it with `409 thread has an active turn`.
+  - users still need to inspect older sessions while another session is waiting on a long-running response.
+- Decision:
+  - add a frontend-only per-thread session-selection override that can temporarily differ from `thread.agentOptions.sessionId`.
+  - while a thread has any active stream, session switching updates only the visible chat/history scope in the browser and skips the backend patch.
+  - once the stream finishes, or immediately before the next send when no stream is active, sync the selected session back into `PATCH /v1/threads/{threadId}` so future turns still execute in the session currently shown in the UI.
+  - represent unsaved "New session" views with a stable local `@fresh:<nonce>` selection so message/history caches keep a distinct fresh-session scope before ACP emits `session_bound`.
+- Consequences:
+  - users can browse away from a waiting session and later return without seeing a conflict alert.
+  - backend concurrency semantics stay unchanged because thread/session binding is still only mutated when the thread is idle.
+  - the frontend now owns a small amount of ephemeral session-selection state and must clear it when thread state catches up or the thread is deleted.
+- Alternatives considered:
+  - keep the old behavior and surface the 409 as a user error (rejected: browsing another session is a read-only UI action and should not feel blocked by an unrelated active turn).
+  - relax the server to accept session-changing `PATCH` during active turns (rejected: would violate the existing whole-thread conflict model and risks mutating active agent scope mid-turn).
+
+## ADR-063: Use one ink-green ASCII NGENT brand mark across CLI startup and the Web UI
+
+- Status: Accepted
+- Date: 2026-03-26
+- Context:
+  - ngent already printed a large ASCII `NGENT` mark during startup, but it appeared in plain terminal text and did not visually match the Web UI brand accent.
+  - the Web UI sidebar still used a separate `N` monogram plus `Ngent` wordmark, so the product identity changed noticeably between the service banner and the browser shell.
+  - the product request is to make those two entry points feel like one system by reusing the same ink-green, ASCII-flavored branding.
+- Decision:
+  - treat the Web UI accent ink (`#0f766e`) as the canonical brand color for the ASCII logo treatment.
+  - color only the startup ASCII `NGENT` logo, and only when the banner writer is a real TTY; redirected stderr stays plain text with no ANSI escape sequences.
+  - replace the sidebar monogram/wordmark cluster with the same six-line `NGENT` ASCII art used by the CLI startup banner, scaling it down in CSS rather than introducing a second variant.
+  - render that Web UI logo directly in the sidebar header instead of placing it inside an additional framed badge, so the mark reads like the product wordmark rather than like a separate card widget.
+  - keep the rest of the startup banner structure (`Server` box, agent list, QR section) unchanged so operational scanability does not regress.
+- Consequences:
+  - the first thing users see in the terminal and the first thing they see in the browser now share one recognizable product mark and one color family.
+  - copied or redirected startup logs remain clean plain text because ANSI color is fail-closed on non-TTY writers.
+  - the browser now renders the exact same glyphs as the terminal banner, so the remaining difference between the two surfaces is size rather than logo design.
+- Alternatives considered:
+  - recolor only the CLI banner and keep the Web UI monogram (rejected: still leaves two product marks).
+  - introduce a second compact ASCII variant for the sidebar (rejected: still creates a visible mismatch between terminal and browser branding).
+  - color the whole startup banner box rather than just the logo (rejected: the request was to unify the logo treatment, and extra color on operational details would reduce contrast for server metadata).
+
+## ADR-064: Share threads and sessions across browser-scoped client IDs on the same ngent instance
+
+- Status: Accepted
+- Date: 2026-03-27
+- Context:
+  - browser-local `clientId` generation made the same ngent data look artificially partitioned by browser profile, so threads created in Safari were invisible from another browser even though both were talking to the same local service and sqlite database.
+  - the product request is for one local shared workspace per ngent instance: thread list, session list, permissions, and persisted attachments should all be visible regardless of which browser-scoped `clientId` originated them.
+  - ngent still benefits from a caller identifier for API compatibility, so dropping `X-Client-ID` entirely would be a larger breaking change than needed.
+- Decision:
+  - keep requiring `X-Client-ID` on `/v1/*` requests as a compatibility header, but stop persisting it in sqlite.
+  - stop using `clientId` as an authorization/tenancy gate for thread-scoped APIs, permission resolution, or persisted attachment fetches.
+  - list threads globally from sqlite and resolve thread access by `threadId` only.
+  - remove `threads.client_id`, drop the obsolete `clients` table, and make `recent-directories` global instead of browser-scoped.
+  - remove the Web UI's visible Client ID display/reset controls and send one fixed compatibility header internally from the browser.
+- Consequences:
+  - multiple browsers connected to the same ngent instance now see the same thread/session state and can continue the same conversation without copying browser-local IDs around.
+  - `X-Client-ID` is now a compatibility field, not a persisted identity record and not a security boundary.
+  - operators who need true user isolation must use separate ngent instances, separate `--data-path` values, or an external auth/proxy layer instead of relying on browser-local client IDs.
+- Alternatives considered:
+  - force users to copy one shared `clientId` across browsers (rejected: brittle manual workaround and still couples visibility to browser-local storage).
+  - remove `X-Client-ID` from the API entirely (rejected for now: unnecessary breakage for existing clients when header-compatibility is enough).
+  - keep thread ownership but special-case only `/sessions` (rejected: inconsistent UX because the main thread list would still disappear across browsers).

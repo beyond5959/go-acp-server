@@ -9,7 +9,7 @@ Build a local-first Ngent Server that:
 - supports multi-client and multi-thread execution.
 - is designed to support ACP-compatible agents (for example Claude Code, Cursor CLI, Gemini, Kimi, OpenCode, Qwen, BLACKBOX AI, Codex).
 - persists interaction state/events in SQLite.
-- forwards runtime permissions to the owning client with fail-closed behavior.
+- forwards runtime permissions to connected clients with fail-closed behavior.
 
 ## 2. High-Level Architecture
 
@@ -25,6 +25,7 @@ Modules:
 - `internal/storage`: SQLite repository and migration management.
 - `internal/observability`: human-readable stderr logging, access-log formatting, ANSI-color helpers, and redaction helpers.
 - `internal/webui`: embedded Vite + TypeScript SPA with a no-framework DOM renderer; premium visual refreshes must remain presentation-only and must not change API/runtime behavior.
+  - on the send path, the Web UI invalidates any in-flight async message-list render and synchronously flushes persisted messages before mounting the live streaming reply bubble, so streaming replies stay directly below the just-sent user message even on long/heavy transcripts.
 
 ## 3. Concurrency Model
 
@@ -78,7 +79,6 @@ Turn-side auxiliary callbacks:
 
 SQLite stores:
 
-- clients
 - threads
 - turns
 - events (append-only stream records)
@@ -308,7 +308,7 @@ and upstream ACP schema:
 - Added `GET /v1/agents/{agentId}/models`:
   - backend queries provider ACP handshake (`initialize` + `session/new`) and extracts runtime model options from `configOptions` / `models.availableModels`.
   - returns normalized `[{"id","name"}]` entries for Web UI dropdowns.
-- Ownership rule is unchanged (`404` for cross-client or missing thread).
+- Visibility rule is server-global (`404` only when the thread is missing).
 - Active turn safety is strict:
   - when the thread currently has an active turn, update returns `409 CONFLICT`.
 - On successful update:
@@ -471,7 +471,7 @@ The integration follows the official ACP startup form `blackbox --experimental-a
 ### 15.2 Backend API
 
 - New endpoint: `GET /v1/threads/{threadId}/sessions`
-  - ownership/tenancy matches existing thread endpoints.
+  - visibility matches existing thread endpoints; any caller that can reach the same ngent instance can inspect the thread's provider sessions.
   - query string:
     - `cursor` (optional): forwarded to ACP `session/list`.
   - response:
@@ -569,13 +569,13 @@ The integration follows the official ACP startup form `blackbox --experimental-a
 ### 16.2 HTTP API
 
 - Add `GET /v1/threads/{threadId}/slash-commands`.
-- Ownership model matches other thread-scoped endpoints.
+- Visibility model matches other thread-scoped endpoints.
 - Response shape:
   - `threadId`
   - `agentId`
   - `commands`
 - Read semantics:
-  - resolve owned thread.
+  - resolve accessible thread.
   - read cached slash commands by `thread.agent_id`.
   - if the active provider supports exposing a live slash-command snapshot and sqlite does not have one yet, initialization flows such as `GET /v1/threads/{threadId}/config-options` may backfill sqlite before the composer asks for `/slash-commands`; Codex uses this path so a fresh thread can surface slash commands before the first turn.
   - if `GET /v1/threads/{threadId}/slash-commands` still misses sqlite, the handler may probe the live provider through `SlashCommandsProvider` and persist the result before responding; this removes races between thread-open initialization and the user's first `/`.
@@ -760,7 +760,7 @@ The integration follows the official ACP startup form `blackbox --experimental-a
   - the composer footer order is `Attachment -> Model -> Reasoning` on the left, mirrored by `Send` on the right.
   - attachments are held in thread-local in-memory draft state until send, with image previews when possible.
   - the transcript renders sent user attachments as cards and rebuilds them from `user_prompt` history events after reload.
-  - persisted attachments are served back through `GET /attachments/{attachmentId}?client_id=...&access_token=...` so image/file cards remain visible after stream completion and service restart without exposing raw `file://` paths to the browser.
+  - persisted attachments are served back through `GET /attachments/{attachmentId}?access_token=...` so image/file cards remain visible after stream completion and service restart without exposing raw `file://` paths to the browser.
 
 ### 18.6 Web UI Inline Base64 User Images
 
@@ -774,3 +774,58 @@ The integration follows the official ACP startup form `blackbox --experimental-a
   - stored message text remains the original raw content.
   - the UI copy button still copies the unmodified raw message text, including the original placeholder string.
   - surrounding user text before/after each placeholder is still rendered through the existing markdown renderer.
+
+### 18.7 Session-Scoped History For Web UI Session Switching
+
+- `GET /v1/threads/{threadId}/history` now accepts optional `sessionId=<id>` in addition to `includeEvents` / `includeInternal`.
+- When `sessionId` is present, ngent filters persisted turns server-side using the latest `session_bound` event recorded on each turn:
+  - if the thread has no annotated turns at all, ngent still returns non-ephemeral legacy history instead of hiding everything.
+  - if the thread has exactly one annotated session and it matches the requested `sessionId`, unannotated legacy turns are included with that session so old pre-annotation history remains visible.
+  - otherwise only turns whose persisted `session_bound.sessionId` matches the requested session are returned.
+  - cancelled turns with no visible `responseText` are still excluded from session-scoped replay.
+- The Web UI session switch path now calls `GET /v1/threads/{threadId}/history?includeEvents=1&sessionId=<selectedSession>` before merging in provider `GET /session-history` transcript replay.
+- The existing client-side `filterTurnsBySession()` logic remains as a compatibility fallback, but under normal same-version operation the browser now receives only the selected session's persisted turns rather than the entire thread history.
+
+### 18.8 Delta-Run Compaction And Incremental History Rendering
+
+- When `/v1/threads/{threadId}/history?includeEvents=1` serializes persisted turn events, ngent compacts consecutive runs of the same-turn delta event types:
+  - `message_delta`
+  - `reasoning_delta`
+  - `thought_delta`
+- Compaction concatenates `data.delta` only when:
+  - both adjacent events have the same `type`
+  - both belong to the same `turnId`
+  - the payloads are valid JSON objects carrying string `delta` values
+- The API keeps the first event's ordering position and only merges adjacent runs, so event boundaries across `tool_call*`, `plan_update`, `session_bound`, and other event types remain visible.
+- Storage applies the same delta-run merge while appending new events, so future turns persist fewer redundant rows.
+- The Web UI history replay path is now incremental in two stages:
+  - `turnsToMessagesAsync(...)` yields while converting `Turn[]` into `Message[]`
+  - `updateMessageList()` switches to chunked message rendering for heavier chats so the browser can yield between frames instead of monopolizing the UI thread during session switches
+
+### 18.9 Active-Turn Session Browsing In The Web UI
+
+- The Web UI now distinguishes:
+  - the backend thread session stored in `thread.agentOptions.sessionId`
+  - the frontend-only session currently selected in the sidebar/chat pane
+- When no turn is active, switching sessions still syncs the selected session back to `PATCH /v1/threads/{threadId}` so the next turn runs in the visible session.
+- When the thread already has an active turn:
+  - clicking another session changes only the local chat scope and history/session-history requests in the browser.
+  - ngent does not try to mutate backend thread state during that active turn.
+  - switching back to the active session is therefore a local view change rather than a conflict-producing backend write.
+- Unsaved "New session" views are tracked as frontend-only `@fresh:<nonce>` selections so the UI can keep a stable empty-session scope before ACP emits a concrete `session_bound`.
+- After the active turn completes, or just before the next user send if needed, the frontend synchronizes any pending selected session back into backend thread state.
+
+### 18.10 Unified ASCII Brand Mark Across CLI Startup And Web UI
+
+- ngent exposes one consistent product mark at the two primary entry points users see first:
+  - the CLI startup banner on stderr
+  - the Web UI sidebar header
+- CLI startup banner behavior:
+  - keep the existing large ASCII `NGENT` art at the top of the startup banner.
+  - when stderr is attached to an interactive terminal, render only that logo in ink-green ANSI truecolor matching the Web UI accent (`#0f766e`).
+  - when stderr is redirected or otherwise not a TTY, emit the same ASCII logo as plain text with no ANSI escapes.
+  - leave the surrounding `Server` box, agent status line, and optional QR block uncolored so operational metadata remains easy to scan.
+- Web UI sidebar behavior:
+  - replace the previous `N` monogram plus `Ngent` wordmark with the same six-line block ASCII `NGENT` art used by the CLI startup banner.
+  - style that mark with the shared accent color (`--accent`, light theme currently `#0f766e`) and render it directly in the sidebar header without an extra framed badge around it.
+  - scale the exact same glyph set down with CSS so the browser and terminal differ only in size, not in logo design.

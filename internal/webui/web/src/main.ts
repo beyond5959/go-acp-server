@@ -50,6 +50,10 @@ const iconSend = `<svg width="14" height="14" viewBox="0 0 15 15" fill="none" ar
   <path d="M1.5 7.5h12M8.5 2l5 5.5-5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`
 
+const iconStop = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+  <rect x="3" y="3" width="8" height="8" rx="1.6" fill="currentColor"/>
+</svg>`
+
 const iconAttachment = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
   <path d="M9 12.5 14.7 6.8a3 3 0 1 1 4.24 4.24l-7.42 7.42a5 5 0 1 1-7.07-7.08l7.78-7.77" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`
@@ -156,11 +160,48 @@ const iconDotsHorizontal = `<svg width="14" height="14" viewBox="0 0 14 14" fill
   <circle cx="11" cy="7" r="1.15" fill="currentColor"/>
 </svg>`
 
-const codexIconURL = '/codex-icon.png'
-const geminiIconURL = '/gemini-icon.png'
-const claudeIconURL = '/claude-icon.png'
-const qwenIconURL = '/qwen-icon.png'
-const blackboxIconURL = '/blackbox.png'
+const sidebarBrandLetters = [
+  [
+    '███╗   ██╗',
+    '████╗  ██║',
+    '██╔██╗ ██║',
+    '██║╚██╗██║',
+    '██║ ╚████║',
+    '╚═╝  ╚═══╝',
+  ].join('\n'),
+  [
+    ' ██████╗ ',
+    '██╔════╝ ',
+    '██║  ███╗',
+    '██║   ██║',
+    '╚██████╔╝',
+    ' ╚═════╝ ',
+  ].join('\n'),
+  [
+    '███████╗',
+    '██╔════╝',
+    '█████╗  ',
+    '██╔══╝  ',
+    '███████╗',
+    '╚══════╝',
+  ].join('\n'),
+  [
+    '███╗   ██╗',
+    '████╗  ██║',
+    '██╔██╗ ██║',
+    '██║╚██╗██║',
+    '██║ ╚████║',
+    '╚═╝  ╚═══╝',
+  ].join('\n'),
+  [
+    '████████╗',
+    '╚══██╔══╝',
+    '   ██║   ',
+    '   ██║   ',
+    '   ██║   ',
+    '   ╚═╝   ',
+  ].join('\n'),
+]
 
 const threadConfigCache = new Map<string, ConfigOption[]>()
 const agentConfigCatalogCache = new Map<string, ConfigOption[]>()
@@ -170,6 +211,7 @@ const agentSlashCommandsInFlight = new Map<string, Promise<SlashCommand[]>>()
 const threadConfigSwitching = new Set<string>()
 const sessionSwitchingThreads = new Set<string>()
 const freshSessionNonceByThread = new Map<string, string>()
+const selectedSessionOverrideByThread = new Map<string, string>()
 let slashCommandSelectedIndex = 0
 
 interface SessionPanelState {
@@ -195,7 +237,9 @@ const sessionPanelRequestSeqByThread = new Map<string, number>()
 const sessionPanelScrollTopByThread = new Map<string, number>()
 const sessionTitleOverridesByThread = new Map<string, Map<string, string>>()
 const composerAttachmentsByThread = new Map<string, ComposerAttachmentDraft[]>()
+const composerDraftByScope = new Map<string, string>()
 let sessionPanelRequestSeq = 0
+let messageListRenderSeq = 0
 
 function cloneConfigOptions(options: ConfigOption[]): ConfigOption[] {
   return options.map(option => ({
@@ -392,6 +436,37 @@ function threadComposerAttachments(threadId: string): ComposerAttachmentDraft[] 
   return composerAttachmentsByThread.get(threadId) ?? []
 }
 
+function composerDraft(scopeKey: string): string {
+  return composerDraftByScope.get(scopeKey) ?? ''
+}
+
+function setComposerDraft(scopeKey: string, value: string): void {
+  scopeKey = scopeKey.trim()
+  if (!scopeKey) return
+  if (value.length) {
+    composerDraftByScope.set(scopeKey, value)
+  } else {
+    composerDraftByScope.delete(scopeKey)
+  }
+}
+
+function setActiveComposerDraft(value: string): void {
+  const scopeKey = activeChatScopeKey()
+  if (!scopeKey) return
+  setComposerDraft(scopeKey, value)
+}
+
+function moveComposerDraft(oldScopeKey: string, nextScopeKey: string): void {
+  oldScopeKey = oldScopeKey.trim()
+  nextScopeKey = nextScopeKey.trim()
+  if (!oldScopeKey || !nextScopeKey || oldScopeKey === nextScopeKey) return
+
+  const draft = composerDraftByScope.get(oldScopeKey)
+  composerDraftByScope.delete(oldScopeKey)
+  if (draft === undefined || composerDraftByScope.has(nextScopeKey)) return
+  composerDraftByScope.set(nextScopeKey, draft)
+}
+
 function attachmentPreviewURL(file: File): string | undefined {
   if (!file.type.startsWith('image/')) return undefined
   return URL.createObjectURL(file)
@@ -401,10 +476,13 @@ function attachmentResourceURL(attachmentId: string | null | undefined): string 
   const normalized = attachmentId?.trim() ?? ''
   if (!normalized) return undefined
 
-  const { serverUrl, clientId, authToken } = store.get()
-  const params = new URLSearchParams({ client_id: clientId })
+  const { serverUrl, authToken } = store.get()
+  const params = new URLSearchParams()
   if (authToken.trim()) params.set('access_token', authToken.trim())
-  return `${serverUrl}/attachments/${encodeURIComponent(normalized)}?${params.toString()}`
+  const suffix = params.toString()
+  return suffix
+    ? `${serverUrl}/attachments/${encodeURIComponent(normalized)}?${suffix}`
+    : `${serverUrl}/attachments/${encodeURIComponent(normalized)}`
 }
 
 function revokeAttachmentPreview(attachment: { previewUrl?: string } | null | undefined): void {
@@ -684,76 +762,6 @@ function parsePlanEntries(value: unknown): PlanEntry[] | undefined {
   return clonePlanEntries(parsed)
 }
 
-function extractTurnPlanEntries(events: TurnEvent[] | undefined): PlanEntry[] | undefined {
-  let latest: PlanEntry[] | undefined
-  for (const event of events ?? []) {
-    if (event.type !== 'plan_update') continue
-    latest = parsePlanEntries(event.data.entries)
-  }
-  return clonePlanEntries(latest)
-}
-
-function extractTurnToolCalls(events: TurnEvent[] | undefined): ToolCall[] | undefined {
-  let toolCalls: ToolCall[] = []
-  for (const event of events ?? []) {
-    if (event.type !== 'tool_call' && event.type !== 'tool_call_update') continue
-    toolCalls = applyToolCallEvent(toolCalls, event.data)
-  }
-  return cloneToolCalls(toolCalls)
-}
-
-function extractTurnReasoning(events: TurnEvent[] | undefined): string {
-  let reasoning = ''
-  for (const event of events ?? []) {
-    if (event.type !== 'reasoning_delta' && event.type !== 'thought_delta') continue
-    if (typeof event.data.delta !== 'string') continue
-    reasoning += event.data.delta
-  }
-  return reasoning
-}
-
-function extractTurnUserPrompt(events: TurnEvent[] | undefined): {
-  text: string
-  attachments?: MessageAttachment[]
-} {
-  const textParts: string[] = []
-  const attachments: MessageAttachment[] = []
-
-  for (const event of sortTurnEvents(events)) {
-    if (event.type !== 'user_prompt') continue
-    const prompt = Array.isArray(event.data.prompt) ? event.data.prompt : []
-    prompt.forEach(item => {
-      const record = asRecord(item)
-      if (!record) return
-      const type = recordString(record, 'type').toLowerCase()
-      if (type === 'text') {
-        const text = recordString(record, 'text')
-        if (text) textParts.push(text)
-        return
-      }
-      if (type !== 'resource_link') return
-      const sizeValue = record?.size
-      const attachmentId = recordString(record, 'attachmentId') || undefined
-      const persistentUrl = attachmentResourceURL(attachmentId)
-      const mimeType = recordString(record, 'mimeType') || undefined
-      attachments.push({
-        attachmentId,
-        name: recordString(record, 'name') || 'Attachment',
-        uri: recordString(record, 'uri') || undefined,
-        mimeType,
-        size: typeof sizeValue === 'number' && Number.isFinite(sizeValue) ? sizeValue : undefined,
-        previewUrl: mimeType?.startsWith('image/') ? persistentUrl : undefined,
-        downloadUrl: persistentUrl,
-      })
-    })
-  }
-
-  return {
-    text: textParts.join('\n\n'),
-    attachments: cloneMessageAttachments(attachments),
-  }
-}
-
 function sortTurnEvents(events: TurnEvent[] | undefined): TurnEvent[] {
   return [...(events ?? [])].sort((left, right) => {
     if (left.seq !== right.seq) return left.seq - right.seq
@@ -761,16 +769,73 @@ function sortTurnEvents(events: TurnEvent[] | undefined): TurnEvent[] {
   })
 }
 
-function buildMessageSegmentsFromTurn(
-  turnId: string,
-  events: TurnEvent[] | undefined,
-  responseText: string,
-): MessageSegment[] | undefined {
-  let segments: MessageSegment[] = []
-  const idPrefix = `${turnId}-segment`
+function parseTurnUserPromptEvent(event: TurnEvent): {
+  text: string
+  attachments?: MessageAttachment[]
+} {
+  const textParts: string[] = []
+  const attachments: MessageAttachment[] = []
+  const prompt = Array.isArray(event.data.prompt) ? event.data.prompt : []
+  prompt.forEach(item => {
+    const record = asRecord(item)
+    if (!record) return
+    const type = recordString(record, 'type').toLowerCase()
+    if (type === 'text') {
+      const text = recordString(record, 'text')
+      if (text) textParts.push(text)
+      return
+    }
+    if (type !== 'resource_link') return
+    const sizeValue = record?.size
+    const attachmentId = recordString(record, 'attachmentId') || undefined
+    const persistentUrl = attachmentResourceURL(attachmentId)
+    const mimeType = recordString(record, 'mimeType') || undefined
+    attachments.push({
+      attachmentId,
+      name: recordString(record, 'name') || 'Attachment',
+      uri: recordString(record, 'uri') || undefined,
+      mimeType,
+      size: typeof sizeValue === 'number' && Number.isFinite(sizeValue) ? sizeValue : undefined,
+      previewUrl: mimeType?.startsWith('image/') ? persistentUrl : undefined,
+      downloadUrl: persistentUrl,
+    })
+  })
 
-  for (const event of sortTurnEvents(events)) {
+  return {
+    text: textParts.join('\n\n'),
+    attachments: cloneMessageAttachments(attachments),
+  }
+}
+
+interface TurnReplayAnalysis {
+  userText: string
+  userAttachments?: MessageAttachment[]
+  planEntries?: PlanEntry[]
+  reasoning: string
+  toolCalls?: ToolCall[]
+  segments?: MessageSegment[]
+}
+
+function analyzeTurnReplay(turn: Turn): TurnReplayAnalysis {
+  const userTextParts: string[] = []
+  let userAttachments: MessageAttachment[] = []
+  let latestPlanEntries: PlanEntry[] | undefined
+  let reasoning = ''
+  let toolCalls: ToolCall[] = []
+  let segments: MessageSegment[] = []
+  const idPrefix = `${turn.turnId}-segment`
+
+  for (const event of sortTurnEvents(turn.events)) {
     switch (event.type) {
+      case 'user_prompt': {
+        const prompt = parseTurnUserPromptEvent(event)
+        if (prompt.text) userTextParts.push(prompt.text)
+        if (prompt.attachments?.length) userAttachments = [...userAttachments, ...prompt.attachments]
+        break
+      }
+      case 'plan_update':
+        latestPlanEntries = parsePlanEntries(event.data.entries)
+        break
       case 'message_delta': {
         if (typeof event.data.delta !== 'string' || !event.data.delta) continue
         segments = appendTextSegment(segments, 'content', event.data.delta, idPrefix)
@@ -783,11 +848,13 @@ function buildMessageSegmentsFromTurn(
       case 'reasoning_delta':
       case 'thought_delta': {
         if (typeof event.data.delta !== 'string' || !event.data.delta) continue
+        reasoning += event.data.delta
         segments = appendTextSegment(segments, 'reasoning', event.data.delta, idPrefix)
         break
       }
       case 'tool_call':
       case 'tool_call_update':
+        toolCalls = applyToolCallEvent(toolCalls, event.data)
         segments = applyToolCallSegmentEvent(segments, event.data, idPrefix)
         break
       default:
@@ -795,11 +862,18 @@ function buildMessageSegmentsFromTurn(
     }
   }
 
-  if (!messageHasContentSegment(segments) && hasVisibleContent(responseText)) {
-    segments = appendTextSegment(segments, 'content', responseText, idPrefix)
+  if (!messageHasContentSegment(segments) && hasVisibleContent(turn.responseText)) {
+    segments = appendTextSegment(segments, 'content', turn.responseText, idPrefix)
   }
 
-  return cloneMessageSegments(segments)
+  return {
+    userText: userTextParts.join('\n\n'),
+    userAttachments: cloneMessageAttachments(userAttachments),
+    planEntries: clonePlanEntries(latestPlanEntries),
+    reasoning,
+    toolCalls: cloneToolCalls(toolCalls),
+    segments: cloneMessageSegments(segments),
+  }
 }
 
 function fallbackMessageSegments(msg: Message): MessageSegment[] | undefined {
@@ -891,6 +965,24 @@ function threadSessionScopeKey(threadId: string, sessionID = ''): string {
   return `${threadId}::${sessionID.trim()}`
 }
 
+function sessionSelectionFromScopeKey(scopeKey: string): string {
+  const parts = scopeKey.split('::', 2)
+  return parts.length === 2 ? parts[1].trim() : ''
+}
+
+function selectionSessionID(selection: string): string {
+  selection = selection.trim()
+  if (!selection || selection.startsWith('@fresh:')) {
+    return ''
+  }
+  return selection
+}
+
+function freshSelectionNonce(selection: string): string {
+  selection = selection.trim()
+  return selection.startsWith('@fresh:') ? selection.slice('@fresh:'.length) : ''
+}
+
 function threadFreshSessionScopeKey(threadId: string): string {
   const nonce = freshSessionNonceByThread.get(threadId)?.trim() ?? ''
   if (!nonce) return ''
@@ -902,13 +994,50 @@ function isFreshSessionScopeKey(scopeKey: string): boolean {
   return parts.length === 2 && parts[1].startsWith('@fresh:')
 }
 
-function threadChatScopeKey(thread: Thread | null | undefined): string {
+function defaultThreadChatScopeKey(thread: Thread | null | undefined): string {
   if (!thread) return ''
   const sessionID = threadSessionID(thread)
   if (sessionID) {
     return threadSessionScopeKey(thread.threadId, sessionID)
   }
   return threadFreshSessionScopeKey(thread.threadId) || threadSessionScopeKey(thread.threadId)
+}
+
+function selectedSessionOverride(threadId: string): string {
+  return selectedSessionOverrideByThread.get(threadId)?.trim() ?? ''
+}
+
+function setSelectedSessionOverride(threadId: string, selection: string): void {
+  selection = selection.trim()
+  if (!threadId) return
+  if (!selection) {
+    selectedSessionOverrideByThread.delete(threadId)
+    return
+  }
+  selectedSessionOverrideByThread.set(threadId, selection)
+}
+
+function clearSelectedSessionOverrideIfSynced(thread: Thread | null | undefined): void {
+  if (!thread) return
+  const override = selectedSessionOverride(thread.threadId)
+  if (!override) return
+  const currentSelection = sessionSelectionFromScopeKey(defaultThreadChatScopeKey(thread))
+  if (override === currentSelection) {
+    selectedSessionOverrideByThread.delete(thread.threadId)
+  }
+}
+
+function threadChatScopeKey(thread: Thread | null | undefined): string {
+  if (!thread) return ''
+  const override = selectedSessionOverride(thread.threadId)
+  if (override) {
+    return threadSessionScopeKey(thread.threadId, override)
+  }
+  return defaultThreadChatScopeKey(thread)
+}
+
+function selectedThreadSessionID(thread: Thread | null | undefined): string {
+  return selectionSessionID(sessionSelectionFromScopeKey(threadChatScopeKey(thread)))
 }
 
 function buildThreadAgentOptionsWithSession(
@@ -928,8 +1057,10 @@ function buildThreadAgentOptionsWithSession(
 function activateFreshSessionScope(
   threadId: string,
   messages: Record<string, Message[]>,
+  selection = '',
 ): Record<string, Message[]> {
-  freshSessionNonceByThread.set(threadId, generateUUID())
+  const nonce = freshSelectionNonce(selection) || generateUUID()
+  freshSessionNonceByThread.set(threadId, nonce)
   const scopeKey = threadFreshSessionScopeKey(threadId)
   loadedHistoryScopeKeys.add(scopeKey)
   if (Object.prototype.hasOwnProperty.call(messages, scopeKey)) {
@@ -1513,6 +1644,7 @@ function rebindScopeRuntime(oldScopeKey: string, nextScopeKey: string, nextSessi
     loadedHistoryScopeKeys.delete(oldScopeKey)
     loadedHistoryScopeKeys.add(nextScopeKey)
   }
+  moveComposerDraft(oldScopeKey, nextScopeKey)
   if (activeStreamScopeKey === oldScopeKey) {
     activeStreamScopeKey = nextScopeKey
   }
@@ -1694,6 +1826,8 @@ function updateThreadSessionID(threadId: string, sessionID: string): void {
     }
   })
   store.set({ threads: nextThreads })
+  const updatedThread = nextThreads.find(thread => thread.threadId === threadId)
+  clearSelectedSessionOverrideIfSynced(updatedThread)
 }
 
 function applySessionTitleUpdate(threadId: string, sessionID: string, title: string): void {
@@ -1790,41 +1924,75 @@ async function loadThreadSessions(threadId: string, append = false): Promise<voi
 
 async function switchThreadSession(thread: Thread, nextSessionID: string): Promise<void> {
   const targetSessionID = nextSessionID.trim()
-  const currentSessionID = threadSessionID(thread)
-  if (targetSessionID && currentSessionID === targetSessionID) return
-  if (!targetSessionID && !currentSessionID) {
-    const state = store.get()
-    store.set({
-      messages: activateFreshSessionScope(thread.threadId, state.messages),
-    })
-    return
-  }
+  const currentSelection = sessionSelectionFromScopeKey(threadChatScopeKey(thread))
+  if (targetSessionID && currentSelection === targetSessionID) return
   if (sessionSwitchingThreads.has(thread.threadId)) return
 
-  sessionSwitchingThreads.add(thread.threadId)
+  const targetSelection = targetSessionID || `@fresh:${generateUUID()}`
+  const state = store.get()
+  const nextMessages = targetSessionID
+    ? state.messages
+    : activateFreshSessionScope(thread.threadId, state.messages, targetSelection)
+  setSelectedSessionOverride(thread.threadId, targetSelection)
+  clearSelectedSessionOverrideIfSynced(thread)
+  store.set({ messages: nextMessages })
+
+  if (hasThreadStream(thread.threadId)) {
+    if (store.get().activeThreadId === thread.threadId) {
+      updateInputState()
+      updateSessionPanel()
+    }
+    return
+  }
+
+  await syncSelectedSessionSelection(thread.threadId)
+}
+
+async function syncSelectedSessionSelection(
+  threadId: string,
+  options?: { allowWhileThreadStreaming?: boolean },
+): Promise<void> {
+  const thread = store.get().threads.find(item => item.threadId === threadId)
+  if (!thread) return
+
+  const override = selectedSessionOverride(threadId)
+  const allowWhileThreadStreaming = !!options?.allowWhileThreadStreaming
+  if (!override || sessionSwitchingThreads.has(threadId)) {
+    return
+  }
+  if (!allowWhileThreadStreaming && hasThreadStream(threadId)) {
+    return
+  }
+
+  const targetSessionID = selectionSessionID(override)
+  sessionSwitchingThreads.add(threadId)
   updateSessionPanel()
-  if (store.get().activeThreadId === thread.threadId) {
+  if (store.get().activeThreadId === threadId) {
     updateInputState()
   }
+
   try {
-    const updatedThread = await api.updateThread(thread.threadId, {
+    const updatedThread = await api.updateThread(threadId, {
       agentOptions: buildThreadAgentOptionsWithSession(thread.agentOptions, targetSessionID),
     })
-    threadConfigCache.delete(thread.threadId)
+    threadConfigCache.delete(threadId)
     const state = store.get()
-    const nextMessages = !targetSessionID
-      ? activateFreshSessionScope(thread.threadId, state.messages)
-      : state.messages
+    let nextMessages = state.messages
+    if (!targetSessionID) {
+      nextMessages = activateFreshSessionScope(threadId, state.messages, override)
+    }
+    const nextThreads = state.threads.map(item => (item.threadId === threadId ? updatedThread : item))
     store.set({
-      threads: state.threads.map(item => (item.threadId === thread.threadId ? updatedThread : item)),
+      threads: nextThreads,
       messages: nextMessages,
     })
+    clearSelectedSessionOverrideIfSynced(nextThreads.find(item => item.threadId === threadId))
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to update session.'
     window.alert(message)
   } finally {
-    sessionSwitchingThreads.delete(thread.threadId)
-    if (store.get().activeThreadId === thread.threadId) {
+    sessionSwitchingThreads.delete(threadId)
+    if (store.get().activeThreadId === threadId) {
       updateInputState()
       updateSessionPanel()
     }
@@ -1871,7 +2039,7 @@ function renderSessionPanel(): string {
   }
 
   const state = sessionPanelState(thread.threadId)
-  const selectedSessionID = threadSessionID(thread)
+  const selectedSessionID = selectedThreadSessionID(thread)
   const switching = sessionSwitchingThreads.has(thread.threadId)
   const disabled = switching
   const refreshDisabled = disabled || state.loading || state.loadingMore
@@ -2003,7 +2171,7 @@ function updateSessionPanel(): void {
   el.querySelectorAll<HTMLButtonElement>('.session-item[data-session-id]').forEach(btn => {
     btn.addEventListener('click', () => {
       const sessionID = btn.dataset.sessionId?.trim() ?? ''
-      if (!sessionID || sessionID === threadSessionID(thread)) return
+      if (!sessionID || sessionID === selectedThreadSessionID(thread)) return
       void switchThreadSession(thread, sessionID)
     })
   })
@@ -2342,29 +2510,30 @@ const reasoningPickerLabels: ConfigPickerLabels = {
 function renderAgentAvatar(agentId: string, variant: 'thread' | 'message'): string {
   const normalized = (agentId || '').trim().toLowerCase()
   const cls = variant === 'thread' ? 'thread-item-avatar-icon' : 'message-avatar-icon'
+  const iconCls = `${cls} ${cls}--contain`
   if (normalized === 'codex') {
-    return `<img src="${codexIconURL}" alt="Codex" class="${cls}" loading="lazy" decoding="async">`
+    return `<span class="${iconCls} ${cls}--codex" role="img" aria-label="Codex"></span>`
   }
   if (normalized === 'gemini') {
-    return `<img src="${geminiIconURL}" alt="Gemini CLI" class="${cls}" loading="lazy" decoding="async">`
+    return `<span class="${iconCls} ${cls}--gemini" role="img" aria-label="Gemini CLI"></span>`
   }
   if (normalized === 'claude') {
-    return `<img src="${claudeIconURL}" alt="Claude Code" class="${cls}" loading="lazy" decoding="async">`
+    return `<span class="${iconCls} ${cls}--claude" role="img" aria-label="Claude Code"></span>`
   }
   if (normalized === 'cursor') {
-    return `<span class="${cls} ${cls}--contain ${cls}--cursor" role="img" aria-label="Cursor CLI"></span>`
+    return `<span class="${iconCls} ${cls}--cursor" role="img" aria-label="Cursor CLI"></span>`
   }
   if (normalized === 'kimi') {
-    return `<span class="${cls} ${cls}--contain ${cls}--kimi" role="img" aria-label="Kimi CLI"></span>`
+    return `<span class="${iconCls} ${cls}--kimi" role="img" aria-label="Kimi CLI"></span>`
   }
   if (normalized === 'opencode') {
-    return `<span class="${cls} ${cls}--contain ${cls}--opencode" role="img" aria-label="OpenCode"></span>`
+    return `<span class="${iconCls} ${cls}--opencode" role="img" aria-label="OpenCode"></span>`
   }
   if (normalized === 'qwen') {
-    return `<img src="${qwenIconURL}" alt="Qwen Code" class="${cls}" loading="lazy" decoding="async">`
+    return `<span class="${iconCls} ${cls}--qwen" role="img" aria-label="Qwen Code"></span>`
   }
   if (normalized === 'blackbox') {
-    return `<img src="${blackboxIconURL}" alt="BLACKBOX AI" class="${cls}" loading="lazy" decoding="async">`
+    return `<span class="${iconCls} ${cls}--blackbox" role="img" aria-label="BLACKBOX AI"></span>`
   }
   return escHtml((agentId || 'A').slice(0, 1).toUpperCase())
 }
@@ -2526,7 +2695,7 @@ function renderThreadListEmptyState(): string {
     <div class="thread-list-empty">
       <div class="thread-list-empty__visual" aria-hidden="true">${iconPlus}</div>
       <div class="thread-list-empty__title">No agents yet</div>
-      <div class="thread-list-empty__desc">Create a workspace to start your first session.</div>
+      <div class="thread-list-empty__desc">Create an agent to start your first session.</div>
     </div>`
 }
 
@@ -2666,12 +2835,18 @@ async function handleDeleteThread(threadId: string): Promise<void> {
       reboundFreshSessionScopeKeys.delete(scopeKey)
     }
   })
+  Array.from(composerDraftByScope.keys()).forEach(scopeKey => {
+    if (scopeKey.startsWith(threadScopePrefix)) {
+      composerDraftByScope.delete(scopeKey)
+    }
+  })
   sessionPanelStateByThread.delete(threadId)
   sessionPanelRequestSeqByThread.delete(threadId)
   sessionPanelScrollTopByThread.delete(threadId)
   sessionTitleOverridesByThread.delete(threadId)
   sessionSwitchingThreads.delete(threadId)
   freshSessionNonceByThread.delete(threadId)
+  selectedSessionOverrideByThread.delete(threadId)
   clearThreadComposerAttachments(threadId)
   let nextThreadCompletionBadges = omitThreadCompletionBadge(state.threadCompletionBadges, threadId)
   if (nextActiveThreadId) {
@@ -2688,20 +2863,34 @@ async function handleDeleteThread(threadId: string): Promise<void> {
 
 // ── History helpers ───────────────────────────────────────────────────────
 
-/** Convert server Turn[] to the client Message[] model. */
-function turnsToMessages(turns: Turn[]): Message[] {
+const HISTORY_REPLAY_YIELD_INTERVAL_MS = 8
+const MESSAGE_LIST_RENDER_YIELD_INTERVAL_MS = 8
+
+function waitForNextPaint(): Promise<void> {
+  return new Promise(resolve => {
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => resolve())
+      return
+    }
+    window.setTimeout(resolve, 0)
+  })
+}
+
+/** Convert server Turn[] to the client Message[] model without monopolizing the UI thread. */
+async function turnsToMessagesAsync(turns: Turn[]): Promise<Message[]> {
   const msgs: Message[] = []
+  let lastYieldAt = performance.now()
   for (const t of turns) {
     if (t.isInternal) continue
-    const userPrompt = extractTurnUserPrompt(t.events)
-    const userContent = userPrompt.text || t.requestText
+    const analysis = analyzeTurnReplay(t)
+    const userContent = analysis.userText || t.requestText
 
-    if (userContent || userPrompt.attachments?.length) {
+    if (userContent || analysis.userAttachments?.length) {
       msgs.push({
         id:        `${t.turnId}-u`,
         role:      'user',
         content:   userContent,
-        attachments: userPrompt.attachments,
+        attachments: analysis.userAttachments,
         timestamp: t.createdAt,
         status:    'done',
         turnId:    t.turnId,
@@ -2709,10 +2898,6 @@ function turnsToMessages(turns: Turn[]): Message[] {
     }
 
     if (t.status !== 'running') {
-      const planEntries = extractTurnPlanEntries(t.events)
-      const reasoning = extractTurnReasoning(t.events)
-      const toolCalls = extractTurnToolCalls(t.events)
-      const segments = buildMessageSegmentsFromTurn(t.turnId, t.events, t.responseText)
       const agentStatus: Message['status'] =
         t.status === 'cancelled' ? 'cancelled' :
         t.status === 'error'     ? 'error'     :
@@ -2727,11 +2912,16 @@ function turnsToMessages(turns: Turn[]): Message[] {
         turnId:       t.turnId,
         stopReason:   t.stopReason   || undefined,
         errorMessage: t.errorMessage || undefined,
-        segments,
-        planEntries,
-        toolCalls,
-        reasoning: hasReasoningText(reasoning) ? reasoning : undefined,
+        segments:     analysis.segments,
+        planEntries:  analysis.planEntries,
+        toolCalls:    analysis.toolCalls,
+        reasoning:    hasReasoningText(analysis.reasoning) ? analysis.reasoning : undefined,
       })
+    }
+
+    if (performance.now() - lastYieldAt >= HISTORY_REPLAY_YIELD_INTERVAL_MS) {
+      await waitForNextPaint()
+      lastYieldAt = performance.now()
     }
   }
   return msgs
@@ -2894,19 +3084,19 @@ function hydrateMessagesFromCache(messages: Message[], cachedMessages: Message[]
 
 async function loadHistory(threadId: string): Promise<void> {
   const requestedThread = store.get().threads.find(item => item.threadId === threadId)
-  const requestedSessionID = threadSessionID(requestedThread)
   const requestedScopeKey = threadChatScopeKey(requestedThread)
+  const requestedSessionID = selectionSessionID(sessionSelectionFromScopeKey(requestedScopeKey))
   if (!requestedScopeKey) return
   if (!requestedSessionID && isFreshSessionScopeKey(requestedScopeKey)) return
   try {
-    const turns = await api.getHistory(threadId)
+    const turns = await api.getHistory(threadId, requestedSessionID)
     const state = store.get()
     if (state.activeThreadId !== threadId) return
     const activeThread = state.threads.find(item => item.threadId === threadId)
-    if (!activeThread || threadSessionID(activeThread) !== requestedSessionID) return
+    if (!activeThread || threadChatScopeKey(activeThread) !== requestedScopeKey) return
     if (getScopeStreamState(requestedScopeKey)) return
 
-    const localMessages = turnsToMessages(filterTurnsBySession(turns, requestedSessionID))
+    const localMessages = await turnsToMessagesAsync(filterTurnsBySession(turns, requestedSessionID))
     const cachedMessages = state.messages[requestedScopeKey] ?? []
     let nextMessages = localMessages
     if (requestedSessionID) {
@@ -2923,7 +3113,7 @@ async function loadHistory(threadId: string): Promise<void> {
           const transcriptState = store.get()
           if (transcriptState.activeThreadId !== threadId) return
           const transcriptThread = transcriptState.threads.find(item => item.threadId === threadId)
-          if (!transcriptThread || threadSessionID(transcriptThread) !== requestedSessionID) return
+          if (!transcriptThread || threadChatScopeKey(transcriptThread) !== requestedScopeKey) return
           if (getScopeStreamState(requestedScopeKey)) return
 
           if (replay.supported && replay.messages.length) {
@@ -2936,7 +3126,7 @@ async function loadHistory(threadId: string): Promise<void> {
               const refreshedState = store.get()
               if (refreshedState.activeThreadId !== threadId) return
               const refreshedThread = refreshedState.threads.find(item => item.threadId === threadId)
-              if (!refreshedThread || threadSessionID(refreshedThread) !== requestedSessionID) return
+              if (!refreshedThread || threadChatScopeKey(refreshedThread) !== requestedScopeKey) return
               if (activeStreamMsgId) return
               bindThreadConfigSwitches(refreshedThread)
               updateInputState()
@@ -2953,7 +3143,7 @@ async function loadHistory(threadId: string): Promise<void> {
     const finalState = store.get()
     if (finalState.activeThreadId !== threadId) return
     const finalThread = finalState.threads.find(item => item.threadId === threadId)
-    if (!finalThread || threadSessionID(finalThread) !== requestedSessionID) return
+    if (!finalThread || threadChatScopeKey(finalThread) !== requestedScopeKey) return
     if (getScopeStreamState(requestedScopeKey)) return
 
     loadedHistoryScopeKeys.add(requestedScopeKey)
@@ -2965,7 +3155,7 @@ async function loadHistory(threadId: string): Promise<void> {
     })
   } catch {
     if (store.get().activeThreadId !== threadId) return
-    if (threadSessionID(store.get().threads.find(item => item.threadId === threadId)) !== requestedSessionID) return
+    if (threadChatScopeKey(store.get().threads.find(item => item.threadId === threadId)) !== requestedScopeKey) return
     // Show error only if no matching local history was already rendered.
     if (!loadedHistoryScopeKeys.has(requestedScopeKey)) {
       const listEl = document.getElementById('message-list')
@@ -3808,6 +3998,113 @@ function renderMessage(msg: Message): string {
     </div>`
 }
 
+function createMessageNode(msg: Message): HTMLElement | null {
+  const template = document.createElement('template')
+  template.innerHTML = renderMessage(msg).trim()
+  const node = template.content.firstElementChild
+  if (!(node instanceof HTMLElement)) return null
+
+  bindMarkdownControls(node)
+  bindReasoningPanels(node)
+  bindToolCallPanels(node)
+  return node
+}
+
+function messageRenderWeight(msg: Message): number {
+  let total = (msg.content?.length ?? 0) + (msg.reasoning?.length ?? 0)
+  total += (msg.attachments?.length ?? 0) * 256
+
+  for (const segment of msg.segments ?? []) {
+    total += segment.content?.length ?? 0
+    if (segment.contentBlock !== undefined) {
+      total += 512
+    }
+    if (segment.toolCall) {
+      total += JSON.stringify(segment.toolCall).length
+    }
+  }
+
+  return total
+}
+
+function shouldRenderMessageListAsync(msgs: Message[]): boolean {
+  if (msgs.length >= 6) return true
+
+  let totalWeight = 0
+  for (const msg of msgs) {
+    totalWeight += messageRenderWeight(msg)
+    if (totalWeight >= 2_048) {
+      return true
+    }
+  }
+  return false
+}
+
+function hideScrollToBottomButton(): void {
+  const scrollBtn = document.getElementById('scroll-bottom-btn')
+  if (scrollBtn) scrollBtn.style.display = 'none'
+}
+
+function finishMessageListRender(listEl: HTMLElement): void {
+  listEl.scrollTop = listEl.scrollHeight
+  hideScrollToBottomButton()
+}
+
+function invalidateMessageListRender(): void {
+  messageListRenderSeq += 1
+}
+
+function isCurrentMessageListRender(
+  renderSeq: number,
+  scopeKey: string,
+  listEl: HTMLElement,
+): boolean {
+  if (!listEl.isConnected) return false
+  if (messageListRenderSeq !== renderSeq) return false
+
+  const { activeThreadId, threads } = store.get()
+  if (!activeThreadId) return false
+  const thread = threads.find(item => item.threadId === activeThreadId)
+  return threadChatScopeKey(thread) === scopeKey
+}
+
+async function renderMessageListAsync(
+  renderSeq: number,
+  scopeKey: string,
+  msgs: Message[],
+): Promise<void> {
+  const listEl = document.getElementById('message-list')
+  if (!(listEl instanceof HTMLElement)) return
+
+  listEl.innerHTML = ''
+  let lastYieldAt = performance.now()
+
+  for (const msg of msgs) {
+    if (!isCurrentMessageListRender(renderSeq, scopeKey, listEl)) return
+
+    const node = createMessageNode(msg)
+    if (node) {
+      listEl.appendChild(node)
+    }
+
+    if (performance.now() - lastYieldAt >= MESSAGE_LIST_RENDER_YIELD_INTERVAL_MS) {
+      await waitForNextPaint()
+      lastYieldAt = performance.now()
+    }
+  }
+
+  if (!isCurrentMessageListRender(renderSeq, scopeKey, listEl)) return
+  finishMessageListRender(listEl)
+}
+
+function renderMessageListSync(listEl: HTMLElement, msgs: Message[]): void {
+  listEl.innerHTML = msgs.map(m => renderMessage(m)).join('')
+  bindMarkdownControls(listEl)
+  bindReasoningPanels(listEl)
+  bindToolCallPanels(listEl)
+  finishMessageListRender(listEl)
+}
+
 function renderStreamingBubbleHTML(
   messageID: string,
   segments: MessageSegment[] | undefined,
@@ -3943,6 +4240,9 @@ function updateMessageList(): void {
   const listEl = document.getElementById('message-list')
   if (!listEl) return
 
+  invalidateMessageListRender()
+  const renderSeq = messageListRenderSeq
+
   const { activeThreadId, threads, messages } = store.get()
   if (!activeThreadId) return
 
@@ -3959,14 +4259,25 @@ function updateMessageList(): void {
     return
   }
 
-  listEl.innerHTML = msgs.map(m => renderMessage(m)).join('')
-  bindMarkdownControls(listEl)
-  bindReasoningPanels(listEl)
-  bindToolCallPanels(listEl)
-  listEl.scrollTop = listEl.scrollHeight
-  // Sync scroll button (we just moved to the bottom)
-  const scrollBtn = document.getElementById('scroll-bottom-btn')
-  if (scrollBtn) scrollBtn.style.display = 'none'
+  if (shouldRenderMessageListAsync(msgs)) {
+    void renderMessageListAsync(renderSeq, scopeKey, msgs)
+    return
+  }
+
+  renderMessageListSync(listEl, msgs)
+}
+
+function flushActiveMessageList(scopeKey: string): void {
+  if (!scopeKey || activeChatScopeKey() !== scopeKey) return
+
+  const listEl = document.getElementById('message-list')
+  if (!(listEl instanceof HTMLElement)) return
+
+  const msgs = store.get().messages[scopeKey] ?? []
+  // Abort any in-flight async render so the just-sent user message is
+  // committed before we append the live streaming bubble below it.
+  invalidateMessageListRender()
+  renderMessageListSync(listEl, msgs)
 }
 
 // ── Input state ───────────────────────────────────────────────────────────
@@ -3976,9 +4287,9 @@ function updateInputState(): void {
   const streamState = getActiveChatStreamState()
   const isStreaming   = !!streamState
   const isCancelling  = streamState?.status === 'cancelling'
+  const canCancelTurn = isStreaming && !!streamState?.turnId && !isCancelling
 
   const sendBtn  = document.getElementById('send-btn')   as HTMLButtonElement   | null
-  const cancelBtn = document.getElementById('cancel-btn') as HTMLButtonElement   | null
   const inputEl  = document.getElementById('message-input') as HTMLTextAreaElement | null
   const attachmentBtn = document.getElementById('attachment-btn') as HTMLButtonElement | null
   const isSwitchingConfig = !!activeThreadId && threadConfigSwitching.has(activeThreadId)
@@ -3989,7 +4300,15 @@ function updateInputState(): void {
   const disableComposerActions = isStreaming || isSwitchingConfig || isSwitchingSession
   const disableComposerInput = isSwitchingConfig || isSwitchingSession
 
-  if (sendBtn)  sendBtn.disabled  = disableComposerActions || !hasComposerContent
+  if (sendBtn) {
+    sendBtn.disabled = isStreaming ? !canCancelTurn : disableComposerActions || !hasComposerContent
+    sendBtn.classList.toggle('btn-send--cancel', isStreaming)
+    sendBtn.innerHTML = isStreaming ? iconStop : iconSend
+    sendBtn.setAttribute('aria-label', isStreaming ? 'Cancel turn' : 'Send message')
+    sendBtn.title = isStreaming
+      ? (isCancelling ? 'Cancelling…' : 'Cancel turn')
+      : 'Send message'
+  }
   if (inputEl)  inputEl.disabled  = disableComposerInput
   if (attachmentBtn) attachmentBtn.disabled = disableComposerActions
   document.querySelectorAll<HTMLButtonElement>('.composer-attachment__remove').forEach(button => {
@@ -4007,11 +4326,6 @@ function updateInputState(): void {
       menu?.setAttribute('hidden', 'true')
     }
   })
-  if (cancelBtn) {
-    cancelBtn.style.display = isStreaming ? '' : 'none'
-    cancelBtn.disabled      = isCancelling
-    cancelBtn.textContent   = isCancelling ? 'Cancelling…' : 'Cancel'
-  }
   updateSlashCommandMenu()
 }
 
@@ -4127,7 +4441,6 @@ function renderEmptyStateVisual(icon: string, variant: string): string {
     <div class="empty-state-visual empty-state-visual--${escHtml(variant)}" aria-hidden="true">
       <span class="empty-state-visual__halo"></span>
       <span class="empty-state-visual__orb"></span>
-      <span class="empty-state-visual__ring"></span>
       <span class="empty-state-visual__core">${icon}</span>
     </div>`
 }
@@ -4161,10 +4474,10 @@ function selectSlashCommand(commandName: string): void {
   if (!command) return
 
   inputEl.value = `/${command.name}${command.inputHint ? ' ' : ''}`
+  setActiveComposerDraft(inputEl.value)
   inputEl.focus()
   inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length)
-  inputEl.style.height = 'auto'
-  inputEl.style.height = Math.min(inputEl.scrollHeight, 220) + 'px'
+  syncComposerInputHeight(inputEl)
   resetSlashCommandLookup()
   closeSlashCommandMenu()
 }
@@ -4174,7 +4487,7 @@ function selectSlashCommand(commandName: string): void {
 function renderChatEmpty(): string {
   return renderEmptyState(
     'No agent selected',
-    'Pick an existing workspace from the left, or create a new one to start working.',
+    'Pick an existing agent from the left, or create a new one to start working.',
     'workspace',
     `
       <button class="btn btn-primary" id="new-thread-empty-btn">
@@ -4203,7 +4516,7 @@ function renderSessionInfoField(label: string, value: string, copyLabel: string)
 }
 
 function renderSessionInfoPopover(thread: Thread): string {
-  const sessionID = threadSessionID(thread)
+  const sessionID = selectedThreadSessionID(thread)
   if (!sessionID) return ''
 
   return `
@@ -4257,7 +4570,7 @@ function truncateSessionTitle(title: string): string {
 }
 
 function getCurrentSessionTitle(t: Thread): string {
-  const sessionID = threadSessionID(t)
+  const sessionID = selectedThreadSessionID(t)
   if (!sessionID) {
     return 'New Session'
   }
@@ -4278,6 +4591,8 @@ function getCurrentSessionTitle(t: Thread): string {
 
 function renderChatThread(t: Thread): string {
   const sessionTitleLabel = getCurrentSessionTitle(t)
+  const scopeKey = threadChatScopeKey(t)
+  const draft = composerDraft(scopeKey)
   const createdLabel = t.createdAt ? `Created ${formatTimestamp(t.createdAt)}` : ''
   const attachmentCount = threadComposerAttachments(t.threadId).length
   const selectedModelID = fallbackThreadModelID(t)
@@ -4325,7 +4640,6 @@ function renderChatThread(t: Thread): string {
         </div>
       </div>
       <div class="chat-header-right">
-        <button class="btn btn-sm btn-danger" id="cancel-btn" style="display:none" aria-label="Cancel turn">Cancel</button>
         ${createdLabel ? `<span class="chat-header-meta">${escHtml(createdLabel)}</span>` : ''}
         ${renderSessionInfoPopover(t)}
       </div>
@@ -4347,7 +4661,7 @@ function renderChatThread(t: Thread): string {
           placeholder="Ask for changes, inspect code, or attach files"
           rows="1"
           aria-label="Message input"
-        ></textarea>
+        >${escHtml(draft)}</textarea>
         <div class="input-compose-bar">
           <div class="input-compose-left">
             <input id="attachment-input" class="attachment-input" type="file" multiple hidden />
@@ -4366,12 +4680,12 @@ function renderChatThread(t: Thread): string {
               ${renderComposerConfigSwitch('reasoning', 'Reasoning', reasoningPickerData, reasoningPickerLabels, isSwitching, showReasoningSwitch)}
             </div>
           </div>
-          <button class="btn btn-primary btn-send" id="send-btn" aria-label="Send message">
+          <button class="btn btn-primary btn-send" id="send-btn" aria-label="Send message" title="Send message">
             ${iconSend}
           </button>
         </div>
       </div>
-      <div class="input-hint"><span class="input-hint-label">Shortcuts</span> Press <kbd>⌘ Enter</kbd> to send · <kbd>⌘ V</kbd> to paste image/file · <kbd>Esc</kbd> to cancel · Type <kbd>/</kbd> for slash commands</div>
+      <div class="input-hint"><span class="input-hint-label">Shortcuts</span> Press <kbd>⌘ Enter</kbd> to send · Type <kbd>/</kbd> for slash commands</div>
     </div>`
 }
 
@@ -4451,10 +4765,19 @@ function updateChatArea(): void {
   // Show locally loaded messages immediately (including empty threads).
   // Show the loading state when the cache belongs to a different selected session.
   const scopeKey = threadChatScopeKey(thread)
+  const streamState = getScopeStreamState(scopeKey)
   const hasLocalHistory = Object.prototype.hasOwnProperty.call(store.get().messages, scopeKey)
   const hasMatchingLocalHistory = hasLocalHistory && loadedHistoryScopeKeys.has(scopeKey)
   if (hasMatchingLocalHistory) {
-    updateMessageList()
+    if (streamState) {
+      // When we rebuild the chat shell mid-stream, keep the persisted message
+      // list stable before restoring the live bubble. An async render can yield
+      // and resume after the bubble is appended, which places later messages
+      // after the live bubble and makes the reply jump above the latest user turn.
+      flushActiveMessageList(scopeKey)
+    } else {
+      updateMessageList()
+    }
   } else {
     const listEl = document.getElementById('message-list')
     if (listEl) {
@@ -4470,7 +4793,6 @@ function updateChatArea(): void {
   bindInputResize()
   bindComposerAttachments(thread)
   bindSendHandler()
-  bindCancelHandler()
   bindThreadConfigSwitches(thread)
   bindScrollBottom()
 
@@ -4754,10 +5076,10 @@ function bindInputResize(): void {
   const input = document.getElementById('message-input') as HTMLTextAreaElement | null
   const menuEl = document.getElementById('slash-command-menu') as HTMLDivElement | null
   if (!input) return
-  const maxHeight = 220
+
   input.addEventListener('input', () => {
-    input.style.height = 'auto'
-    input.style.height = Math.min(input.scrollHeight, maxHeight) + 'px'
+    setActiveComposerDraft(input.value)
+    syncComposerInputHeight(input)
     updateInputState()
     updateSlashCommandMenu()
   })
@@ -4792,6 +5114,7 @@ function bindInputResize(): void {
       }
     }
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      if (getActiveChatStreamState()) return
       e.preventDefault()
       document.getElementById('send-btn')?.click()
     }
@@ -4827,6 +5150,14 @@ function bindInputResize(): void {
     slashCommandSelectedIndex = index
     updateSlashCommandMenu()
   })
+
+  syncComposerInputHeight(input)
+}
+
+function syncComposerInputHeight(input: HTMLTextAreaElement): void {
+  const maxHeight = 220
+  input.style.height = 'auto'
+  input.style.height = Math.min(input.scrollHeight, maxHeight) + 'px'
 }
 
 function renderComposerAttachments(threadId: string): void {
@@ -4923,10 +5254,16 @@ function bindComposerAttachments(thread: Thread): void {
 // ── Send ──────────────────────────────────────────────────────────────────
 
 function bindSendHandler(): void {
-  document.getElementById('send-btn')?.addEventListener('click', handleSend)
+  document.getElementById('send-btn')?.addEventListener('click', () => {
+    if (getActiveChatStreamState()) {
+      void handleCancel()
+      return
+    }
+    void handleSend()
+  })
 }
 
-function handleSend(): void {
+async function handleSend(): Promise<void> {
   const inputEl = document.getElementById('message-input') as HTMLTextAreaElement | null
   if (!inputEl) return
 
@@ -4939,13 +5276,19 @@ function handleSend(): void {
 
   const thread = threads.find(t => t.threadId === activeThreadId)
   if (!thread || sessionSwitchingThreads.has(thread.threadId)) return
+  await syncSelectedSessionSelection(thread.threadId, { allowWhileThreadStreaming: true })
+  if (sessionSwitchingThreads.has(thread.threadId)) return
+
+  const refreshedThread = store.get().threads.find(t => t.threadId === activeThreadId)
+  if (!refreshedThread || selectedSessionOverride(refreshedThread.threadId)) return
   const capturedThreadID = activeThreadId
-  let capturedSessionID = threadSessionID(thread)
-  let capturedScopeKey = threadChatScopeKey(thread)
+  let capturedSessionID = selectedThreadSessionID(refreshedThread)
+  let capturedScopeKey = threadChatScopeKey(refreshedThread)
   if (getScopeStreamState(capturedScopeKey)) return
 
   // Clear input immediately
   inputEl.value = ''
+  setComposerDraft(capturedScopeKey, '')
   inputEl.style.height = 'auto'
   clearThreadComposerAttachments(capturedThreadID)
   renderComposerAttachments(capturedThreadID)
@@ -4965,6 +5308,7 @@ function handleSend(): void {
     status:    'done',
   }
   addMessageToStore(capturedScopeKey, userMsg)
+  flushActiveMessageList(capturedScopeKey)
 
   // ── 2. Reserve streaming message ID before touching stream state ───────────
   //    This prevents subscribe → updateMessageList from wiping the bubble.
@@ -5208,6 +5552,7 @@ function handleSend(): void {
       markThreadCompletionBadge(capturedThreadID)
       void loadThreadSessions(capturedThreadID)
       void loadThreadSlashCommands(capturedThreadID, true)
+      void syncSelectedSessionSelection(capturedThreadID)
 
       addMessageToStore(capturedScopeKey, {
         id:         agentMsgID,
@@ -5244,6 +5589,7 @@ function handleSend(): void {
       clearPendingPermissions(capturedScopeKey)
       void loadThreadSessions(capturedThreadID)
       void loadThreadSlashCommands(capturedThreadID, true)
+      void syncSelectedSessionSelection(capturedThreadID)
 
       addMessageToStore(capturedScopeKey, {
         id:           agentMsgID,
@@ -5281,6 +5627,7 @@ function handleSend(): void {
       clearPendingPermissions(capturedScopeKey)
       void loadThreadSessions(capturedThreadID)
       void loadThreadSlashCommands(capturedThreadID, true)
+      void syncSelectedSessionSelection(capturedThreadID)
 
       addMessageToStore(capturedScopeKey, {
         id:           agentMsgID,
@@ -5308,10 +5655,6 @@ function handleSend(): void {
 }
 
 // ── Cancel ────────────────────────────────────────────────────────────────
-
-function bindCancelHandler(): void {
-  document.getElementById('cancel-btn')?.addEventListener('click', () => void handleCancel())
-}
 
 async function handleCancel(): Promise<void> {
   const scopeKey = activeChatScopeKey()
@@ -5351,11 +5694,8 @@ function renderShell(): void {
       <div class="layout">
         <aside class="sidebar" id="sidebar">
           <div class="sidebar-header">
-            <div class="sidebar-brand">
-              <div class="sidebar-brand-icon">N</div>
-              <div class="sidebar-brand-copy">
-                <span class="sidebar-brand-text">Ngent</span>
-              </div>
+            <div class="sidebar-brand" role="img" aria-label="Ngent">
+              ${sidebarBrandLetters.map(letter => `<pre class="sidebar-brand-letter" aria-hidden="true">${letter}</pre>`).join('')}
             </div>
           </div>
 
@@ -5373,7 +5713,7 @@ function renderShell(): void {
           <div class="sidebar-primary-action">
             <button class="btn btn-primary sidebar-new-btn" id="new-thread-btn" title="New agent" aria-label="New agent">
               ${iconPlus}
-              <span class="btn-label">New agent</span>
+              <span class="btn-label">New Agent</span>
             </button>
           </div>
 

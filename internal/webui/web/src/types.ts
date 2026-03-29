@@ -189,7 +189,6 @@ export interface StreamState {
 
 export interface AppState {
   // — persisted settings —
-  clientId: string
   authToken: string
   serverUrl: string
   theme: Theme

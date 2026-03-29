@@ -1,6 +1,6 @@
 import { store } from '../store.ts'
 import type { Theme } from '../types.ts'
-import { copyText, debounce, escHtml } from '../utils.ts'
+import { debounce, escHtml } from '../utils.ts'
 
 // ── Icons ──────────────────────────────────────────────────────────────────
 
@@ -8,15 +8,10 @@ const iconClose = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" a
   <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
 </svg>`
 
-const iconCopy = `<svg width="13" height="13" viewBox="0 0 15 15" fill="none" aria-hidden="true">
-  <rect x="4" y="4" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.4"/>
-  <path d="M2 11V3a1 1 0 011-1h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-</svg>`
-
 // ── Render ─────────────────────────────────────────────────────────────────
 
 function renderPanel(): string {
-  const { clientId, authToken, serverUrl, theme } = store.get()
+  const { authToken, serverUrl, theme } = store.get()
 
   const themeBtn = (value: Theme, label: string) => `
     <button
@@ -42,25 +37,8 @@ function renderPanel(): string {
         <div class="settings-body">
           <div class="settings-intro">
             <div class="settings-intro-badge">Browser-local</div>
-            <p class="settings-intro-copy">Adjust identity, connection, and appearance without changing server-side state.</p>
+            <p class="settings-intro-copy">Adjust connection and appearance without changing server-side state.</p>
           </div>
-
-          <section class="settings-section">
-            <h3 class="settings-section-title">Identity</h3>
-            <label class="settings-label">Client ID</label>
-            <p class="settings-description">
-              Automatically assigned. All agents and turns are scoped to this ID.
-            </p>
-            <div class="settings-id-row">
-              <code class="settings-client-id" id="client-id-display">${escHtml(clientId)}</code>
-              <button class="btn btn-icon settings-copy-btn" id="copy-client-id-btn" title="Copy client ID">
-                ${iconCopy}
-              </button>
-            </div>
-            <button class="btn btn-ghost btn-sm settings-reset-btn" id="reset-client-id-btn">
-              Reset Client ID
-            </button>
-          </section>
 
           <section class="settings-section">
             <h3 class="settings-section-title">Security</h3>
@@ -154,27 +132,6 @@ function bindEvents(): void {
     if (e.key === 'Escape') { unmount(); document.removeEventListener('keydown', onKey) }
   }
   document.addEventListener('keydown', onKey)
-
-  // Copy client ID
-  container.querySelector('#copy-client-id-btn')?.addEventListener('click', () => {
-    const id = store.get().clientId
-    void copyText(id).then(copied => {
-      if (!copied) return
-      const btn = container?.querySelector('#copy-client-id-btn')
-      if (btn) {
-        btn.textContent = '✓'
-        setTimeout(() => { if (btn) btn.innerHTML = iconCopy }, 1500)
-      }
-    })
-  })
-
-  // Reset client ID (with confirmation)
-  container.querySelector('#reset-client-id-btn')?.addEventListener('click', () => {
-    if (!confirm('Reset your Client ID? You will lose access to existing agents in this browser.')) return
-    store.resetClientId()
-    const display = container?.querySelector<HTMLElement>('#client-id-display')
-    if (display) display.textContent = store.get().clientId
-  })
 
   // Auth token — save on change (debounced)
   const saveToken = debounce((v: string) => store.set({ authToken: v }), 400)

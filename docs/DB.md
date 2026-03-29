@@ -24,16 +24,9 @@
 
 ## Implemented Tables
 
-### `clients`
-
-- `client_id TEXT PRIMARY KEY`
-- `created_at TEXT NOT NULL`
-- `last_seen_at TEXT NOT NULL`
-
 ### `threads`
 
 - `thread_id TEXT PRIMARY KEY`
-- `client_id TEXT NOT NULL REFERENCES clients(client_id)`
 - `agent_id TEXT NOT NULL`
 - `cwd TEXT NOT NULL`
 - `title TEXT NOT NULL`
@@ -81,18 +74,17 @@
 
 ## Indexes (M2)
 
-- `idx_threads_client_id` on `threads(client_id)`
 - `idx_turns_thread_id_created_at` on `turns(thread_id, created_at)`
 - `idx_events_turn_id_seq` unique index on `events(turn_id, seq)`
 - `session_transcript_cache` primary key on `(agent_id, cwd, session_id)`
 
 ## Storage API (M2)
 
-- `UpsertClient(clientID)`
+- `UpsertClient(clientID)` compatibility validator; no-op for SQLite persistence
 - `CreateThread(...)`
 - `GetThread(threadID)`
 - `UpdateThreadSummary(threadID, summary)`
-- `ListThreadsByClient(clientID)`
+- `ListThreads()`
 - `GetSessionTranscriptCache(agentID, cwd, sessionID)`
 - `UpsertSessionTranscriptCache(...)`
 - `GetAgentSlashCommands(agentID)`
